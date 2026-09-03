@@ -13,6 +13,7 @@ const proPolicy = path.join(tempDir, 'pro.json');
 const denyPolicy = path.join(tempDir, 'deny.json');
 const invalidPolicy = path.join(tempDir, 'invalid.json');
 const missingPolicy = path.join(tempDir, 'missing.json');
+const approvalFile = path.join(tempDir, 'approvals.json');
 
 try {
   await fs.writeFile(proPolicy, JSON.stringify({
@@ -29,7 +30,8 @@ try {
   const approval = await applyPolicyGate(
     'write_file',
     { path: '/projects/production/app.ts', content: 'change' },
-    proPolicy
+    proPolicy,
+    approvalFile
   );
 
   assert.strictEqual(approval.allowed, false);
@@ -38,6 +40,7 @@ try {
   assert.strictEqual(approval.result?.isError, true);
   assert.match(approval.result?.content?.[0]?.text ?? '', /Approval required/i);
   assert.match(approval.result?.content?.[0]?.text ?? '', /No action was executed/i);
+  assert.match(approval.result?.content?.[0]?.text ?? '', /Approval request ID:/i);
 
   await fs.writeFile(denyPolicy, JSON.stringify({
     version: 1,
@@ -52,7 +55,8 @@ try {
   const denied = await applyPolicyGate(
     'set_config_value',
     { key: 'allowedDirectories', value: [] },
-    denyPolicy
+    denyPolicy,
+    approvalFile
   );
 
   assert.strictEqual(denied.allowed, false);
@@ -62,7 +66,8 @@ try {
   const free = await applyPolicyGate(
     'write_file',
     { path: '/anything/file.txt', content: 'change' },
-    missingPolicy
+    missingPolicy,
+    approvalFile
   );
   assert.strictEqual(free.allowed, true);
   assert.strictEqual(free.decision, 'allow');
@@ -71,7 +76,8 @@ try {
   const invalid = await applyPolicyGate(
     'write_file',
     { path: '/anything/file.txt', content: 'change' },
-    invalidPolicy
+    invalidPolicy,
+    approvalFile
   );
   assert.strictEqual(invalid.allowed, false, 'Invalid existing policy must fail closed');
   assert.strictEqual(invalid.decision, 'deny');
