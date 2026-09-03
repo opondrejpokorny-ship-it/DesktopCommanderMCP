@@ -36,25 +36,20 @@ jobs:
         with:
           fetch-depth: 0
       - name: Identify runner
-        shell: powershell
+        shell: cmd
         run: |
           hostname
-          Write-Output "RUNNER_NAME=$env:RUNNER_NAME"
+          echo RUNNER_NAME=%RUNNER_NAME%
+          py -3 --version
       - name: Ensure authoritative prototype ref
-        shell: powershell
+        shell: cmd
         run: git fetch origin prototype/free-pro-team:refs/remotes/origin/prototype/free-pro-team
       - name: Create local Graphify runtime
-        shell: powershell
+        shell: cmd
         run: |
-          if (Test-Path ".tools\graphify") { Remove-Item ".tools\graphify" -Recurse -Force }
-          if (Get-Command py -ErrorAction SilentlyContinue) {
-            py -3 -m venv .tools\graphify
-          } elseif (Get-Command python -ErrorAction SilentlyContinue) {
-            python -m venv .tools\graphify
-          } else {
-            throw "Python is not available on the Windows runner."
-          }
-          .\.tools\graphify\Scripts\python.exe -m pip install --disable-pip-version-check graphifyy==0.9.53
+          if exist ".tools\graphify" rmdir /s /q ".tools\graphify"
+          py -3 -m venv .tools\graphify
+          .tools\graphify\Scripts\python.exe -m pip install --disable-pip-version-check graphifyy==0.9.53
       - name: Graphify code-only build
         shell: cmd
         run: scripts\graphify-local.cmd build
