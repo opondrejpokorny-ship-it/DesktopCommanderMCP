@@ -279,7 +279,17 @@ function renderControlCenterHtml(token: string): string {
           <button id="save-folder">Add folder rule</button>
         </div>
         <div id="folder-permissions"></div>
-        <p class="subtle">Raw file contents and terminal command text are not stored in approvals or audit records.</p>
+        <div class="folder-editor">
+          <input id="command-prefix" type="text" autocomplete="off" placeholder="Command prefix, e.g. git push">
+          <select id="command-permission">
+            <option value="allow">Allow</option>
+            <option value="approval_required">Require approval</option>
+            <option value="blocked">Blocked</option>
+          </select>
+          <button id="save-command">Add command rule</button>
+        </div>
+        <div id="command-permissions"></div>
+        <p class="subtle">Command rules are literal prefixes, not a shell sandbox. Raw terminal command text is not stored in approvals or audit records.</p>
       </section>
     </div>
   </main>
@@ -415,6 +425,46 @@ function renderControlCenterHtml(token: string): string {
       }
     }
 
+    function renderCommandPermissions(items) {
+      const root = document.getElementById('command-permissions');
+      root.replaceChildren();
+
+      if (!items.length) {
+        root.appendChild(createElement('div', 'No custom command rules. Profile defaults apply.', 'empty'));
+        return;
+      }
+
+      for (const item of items) {
+        const row = createElement('div', undefined, 'row');
+        row.appendChild(createElement('div', item.commandPrefix, 'row-title'));
+        row.appendChild(createElement('div', item.permission.replaceAll('_', ' '), 'meta'));
+        const actions = createElement('div', undefined, 'actions');
+        const remove = createElement('button', 'Use profile default');
+        remove.addEventListener('click', async () => {
+          await saveCommandPermission(item.commandPrefix, 'inherit');
+        });
+        actions.appendChild(remove);
+        row.appendChild(actions);
+        root.appendChild(row);
+      }
+    }
+
+    async function saveCommandPermission(commandPrefix, permission) {
+      const status = document.getElementById('status');
+      status.textContent = 'Saving command policy…';
+      try {
+        await api('/api/policy/commands', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ commandPrefix, permission })
+        });
+        document.getElementById('command-prefix').value = '';
+        await refresh();
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    }
+
     function renderPolicy(policy) {
       document.getElementById('tier-select').value = policy.tier || 'free';
       document.getElementById('profile-select').value = policy.profile || 'full_access';
@@ -461,6 +511,15 @@ function renderControlCenterHtml(token: string): string {
       }
       saveFolderPermission(pathValue, permission);
     });
+    document.getElementById('save-command').addEventListener('click', () => {
+      const commandPrefix = document.getElementById('command-prefix').value.trim();
+      const permission = document.getElementById('command-permission').value;
+      if (!commandPrefix) {
+        document.getElementById('status').textContent = 'Enter a command prefix.';
+        return;
+      }
+      saveCommandPermission(commandPrefix, permission);
+    });
 
     async function refresh() {
       const status = document.getElementById('status');
@@ -476,6 +535,7 @@ function renderControlCenterHtml(token: string): string {
         renderAudit(state.auditEvents);
         renderPolicy(state.policy);
         renderFolderPermissions(state.folderPermissions || []);
+        renderCommandPermissions(state.commandPermissions || []);
       } catch (error) {
         document.getElementById('connection').textContent = 'Disconnected';
         status.textContent = error.message;
