@@ -24,6 +24,8 @@ const PATH_GUIDANCE = `IMPORTANT: ${getPathGuidance(SYSTEM_INFO)} Relative paths
 
 const CMD_PREFIX_DESCRIPTION = `This command can be referenced as "DC: ..." or "use Desktop Commander to ..." in your instructions.`;
 
+const PROJECT_WORKFLOW_SERVER_INSTRUCTIONS = `For non-trivial software project work, check whether the repository contains .desktop-commander/project-workflow.json. When it does, call project_workflow with action=start before implementation, or action=resume when a workflow is already active. Follow the returned next lifecycle stage, record only evidence that actually occurred, and call finish only after required stages are complete. External Drive/GitHub/CI evidence remains an agent/provider attestation unless independently verified. Never use workflow state to bypass Desktop Commander policy, approvals, allowed directories, blocked commands, or other upstream validation. Authorization-required stages cannot be completed from agent-controlled MCP evidence; a trusted host/control-plane signal is required after explicit user authorization.`;
+
 import {
     StartProcessArgsSchema,
     ReadProcessOutputArgsSchema,
@@ -50,6 +52,7 @@ import {
     ListSearchesArgsSchema,
     GetPromptsArgsSchema,
     GetRecentToolCallsArgsSchema,
+    ProjectWorkflowToolArgsSchema,
     WritePdfArgsSchema,
     toolArgSchemas,
 } from './tools/schemas.js';
@@ -62,6 +65,7 @@ import { getConfig, setConfigValue } from './tools/config.js';
 import { getUsageStats } from './tools/usage.js';
 import { giveFeedbackToDesktopCommander } from './tools/feedback.js';
 import { getPrompts } from './tools/prompts.js';
+import { projectWorkflow } from './tools/project-workflow.js';
 import { trackToolCall } from './utils/trackTools.js';
 import { usageTracker } from './utils/usageTracker.js';
 import { processDockerPrompt } from './utils/dockerPrompt.js';
@@ -274,6 +278,7 @@ server.setRequestHandler(InitializeRequestSchema, async (request: InitializeRequ
                 name: "desktop-commander",
                 version: VERSION,
             },
+            instructions: PROJECT_WORKFLOW_SERVER_INSTRUCTIONS,
         };
     } catch (error) {
         logToStderr('error', `Error in initialization handler: ${error}`);
@@ -358,6 +363,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     title: "Set Configuration Value",
                     readOnlyHint: false,
                     destructiveHint: true,
+                    openWorldHint: false,
+                },
+            },
+            {
+                name: "project_workflow",
+                description: `Coordinate a persistent, verifiable software-project lifecycle.
+Use automatically for non-trivial repository work when .desktop-commander/project-workflow.json exists.
+Actions: start, resume, status, record, finish.
+This supplements policy and upstream guardrails and cannot manufacture deployment authorization.
+${PATH_GUIDANCE}
+${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(ProjectWorkflowToolArgsSchema),
+                annotations: {
+                    title: "Project Workflow",
+                    readOnlyHint: false,
+                    destructiveHint: false,
                     openWorldHint: false,
                 },
             },
@@ -1388,6 +1409,17 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 }
                 break;
 
+            case "project_workflow":
+                try {
+                    result = await projectWorkflow(args || {});
+                } catch (error) {
+                    capture('server_request_error', { message: `Error in project_workflow handler: ${error}` });
+                    result = {
+                        content: [{ type: "text", text: "Error: Failed to process project workflow" }],
+                        isError: true,
+                    };
+                }
+                break;
             case "get_usage_stats":
                 try {
                     result = await getUsageStats();

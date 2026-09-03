@@ -235,6 +235,51 @@ export const GetRecentToolCallsArgsSchema = z.object({
   since: z.string().datetime().optional(),
 });
 
+const ProjectWorkflowEvidenceSchema = z.object({
+  kind: z.enum(['agent_attestation', 'provider_reference']),
+  summary: z.string().min(1).max(2000),
+  reference: z.string().min(1).max(2000).optional(),
+});
+
+export const ProjectWorkflowToolArgsSchema = z.object({
+  action: z.enum(['start', 'status', 'resume', 'record', 'finish']),
+  projectRoot: z.string().min(1),
+  goal: z.string().min(1).max(2000).optional(),
+  restart: z.boolean().optional().default(false),
+  stageId: z.string().min(1).max(120).optional(),
+  status: z.enum(['completed', 'blocked', 'skipped']).optional(),
+  evidence: ProjectWorkflowEvidenceSchema.optional(),
+  reason: z.string().min(1).max(2000).optional(),
+});
+export const ProjectWorkflowArgsSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('start'),
+    projectRoot: z.string().min(1),
+    goal: z.string().min(1).max(2000),
+    restart: z.boolean().optional().default(false),
+  }),
+  z.object({
+    action: z.literal('status'),
+    projectRoot: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal('resume'),
+    projectRoot: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal('record'),
+    projectRoot: z.string().min(1),
+    stageId: z.string().min(1).max(120),
+    status: z.enum(['completed', 'blocked', 'skipped']),
+    evidence: ProjectWorkflowEvidenceSchema.optional(),
+    reason: z.string().min(1).max(2000).optional(),
+  }),
+  z.object({
+    action: z.literal('finish'),
+    projectRoot: z.string().min(1),
+  }),
+]);
+
 export const TrackUiEventArgsSchema = z.object({
   event: z.string().min(1).max(80),
   component: z.string().optional().default('file_preview'),
@@ -273,5 +318,6 @@ export const toolArgSchemas: Record<string, z.ZodTypeAny> = {
   get_recent_tool_calls: GetRecentToolCallsArgsSchema,
   give_feedback_to_desktop_commander: GiveFeedbackArgsSchema,
   get_prompts: GetPromptsArgsSchema,
+  project_workflow: ProjectWorkflowToolArgsSchema,
   track_ui_event: TrackUiEventArgsSchema,
 };
