@@ -172,6 +172,18 @@ Returned usage is measured from the finalized MCP `ServerResult`, not from physi
 
 See `USAGE_METERING.md` for exact accounting semantics and deferred quota decisions.
 
+## Project workflow coordinator
+
+Longer software tasks can now use a versioned `.desktop-commander/project-workflow.json` profile plus the `project_workflow` MCP tool (`start`, `status`, `resume`, `record`, `finish`). Runtime state is persisted outside the repository under Desktop Commander's local control-plane directory; the repository stores only the project workflow definition.
+
+`start` performs a local Git preflight (repository root, branch, HEAD, dirty count, sanitized remotes and known refs). `resume` refreshes that evidence. `record` stores only bounded summaries/references, never raw file contents or raw command output, and redacts common credential-shaped values. `finish` refuses completion while required stages remain incomplete, optional stages remain unresolved, or the versioned workflow profile has drifted since task start.
+
+The MCP initialization response also includes workflow guidance so compatible clients can automatically start/resume the coordinator for non-trivial repository work. This guidance is advisory because host/client behavior is implementation-dependent; the persistent coordinator is the runtime source of lifecycle state.
+
+Workflow control-plane files are denied through ordinary filesystem write/move/delete paths, including canonicalized symlink aliases. Agent-controlled MCP evidence cannot mint `user_authorization`; authorization-required stages are reserved for a trusted human/control-plane signal. This coordinator does not turn Desktop Commander into a security sandbox and does not prevent a sufficiently privileged terminal/OS process from altering local files. Existing policy, approvals, allowed-directory checks, blocked-command checks and upstream validation remain authoritative.
+
+External Drive/GitHub/CI evidence is recorded as an agent/provider attestation unless independently verified by Desktop Commander. No provider credentials are stored in workflow state.
+
 ## First vertical slice
 
 The first functional demo should be deliberately small:
