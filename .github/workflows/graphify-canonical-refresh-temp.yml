@@ -1,0 +1,112 @@
+name: Graphify Canonical Refresh Temporary
+
+on:
+  push:
+    branches:
+      - feat/graphify-local-discovery
+
+permissions:
+  contents: read
+
+concurrency:
+  group: graphify-canonical-refresh
+  cancel-in-progress: false
+
+jobs:
+  canonical-refresh:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Refresh canonical prototype and Graphify
+        shell: cmd
+        run: |
+          @echo off
+          setlocal EnableExtensions
+          set "REPO=C:\DesktopCommanderTierPrototype"
+          set "EXPECTED=76396cd80f1c5555e3bac329536546dec47a6618"
+
+          echo MACHINE=%COMPUTERNAME%
+          if /I not "%COMPUTERNAME%"=="WIN-A0OFGC4ORFI" (
+            echo Unexpected runner machine.
+            exit /b 30
+          )
+
+          git -c safe.directory="%REPO%" -C "%REPO%" rev-parse --is-inside-work-tree
+          if errorlevel 1 exit /b 31
+
+          git -c safe.directory="%REPO%" -C "%REPO%" fetch origin
+          if errorlevel 1 exit /b 32
+
+          git -c safe.directory="%REPO%" -C "%REPO%" remote get-url upstream >nul 2>nul
+          if not errorlevel 1 (
+            git -c safe.directory="%REPO%" -C "%REPO%" fetch upstream
+            if errorlevel 1 exit /b 33
+          )
+
+          for /f %%B in ('git -c safe.directory^="%REPO%" -C "%REPO%" branch --show-current') do set "BRANCH=%%B"
+          echo BRANCH=%BRANCH%
+          if /I not "%BRANCH%"=="prototype/free-pro-team" (
+            echo Canonical checkout is not on prototype/free-pro-team. Refusing mutation.
+            exit /b 34
+          )
+
+          set "DIRTY="
+          for /f "delims=" %%S in ('git -c safe.directory^="%REPO%" -C "%REPO%" status --porcelain -uall') do set "DIRTY=1"
+          if defined DIRTY (
+            echo Canonical checkout is dirty. Refusing stash/reset/overwrite.
+            git -c safe.directory="%REPO%" -C "%REPO%" status --short
+            exit /b 35
+          )
+
+          for /f "tokens=1,2" %%A in ('git -c safe.directory^="%REPO%" -C "%REPO%" rev-list --left-right --count HEAD...origin/prototype/free-pro-team') do (
+            set "AHEAD=%%A"
+            set "BEHIND=%%B"
+          )
+          echo RELATION ahead=%AHEAD% behind=%BEHIND%
+
+          if not "%AHEAD%"=="0" (
+            echo Canonical prototype is ahead or diverged. Refusing reset/rebase/merge.
+            exit /b 36
+          )
+
+          if not "%BEHIND%"=="0" (
+            git -c safe.directory="%REPO%" -C "%REPO%" merge --ff-only origin/prototype/free-pro-team
+            if errorlevel 1 exit /b 37
+          )
+
+          for /f %%H in ('git -c safe.directory^="%REPO%" -C "%REPO%" rev-parse HEAD') do set "HEADSHA=%%H"
+          echo HEAD=%HEADSHA%
+          if /I not "%HEADSHA%"=="%EXPECTED%" (
+            echo Canonical checkout did not reach expected authoritative prototype SHA.
+            exit /b 38
+          )
+
+          if not exist "%REPO%\.tools\graphify\Scripts\python.exe" (
+            py -3 -m venv "%REPO%\.tools\graphify"
+            if errorlevel 1 exit /b 39
+          )
+
+          "%REPO%\.tools\graphify\Scripts\python.exe" -m pip install --disable-pip-version-check --upgrade graphifyy==0.9.53
+          if errorlevel 1 exit /b 40
+
+          call "%REPO%\scripts\graphify-local.cmd" build
+          if errorlevel 1 exit /b 41
+
+          call "%REPO%\scripts\graphify-local.cmd" god-nodes
+          if errorlevel 1 exit /b 42
+
+          call "%REPO%\scripts\graphify-local.cmd" query "where is tier access enforced?"
+          if errorlevel 1 exit /b 43
+
+          node "%REPO%\scripts\graphify-git-preflight.mjs" --repo "%REPO%" --graph "%REPO%\graphify-out\graph.json" --state "%REPO%\graphify-out\.graphify-state.json"
+          if errorlevel 1 exit /b 44
+
+          set "FINAL_DIRTY="
+          for /f "delims=" %%S in ('git -c safe.directory^="%REPO%" -C "%REPO%" status --porcelain -uall') do set "FINAL_DIRTY=1"
+          if defined FINAL_DIRTY (
+            echo Canonical checkout became dirty outside ignored Graphify artifacts.
+            git -c safe.directory="%REPO%" -C "%REPO%" status --short
+            exit /b 45
+          )
+
+          echo CANONICAL_GRAPHIFY_REFRESH_OK
