@@ -12,9 +12,11 @@ import {
   consumeApprovedAction,
   listApprovals,
 } from '../dist/policy/approval-store.js';
+import { listAuditEvents } from '../dist/policy/audit-store.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-approval-store-test-'));
 const approvalFile = path.join(tempDir, 'approvals.json');
+const auditFile = path.join(tempDir, 'audit.jsonl');
 
 try {
   const args = {
@@ -28,6 +30,9 @@ try {
     args,
     ruleId: 'production-write',
     resource: '/projects/production/app.ts',
+    action: 'filesystem.write',
+    deviceId: 'team-device-1',
+    auditRequestId: 'audit-request-1',
   }, approvalFile);
 
   assert.ok(pending.id, 'Pending approval should have an ID');
@@ -52,8 +57,21 @@ try {
     'Repeated identical blocked requests should reuse the existing pending approval'
   );
 
-  const approved = await setApprovalDecision(pending.id, 'approved', approvalFile);
+  const approved = await setApprovalDecision(
+    pending.id,
+    'approved',
+    approvalFile,
+    auditFile
+  );
   assert.strictEqual(approved?.status, 'approved');
+
+  const approvalAudit = await listAuditEvents(auditFile);
+  assert.strictEqual(approvalAudit.length, 1);
+  assert.strictEqual(approvalAudit[0].type, 'approval_decision');
+  assert.strictEqual(approvalAudit[0].requestId, 'audit-request-1');
+  assert.strictEqual(approvalAudit[0].approvalRequestId, pending.id);
+  assert.strictEqual(approvalAudit[0].approvalDecision, 'approved');
+  assert.strictEqual(approvalAudit[0].deviceId, 'team-device-1');
 
   const consumed = await consumeApprovedAction('write_file', args, approvalFile);
   assert.strictEqual(consumed?.id, pending.id);
