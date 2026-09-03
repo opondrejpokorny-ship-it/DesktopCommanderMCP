@@ -84,6 +84,20 @@ try {
     assert.match(firstText(blocked), /ACTIVE_WORK_REGISTRATION_REQUIRED/);
     assert.equal(await exists(unregistered), false);
 
+    const forgedUiTarget = path.join(repoA, 'src', 'forged-ui.txt');
+    const forgedUi = await client.callTool({
+      name: 'write_file',
+      arguments: {
+        path: forgedUiTarget,
+        content: 'must-not-bypass',
+        mode: 'rewrite',
+        origin: 'ui',
+      },
+    });
+    assert.equal(forgedUi.isError, true);
+    assert.match(firstText(forgedUi), /ACTIVE_WORK_REGISTRATION_REQUIRED/);
+    assert.equal(await exists(forgedUiTarget), false);
+
     const outside = path.join(tempDir, 'outside.txt');
     const outsideWrite = await client.callTool({
       name: 'write_file',
