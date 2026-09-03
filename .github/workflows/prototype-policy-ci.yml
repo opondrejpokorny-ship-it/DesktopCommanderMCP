@@ -28,5 +28,9 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Run policy engine test
-        run: node test/test-tier-policy-engine.js
+      - name: Run focused policy tests
+        shell: bash
+        run: |
+          for test_file in test/test-tier-policy*.js; do
+            node "$test_file"
+          done
