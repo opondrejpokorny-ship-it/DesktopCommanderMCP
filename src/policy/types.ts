@@ -14,7 +14,9 @@ export type PolicyAction =
     | 'filesystem.delete'
     | 'terminal.execute'
     | 'process.terminate'
-    | 'config.change';
+    | 'config.change'
+    | 'workflow.change'
+    | 'external.open';
 
 export interface PolicyContext {
     tier: DesktopCommanderTier;
