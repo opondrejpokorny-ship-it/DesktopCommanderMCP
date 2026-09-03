@@ -1,0 +1,133 @@
+/**
+ * RED -> GREEN integration test for the local web Control Center.
+ */
+
+import assert from 'node:assert';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  createPendingApproval,
+  listApprovals,
+} from '../dist/policy/approval-store.js';
+import { listAuditEvents } from '../dist/policy/audit-store.js';
+import { startControlCenter } from '../dist/control-center/server.js';
+
+const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-control-center-'));
+const approvalFile = path.join(tempDir, 'approvals.json');
+const auditFile = path.join(tempDir, 'audit.jsonl');
+const policyFile = path.join(tempDir, 'policy.json');
+
+const previousEnv = {
+  approval: process.env.DESKTOP_COMMANDER_APPROVAL_FILE,
+  audit: process.env.DESKTOP_COMMANDER_AUDIT_FILE,
+  policy: process.env.DESKTOP_COMMANDER_POLICY_FILE,
+};
+
+process.env.DESKTOP_COMMANDER_APPROVAL_FILE = approvalFile;
+process.env.DESKTOP_COMMANDER_AUDIT_FILE = auditFile;
+process.env.DESKTOP_COMMANDER_POLICY_FILE = policyFile;
+
+let controlCenter;
+
+try {
+  await fs.writeFile(policyFile, JSON.stringify({
+    version: 1,
+    tier: 'team',
+    profile: 'safe_developer',
+    deviceId: 'server-1',
+    rules: [],
+  }));
+
+  const pending = await createPendingApproval({
+    tool: 'write_file',
+    args: { path: '/projects/app.ts', content: 'private-change' },
+    ruleId: 'team-write',
+    resource: '/projects/app.ts',
+    action: 'filesystem.write',
+    deviceId: 'server-1',
+    auditRequestId: 'control-center-audit-1',
+  });
+
+  controlCenter = await startControlCenter({
+    host: '127.0.0.1',
+    port: 0,
+    token: 'test-control-token',
+    quiet: true,
+  });
+
+  assert.strictEqual(controlCenter.host, '127.0.0.1');
+  assert.ok(controlCenter.port > 0);
+
+  const home = await fetch(controlCenter.url);
+  assert.strictEqual(home.status, 200);
+  assert.match(await home.text(), /Desktop Commander Control Center/i);
+  assert.strictEqual(home.headers.get('cache-control'), 'no-store');
+  assert.match(home.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
+
+  const forbidden = await fetch(`${controlCenter.url}api/state`);
+  assert.strictEqual(forbidden.status, 403, 'API should require the local session token');
+
+  const stateResponse = await fetch(`${controlCenter.url}api/state`, {
+    headers: { 'X-DC-Control-Token': 'test-control-token' },
+  });
+  assert.strictEqual(stateResponse.status, 200);
+  const state = await stateResponse.json();
+  assert.strictEqual(state.policy.tier, 'team');
+  assert.strictEqual(state.policy.profile, 'safe_developer');
+  assert.strictEqual(state.pendingApprovals.length, 1);
+  assert.strictEqual(state.pendingApprovals[0].id, pending.id);
+  assert.ok(
+    !JSON.stringify(state).includes('private-change'),
+    'Control Center API must not expose raw MCP file contents'
+  );
+
+  const deniedWithoutToken = await fetch(
+    `${controlCenter.url}api/approvals/${pending.id}/approve`,
+    { method: 'POST' }
+  );
+  assert.strictEqual(deniedWithoutToken.status, 403);
+
+  const approveResponse = await fetch(
+    `${controlCenter.url}api/approvals/${pending.id}/approve`,
+    {
+      method: 'POST',
+      headers: { 'X-DC-Control-Token': 'test-control-token' },
+    }
+  );
+  assert.strictEqual(approveResponse.status, 200);
+  const approved = await approveResponse.json();
+  assert.strictEqual(approved.status, 'approved');
+
+  const approvals = await listApprovals();
+  assert.strictEqual(approvals[0].status, 'approved');
+
+  const audit = await listAuditEvents();
+  assert.strictEqual(audit.length, 1);
+  assert.strictEqual(audit[0].type, 'approval_decision');
+  assert.strictEqual(audit[0].approvalDecision, 'approved');
+
+  console.log('✅ Local web Control Center tests passed');
+} finally {
+  if (controlCenter) {
+    await controlCenter.close();
+  }
+
+  if (previousEnv.approval === undefined) {
+    delete process.env.DESKTOP_COMMANDER_APPROVAL_FILE;
+  } else {
+    process.env.DESKTOP_COMMANDER_APPROVAL_FILE = previousEnv.approval;
+  }
+  if (previousEnv.audit === undefined) {
+    delete process.env.DESKTOP_COMMANDER_AUDIT_FILE;
+  } else {
+    process.env.DESKTOP_COMMANDER_AUDIT_FILE = previousEnv.audit;
+  }
+  if (previousEnv.policy === undefined) {
+    delete process.env.DESKTOP_COMMANDER_POLICY_FILE;
+  } else {
+    process.env.DESKTOP_COMMANDER_POLICY_FILE = previousEnv.policy;
+  }
+
+  await fs.rm(tempDir, { recursive: true, force: true });
+}
