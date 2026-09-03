@@ -85,6 +85,7 @@ try {
       source: path.join(repoA, 'src', 'existing.txt'),
       destination: path.join(repoA, 'src', 'moved.txt'),
     }],
+    ['delete_file', { path: path.join(repoA, 'src', 'existing.txt') }],
   ];
 
   for (const [tool, args] of cases) {
