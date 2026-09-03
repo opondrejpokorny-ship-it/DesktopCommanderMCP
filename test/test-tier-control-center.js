@@ -251,8 +251,23 @@ try {
   const stateAfterFolder = await fetch(`${controlCenter.url}api/state`, {
     headers: { 'X-DC-Control-Token': 'test-control-token' },
   }).then((response) => response.json());
-  assert.strictEqual(stateAfterFolder.folderPermissions.length, 1);
-  assert.strictEqual(stateAfterFolder.folderPermissions[0].permission, 'read_only');
+  assert.strictEqual(stateAfterFolder.folderPermissions.length, 2);
+  assert.ok(
+    stateAfterFolder.folderPermissions.some(
+      (entry) =>
+        entry.path === tempDir &&
+        entry.permission === 'read_only' &&
+        entry.deviceId === undefined
+    )
+  );
+  assert.ok(
+    stateAfterFolder.folderPermissions.some(
+      (entry) =>
+        entry.path === tempDir &&
+        entry.permission === 'read_write' &&
+        entry.deviceId === 'remote-device-1'
+    )
+  );
 
   const deviceResponse = await fetch(
     `${controlCenter.url}api/policy/device`,
