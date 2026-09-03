@@ -37,6 +37,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: node test/test-active-work-registry.js
-      - run: node test/test-active-work-registry-skill.js
-      - run: node test/integration/active-work-registry.js
+      - name: Run focused RED-GREEN suite
+        shell: bash
+        run: |
+          set +e
+          node test/test-active-work-registry.js
+          core=$?
+          node test/test-active-work-registry-skill.js
+          skill=$?
+          node test/integration/active-work-registry.js
+          integration=$?
+          set -e
+          if [ "$core" -ne 0 ] || [ "$skill" -ne 0 ] || [ "$integration" -ne 0 ]; then
+            exit 1
+          fi
