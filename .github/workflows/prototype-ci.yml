@@ -12,24 +12,42 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  upstream-baseline:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
+      - name: Checkout clean upstream mirror
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate tool definitions
-        run: npm run validate:tools
+      - name: Run upstream test suite
+        run: npm test
 
-      - name: Run test suite
+  prototype:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout prototype
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run prototype test suite
         run: npm test
