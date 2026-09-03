@@ -3,6 +3,7 @@
 import { listApprovals, setApprovalDecision } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
 import { loadRemoteDeviceIdentity } from '../policy/device-identity.js';
+import { loadUsageMeter } from '../utils/usageMetering.js';
 import {
     isCommandPermission,
     isDesktopCommanderTier,
@@ -102,13 +103,19 @@ async function main(): Promise<void> {
 
 
 
+        case 'usage': {
+            printJson(await loadUsageMeter());
+            return;
+        }
+
         case 'state': {
-            const [policy, approvals, auditEvents, detectedDeviceIdentity] =
+            const [policy, approvals, auditEvents, detectedDeviceIdentity, usage] =
                 await Promise.all([
                     loadPolicyRuntimeConfig(),
                     listApprovals(),
                     listAuditEvents(),
                     loadRemoteDeviceIdentity(),
+                    loadUsageMeter(),
                 ]);
 
             printJson({
@@ -120,6 +127,7 @@ async function main(): Promise<void> {
                     (record) => record.status === 'pending',
                 ),
                 auditEvents,
+                usage,
             });
             return;
         }
@@ -144,6 +152,7 @@ async function main(): Promise<void> {
                     '  deny <request-id>      Deny one pending request',
                     '  policy                 Show the active access policy',
                     '  state                  Show Control Center state',
+                    '  usage                  Show local usage counters',
                     '  set-tier <tier>         Set free / pro / team',
                     '  set-profile <profile>   Set full_access / safe_developer / read_only',
                     '  set-device <device-id>  Bind policy identity to a device',
