@@ -19,12 +19,17 @@ export const REMOTE_DEVICE_CONFIG_FILE = path.join(
  * intentionally never returns the parsed config object or session fields.
  */
 export async function loadRemoteDeviceIdentity(
-    configPath: string = REMOTE_DEVICE_CONFIG_FILE,
+    configPath?: string,
 ): Promise<RemoteDeviceIdentity | null> {
+    const resolvedConfigPath =
+        configPath ??
+        process.env.DESKTOP_COMMANDER_REMOTE_DEVICE_CONFIG_FILE ??
+        REMOTE_DEVICE_CONFIG_FILE;
+
     let raw: string;
 
     try {
-        raw = await fs.readFile(configPath, 'utf8');
+        raw = await fs.readFile(resolvedConfigPath, 'utf8');
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
             return null;
