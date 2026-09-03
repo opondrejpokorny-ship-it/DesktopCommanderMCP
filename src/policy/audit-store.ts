@@ -4,7 +4,10 @@ import path from 'node:path';
 import { USER_HOME } from '../config.js';
 import { PolicyAction, PolicyDecision } from './types.js';
 
-export type AuditEventType = 'policy_decision' | 'execution_result';
+export type AuditEventType =
+    | 'policy_decision'
+    | 'approval_decision'
+    | 'execution_result';
 
 export interface AuditEventInput {
     type: AuditEventType;
@@ -16,6 +19,7 @@ export interface AuditEventInput {
     decision?: PolicyDecision;
     ruleId?: string;
     approvalRequestId?: string;
+    approvalDecision?: 'approved' | 'denied';
     outcome?: 'success' | 'failure';
     durationMs?: number;
 }

@@ -89,17 +89,28 @@ try {
     assert.strictEqual(audit[0].deviceId, 'production-server-1');
     assert.strictEqual(audit[0].approvalRequestId, approvalId);
 
-    await setApprovalDecision(approvalId, 'approved', approvalFile);
+    await setApprovalDecision(approvalId, 'approved', approvalFile, auditFile);
 
     const allowed = await client.callTool({ name: 'write_file', arguments: args });
     assert.ok(!allowed.isError);
     assert.strictEqual(await fs.readFile(testFile, 'utf8'), 'team-approved-change');
 
     audit = await listAuditEvents(auditFile);
-    assert.strictEqual(audit.length, 3, 'Approved retry should add allow + execution events');
+    assert.strictEqual(
+      audit.length,
+      4,
+      'Approval + approved retry should add approval, allow, and execution events'
+    );
 
-    const allowEvent = audit[1];
-    const executionEvent = audit[2];
+    const approvalEvent = audit[1];
+    const allowEvent = audit[2];
+    const executionEvent = audit[3];
+
+    assert.strictEqual(approvalEvent.type, 'approval_decision');
+    assert.strictEqual(approvalEvent.approvalDecision, 'approved');
+    assert.strictEqual(approvalEvent.approvalRequestId, approvalId);
+    assert.strictEqual(approvalEvent.requestId, audit[0].requestId);
+    assert.strictEqual(approvalEvent.deviceId, 'production-server-1');
 
     assert.strictEqual(allowEvent.type, 'policy_decision');
     assert.strictEqual(allowEvent.decision, 'allow');

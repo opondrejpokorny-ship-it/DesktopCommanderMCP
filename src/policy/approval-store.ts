@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
+import { appendAuditEvent } from './audit-store.js';
+import { PolicyAction } from './types.js';
 
 export type ApprovalStatus =
     | 'pending'
@@ -16,6 +18,9 @@ export interface ApprovalRecord {
     tool: string;
     ruleId?: string;
     resource?: string;
+    action?: PolicyAction;
+    deviceId?: string;
+    auditRequestId?: string;
     status: ApprovalStatus;
     createdAt: string;
     expiresAt: string;
@@ -33,6 +38,9 @@ export interface PendingApprovalInput {
     args: unknown;
     ruleId?: string;
     resource?: string;
+    action?: PolicyAction;
+    deviceId?: string;
+    auditRequestId?: string;
     ttlMs?: number;
 }
 
@@ -158,14 +166,16 @@ export async function createPendingApproval(
     }
 
     const now = Date.now();
+    const safeResource = safeResourceForStore(input.tool, input.resource);
     const record: ApprovalRecord = {
         id: crypto.randomUUID(),
         fingerprint,
         tool: input.tool,
         ...(input.ruleId ? { ruleId: input.ruleId } : {}),
-        ...(safeResourceForStore(input.tool, input.resource)
-            ? { resource: safeResourceForStore(input.tool, input.resource) }
-            : {}),
+        ...(safeResource ? { resource: safeResource } : {}),
+        ...(input.action ? { action: input.action } : {}),
+        ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+        ...(input.auditRequestId ? { auditRequestId: input.auditRequestId } : {}),
         status: 'pending',
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(now + (input.ttlMs ?? DEFAULT_TTL_MS)).toISOString(),
@@ -180,6 +190,7 @@ export async function setApprovalDecision(
     requestId: string,
     decision: 'approved' | 'denied',
     approvalPath?: string,
+    auditPath?: string,
 ): Promise<ApprovalRecord | null> {
     const store = await readStore(approvalPath);
     const changedByExpiry = expireOldApprovals(store);
@@ -195,6 +206,33 @@ export async function setApprovalDecision(
     record.status = decision;
     record.decidedAt = new Date().toISOString();
     await writeStore(store, approvalPath);
+
+    if (record.auditRequestId && record.action) {
+        try {
+            await appendAuditEvent(
+                {
+                    type: 'approval_decision',
+                    requestId: record.auditRequestId,
+                    tool: record.tool,
+                    action: record.action,
+                    resource: record.resource,
+                    deviceId: record.deviceId,
+                    ruleId: record.ruleId,
+                    approvalRequestId: record.id,
+                    approvalDecision: decision,
+                },
+                auditPath,
+            );
+        } catch (error) {
+            // The approval decision itself is authoritative; a logging failure
+            // must not undo or silently change the user's decision.
+            console.error(
+                'Desktop Commander prototype approval audit write failed:',
+                error instanceof Error ? error.message : String(error),
+            );
+        }
+    }
+
     return record;
 }
 

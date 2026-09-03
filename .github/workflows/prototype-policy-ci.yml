@@ -35,7 +35,7 @@ jobs:
       - name: Run focused policy tests
         shell: bash
         run: |
-          for test_file in test/test-tier-policy*.js; do
+          for test_file in test/test-tier-*.js; do
             node "$test_file"
           done
 

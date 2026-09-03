@@ -151,6 +151,9 @@ export async function applyPolicyGate(
                     args,
                     ruleId: evaluation.matchedRuleId,
                     resource: evaluation.resource,
+                    action: evaluation.action,
+                    deviceId: evaluation.deviceId,
+                    auditRequestId,
                 },
                 approvalPath,
             );
