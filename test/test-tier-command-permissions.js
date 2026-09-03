@@ -45,6 +45,36 @@ try {
     'Unrelated git command should remain allowed'
   );
 
+  assert.strictEqual(
+    (await preflightToolRequest(
+      'start_process',
+      { command: 'cd /tmp && git push origin main', timeout_ms: 5000 },
+      policyFile
+    )).decision,
+    'require_approval',
+    'Managed command should be detected inside a chained shell command'
+  );
+
+  assert.strictEqual(
+    (await preflightToolRequest(
+      'start_process',
+      { command: 'echo "$(git push origin main)"', timeout_ms: 5000 },
+      policyFile
+    )).decision,
+    'require_approval',
+    'Managed command should be detected inside command substitution'
+  );
+
+  assert.strictEqual(
+    (await preflightToolRequest(
+      'start_process',
+      { command: 'git push-notes', timeout_ms: 5000 },
+      policyFile
+    )).decision,
+    'allow',
+    'Managed command prefixes must stop at token boundaries'
+  );
+
   await setCommandPermission('npm publish', 'blocked', policyFile);
 
   assert.strictEqual(
