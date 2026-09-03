@@ -166,6 +166,43 @@ try {
   );
   assert.strictEqual(invalidFolder.status, 400);
 
+  const commandResponse = await fetch(
+    `${controlCenter.url}api/policy/commands`,
+    {
+      method: 'POST',
+      headers: {
+        'X-DC-Control-Token': 'test-control-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        commandPrefix: 'git push',
+        permission: 'approval_required',
+      }),
+    }
+  );
+  assert.strictEqual(commandResponse.status, 200);
+  const commandState = await commandResponse.json();
+  assert.deepStrictEqual(commandState.commandPermissions, [{
+    commandPrefix: 'git push',
+    permission: 'approval_required',
+  }]);
+
+  const invalidCommand = await fetch(
+    `${controlCenter.url}api/policy/commands`,
+    {
+      method: 'POST',
+      headers: {
+        'X-DC-Control-Token': 'test-control-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        commandPrefix: '',
+        permission: 'blocked',
+      }),
+    }
+  );
+  assert.strictEqual(invalidCommand.status, 400);
+
   const stateAfterFolder = await fetch(`${controlCenter.url}api/state`, {
     headers: { 'X-DC-Control-Token': 'test-control-token' },
   }).then((response) => response.json());
