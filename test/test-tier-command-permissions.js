@@ -42,10 +42,10 @@ try {
   );
   assert.strictEqual(
     unrelatedGit.decision,
-    'require_approval',
-    'Unmatched Pro terminal commands should fall back to the paid-tier approval baseline'
+    'allow',
+    'Unmatched Full Access terminal commands should remain allowed'
   );
-  assert.strictEqual(unrelatedGit.matchedRuleId, 'tier:paid:terminal');
+  assert.strictEqual(unrelatedGit.matchedRuleId, undefined);
 
   for (const command of [
     'echo ready && git push origin main',
@@ -92,12 +92,12 @@ try {
   );
   assert.strictEqual(
     tokenBoundary.decision,
-    'require_approval',
-    'Non-matching command prefixes should fall back to the paid-tier baseline'
+    'allow',
+    'Non-matching command prefixes should remain allowed under Full Access'
   );
   assert.strictEqual(
     tokenBoundary.matchedRuleId,
-    'tier:paid:terminal',
+    undefined,
     'git push must not accidentally match git push-notes'
   );
 
@@ -120,12 +120,12 @@ try {
   );
   assert.strictEqual(
     npmBoundary.decision,
-    'require_approval',
-    'Non-matching npm command should fall back to the paid-tier baseline'
+    'allow',
+    'Non-matching npm commands should remain allowed under Full Access'
   );
   assert.strictEqual(
     npmBoundary.matchedRuleId,
-    'tier:paid:terminal',
+    undefined,
     'npm publish must not accidentally match npm publisher-info'
   );
 

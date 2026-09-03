@@ -40,8 +40,19 @@ try {
       { command: 'echo hello', timeout_ms: 5000 },
       policyFile
     )).decision,
+    'allow',
+    'Pro Full Access should not require approval for terminal execution by default'
+  );
+
+  await setCommandPermission('git status', 'approval_required', policyFile);
+  assert.strictEqual(
+    (await preflightToolRequest(
+      'start_process',
+      { command: 'git status', timeout_ms: 5000 },
+      policyFile
+    )).decision,
     'require_approval',
-    'Pro terminal execution should require approval by default'
+    'An explicit command restriction must still apply under Full Access'
   );
 
   await setCommandPermission('git status', 'allow', policyFile);

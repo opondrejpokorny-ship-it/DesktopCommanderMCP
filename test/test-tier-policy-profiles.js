@@ -101,19 +101,42 @@ try {
     rules: [],
   });
 
-  const fullAccessTerminal = await preflightToolRequest(
+  for (const [tool, args] of [
+    ['start_process', { command: 'npm test', timeout_ms: 5000 }],
+    ['kill_process', { pid: 1234 }],
+    ['set_config_value', { key: 'telemetryEnabled', value: false }],
+  ]) {
+    assert.strictEqual(
+      (await preflightToolRequest(tool, args, fullAccess)).decision,
+      'allow',
+      `Full Access should not add a default approval prompt for ${tool}`
+    );
+  }
+
+  const fullAccessExplicitRestriction = await writePolicy('full-access-explicit-restriction.json', {
+    version: 1,
+    tier: 'pro',
+    profile: 'full_access',
+    rules: [{
+      id: 'explicit-terminal-approval',
+      action: 'terminal.execute',
+      decision: 'require_approval',
+    }],
+  });
+
+  const explicitlyRestrictedTerminal = await preflightToolRequest(
     'start_process',
     { command: 'npm test', timeout_ms: 5000 },
-    fullAccess
+    fullAccessExplicitRestriction
   );
   assert.strictEqual(
-    fullAccessTerminal.decision,
+    explicitlyRestrictedTerminal.decision,
     'require_approval',
-    'Full Access keeps broad filesystem access, but paid tiers still protect terminal execution'
+    'Full Access must still honor explicit user restrictions'
   );
   assert.strictEqual(
-    fullAccessTerminal.matchedRuleId,
-    'tier:paid:terminal'
+    explicitlyRestrictedTerminal.matchedRuleId,
+    'explicit-terminal-approval'
   );
 
   const safeWithOverride = await writePolicy('safe-override.json', {
