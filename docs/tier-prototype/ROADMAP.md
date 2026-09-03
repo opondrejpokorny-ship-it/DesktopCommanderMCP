@@ -281,3 +281,21 @@ These remain product ideas, not first-prototype requirements:
 - Full private/self-hosted Remote MCP relay implementation.
 - Enterprise SSO / centralized RBAC.
 - Background autonomous workers.
+
+
+## Open-core packaging milestone — VERIFIED ON TASK BRANCH
+
+The owner-presentation slice now proves both sides of the intended open-core architecture:
+
+1. **Free is a real artifact, not a hidden Pro switch.** A Free-only entry point compiles the shared core into an npm tarball whose file manifest excludes prototype/commercial policy, approval, Control Center and Team-audit implementation. CI installs that tarball in a clean consumer directory and exercises real MCP read/write plus Free progress behavior.
+2. **Pro/Team compose over the same core.** The existing prototype entry point adds the entitlement/policy adapter over the same shared runtime. Pro approval storage/policy no longer imports Team audit storage; Team audit is injected through an `AuditSink` only when the audit capability is present.
+
+The CI proof preserves the `.tgz` and `package-manifest.json` as a 30-day GitHub Actions artifact for presentation/review.
+
+Remaining before a physical public/private repository split:
+- production signed/server-verified entitlement authority,
+- private commercial implementation/distribution boundary for newly proprietary code,
+- release/version compatibility contract between public core and commercial package,
+- final decision on Free quota/allowance based on usage data.
+
+This milestone intentionally does **not** merge prototype code to `main`, publish an npm package, enable billing, or deploy a production entitlement service.
