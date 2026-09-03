@@ -12,6 +12,21 @@ const protectedWrite = {
   decision: 'require_approval'
 };
 
+
+const protectedMove = {
+  id: 'production-move',
+  action: 'filesystem.move',
+  resourcePrefix: '/projects/production',
+  decision: 'require_approval'
+};
+
+const blockedRead = {
+  id: 'secrets-read-block',
+  action: 'filesystem.read',
+  resourcePrefix: '/projects/secrets',
+  decision: 'deny'
+};
+
 const deviceBlockedWrite = {
   id: 'server-write-block',
   action: 'filesystem.write',
@@ -115,12 +130,84 @@ assert.strictEqual(
 
 assert.strictEqual(
   evaluateToolRequestPolicy(
+    'edit_block',
+    {
+      file_path: '/projects/production/app.ts',
+      old_string: 'old',
+      new_string: 'new'
+    },
+    { tier: 'pro', rules: [protectedWrite] }
+  ).decision,
+  'require_approval',
+  'edit_block must enforce folder write rules using file_path'
+);
+
+assert.strictEqual(
+  evaluateToolRequestPolicy(
+    'write_pdf',
+    {
+      path: '/projects/source/input.pdf',
+      content: '# Report',
+      outputPath: '/projects/production/report.pdf'
+    },
+    { tier: 'pro', rules: [protectedWrite] }
+  ).decision,
+  'require_approval',
+  'write_pdf must enforce folder write rules on outputPath'
+);
+
+assert.strictEqual(
+  evaluateToolRequestPolicy(
+    'move_file',
+    {
+      source: '/projects/staging/app.ts',
+      destination: '/projects/production/app.ts'
+    },
+    { tier: 'pro', rules: [protectedMove] }
+  ).decision,
+  'require_approval',
+  'move_file must evaluate its destination as well as its source'
+);
+
+assert.strictEqual(
+  evaluateToolRequestPolicy(
+    'read_multiple_files',
+    {
+      paths: [
+        '/projects/public/readme.md',
+        '/projects/secrets/token.txt'
+      ]
+    },
+    { tier: 'pro', rules: [blockedRead] }
+  ).decision,
+  'deny',
+  'read_multiple_files must stop if any requested file is blocked'
+);
+
+for (const [tool, args] of [
+  ['list_directory', { path: '/projects/secrets' }],
+  ['get_file_info', { path: '/projects/secrets/token.txt' }],
+  ['start_search', { path: '/projects/secrets', pattern: 'token', searchType: 'content' }],
+]) {
+  assert.strictEqual(
+    evaluateToolRequestPolicy(
+      tool,
+      args,
+      { tier: 'pro', rules: [blockedRead] }
+    ).decision,
+    'deny',
+    `${tool} must enforce filesystem.read folder rules`
+  );
+}
+
+assert.strictEqual(
+  evaluateToolRequestPolicy(
     'get_config',
     {},
     { tier: 'pro', rules: [] }
   ).decision,
   'allow',
-  'Unmapped read-only tools should remain allowed'
+  'Unmapped non-filesystem tools should remain allowed'
 );
 
 console.log('✅ Tool policy normalization tests passed');
