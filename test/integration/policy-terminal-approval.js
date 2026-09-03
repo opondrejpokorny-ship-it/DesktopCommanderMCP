@@ -1,5 +1,3 @@
-[Reading 155 lines from start (total: 155 lines, 0 remaining)]
-
 /**
  * End-to-end terminal policy integration test.
  *
@@ -155,5 +153,3 @@ try {
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

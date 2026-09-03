@@ -1,5 +1,3 @@
-[Reading 286 lines from start (total: 286 lines, 0 remaining)]
-
 import { evaluatePolicy } from './policy-engine.js';
 import {
     DesktopCommanderTier,
@@ -286,5 +284,3 @@ export function evaluateToolRequestPolicy(
         options,
     );
 }
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

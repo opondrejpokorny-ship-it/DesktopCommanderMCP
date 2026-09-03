@@ -1,5 +1,3 @@
-[Reading 41 lines from start (total: 41 lines, 0 remaining)]
-
 export type DesktopCommanderTier = 'free' | 'pro' | 'team';
 
 export type PolicyProfile =
@@ -41,5 +39,3 @@ export interface PolicyEvaluation {
     decision: PolicyDecision;
     matchedRuleId?: string;
 }
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

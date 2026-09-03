@@ -1,5 +1,3 @@
-[Reading 240 lines from start (total: 240 lines, 0 remaining)]
-
 /**
  * RED -> GREEN tests for built-in policy profiles.
  */
@@ -240,5 +238,3 @@ try {
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

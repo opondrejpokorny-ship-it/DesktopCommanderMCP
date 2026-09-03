@@ -1,5 +1,3 @@
-[Reading 209 lines from start (total: 209 lines, 0 remaining)]
-
 # Free / Pro / Team Prototype Architecture
 
 ## Goal
@@ -209,5 +207,3 @@ The first functional demo should be deliberately small:
 7. Audit log shows request -> approval -> execution.
 
 Once this works end-to-end, expand to commands and multiple devices.
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

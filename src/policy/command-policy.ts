@@ -1,5 +1,3 @@
-[Reading 293 lines from start (total: 293 lines, 0 remaining)]
-
 import path from 'node:path';
 
 function splitShellWords(segment: string): string[] {
@@ -293,5 +291,3 @@ function commandMatchesPrefixInternal(
 export function commandMatchesPrefix(command: string, prefix: string): boolean {
     return commandMatchesPrefixInternal(command, prefix, 0);
 }
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

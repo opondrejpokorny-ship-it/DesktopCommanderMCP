@@ -1,5 +1,3 @@
-[Reading 279 lines from start (total: 279 lines, 0 remaining)]
-
 # Free / Pro / Team Prototype Roadmap
 
 ## Principle
@@ -279,5 +277,3 @@ These remain product ideas, not first-prototype requirements:
 - Full private/self-hosted Remote MCP relay implementation.
 - Enterprise SSO / centralized RBAC.
 - Background autonomous workers.
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

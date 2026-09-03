@@ -1,5 +1,3 @@
-[Reading 197 lines from start (total: 197 lines, 0 remaining)]
-
 /**
  * Real MCP regression coverage for restriction-bypass hardening.
  */
@@ -197,5 +195,3 @@ try {
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

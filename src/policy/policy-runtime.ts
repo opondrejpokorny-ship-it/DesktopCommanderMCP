@@ -1,5 +1,3 @@
-[Reading 840 lines from start (total: 840 lines, 0 remaining)]
-
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -840,5 +838,3 @@ export async function preflightToolRequest(
         ...(evaluation.resource ? { resource: evaluation.resource } : {}),
     };
 }
-
-[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]
