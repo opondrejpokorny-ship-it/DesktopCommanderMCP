@@ -39,4 +39,13 @@ for (const required of [
   );
 }
 
+const manifest = JSON.parse(
+  await fs.readFile(path.join(root, 'manifest.template.json'), 'utf8'),
+);
+assert.ok(
+  Array.isArray(manifest.tools) &&
+    manifest.tools.some((tool) => tool?.name === 'active_work_registry'),
+  'manifest.template.json must package the active_work_registry MCP tool',
+);
+
 console.log('✅ Active Work Registry skill contract passed');
