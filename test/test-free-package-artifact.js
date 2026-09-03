@@ -117,6 +117,22 @@ try {
       /FREE_PACKAGE_CORE_OK/,
     );
 
+    const writeTarget = path.join(homeDir, 'free-write-smoke.txt');
+    const write = await client.callTool({
+      name: 'write_file',
+      arguments: {
+        path: writeTarget,
+        content: 'FREE_PACKAGE_WRITE_OK',
+        mode: 'rewrite',
+      },
+    });
+    assert.ok(!write.isError, JSON.stringify(write));
+    assert.strictEqual(
+      await fs.readFile(writeTarget, 'utf8'),
+      'FREE_PACKAGE_WRITE_OK',
+      'Installed Free package should retain upstream write access without commercial approval code',
+    );
+
     const progress = await client.callTool({
       name: 'report_task_progress',
       arguments: {

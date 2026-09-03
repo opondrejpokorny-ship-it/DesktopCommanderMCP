@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./.artifacts/free/build",
+    "declaration": false,
+    "diagnostics": false,
+    "extendedDiagnostics": false,
+    "listEmittedFiles": false
+  },
+  "files": [
+    "src/free-index.ts"
+  ],
+  "include": [],
+  "exclude": []
+}
