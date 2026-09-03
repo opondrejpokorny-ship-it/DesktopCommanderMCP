@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
-import { appendAuditEvent } from './audit-store.js';
+import type { AuditSink } from './audit-sink.js';
 import { PolicyAction } from './types.js';
 
 export type ApprovalStatus =
@@ -190,7 +190,7 @@ export async function setApprovalDecision(
     requestId: string,
     decision: 'approved' | 'denied',
     approvalPath?: string,
-    auditPath?: string,
+    auditSink?: AuditSink,
 ): Promise<ApprovalRecord | null> {
     const store = await readStore(approvalPath);
     const changedByExpiry = expireOldApprovals(store);
@@ -209,8 +209,7 @@ export async function setApprovalDecision(
 
     if (record.auditRequestId && record.action) {
         try {
-            await appendAuditEvent(
-                {
+            await auditSink?.append({
                     type: 'approval_decision',
                     requestId: record.auditRequestId,
                     tool: record.tool,
@@ -220,9 +219,7 @@ export async function setApprovalDecision(
                     ruleId: record.ruleId,
                     approvalRequestId: record.id,
                     approvalDecision: decision,
-                },
-                auditPath,
-            );
+                });
         } catch (error) {
             // The approval decision itself is authoritative; a logging failure
             // must not undo or silently change the user's decision.
