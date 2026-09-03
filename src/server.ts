@@ -65,7 +65,16 @@ import {
 import { getConfig, setConfigValue } from './tools/config.js';
 import { getUsageStats } from './tools/usage.js';
 import { buildProgressReport } from './progress/progress-reporter.js';
-import { loadPolicyRuntimeConfig } from './policy/policy-runtime.js';
+import { applyCoreSafetyGate } from './runtime/core-safety.js';
+import {
+    getRuntimeServices,
+    resolveRuntimeAccess,
+    type RuntimeAccess,
+} from './runtime/runtime-services.js';
+import type {
+    RuntimePolicyGateResult,
+    RuntimePolicyHook,
+} from './runtime/policy-hook.js';
 import { giveFeedbackToDesktopCommander } from './tools/feedback.js';
 import { getPrompts } from './tools/prompts.js';
 import { projectWorkflow } from './tools/project-workflow.js';
@@ -85,7 +94,6 @@ import {
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
-import { applyPolicyGate, recordPolicyExecutionResult } from './policy/policy-gate.js';
 import {
     calculateReturnedBytes,
     calculateWritePayloadBytes,
@@ -1341,13 +1349,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
 
-    // Prototype access-control layer. An ALLOW decision continues into the
-    // existing Desktop Commander handlers and guardrails unchanged. DENY or
-    // REQUIRE_APPROVAL returns before any tool side effect can occur.
-    const policyGate = await applyPolicyGate(name, args);
+    // Shared workflow control-plane safety stays active in every composition,
+    // including the open-source Free build.
+    const coreSafetyGate = await applyCoreSafetyGate(name, args);
+    if (!coreSafetyGate.allowed) {
+        return coreSafetyGate.result!;
+    }
+
+    // Commercial policy is injected through runtime services. The shared server
+    // never imports the commercial policy implementation directly.
+    let runtimeAccess: RuntimeAccess;
+    let runtimePolicyHook: RuntimePolicyHook;
+    let policyGate: RuntimePolicyGateResult;
+    try {
+        runtimeAccess = await resolveRuntimeAccess();
+        runtimePolicyHook = getRuntimeServices().policyHook;
+        policyGate = await runtimePolicyHook.preflight(
+            name,
+            args,
+            runtimeAccess.capabilities,
+        );
+    } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+            content: [{
+                type: 'text',
+                text:
+                    'Desktop Commander entitlement/policy configuration error. ' +
+                    `No action was executed. ${reason}`,
+            }],
+            isError: true,
+        };
+    }
+
     if (!policyGate.allowed) {
         return policyGate.result!;
     }
+
     const startTime = Date.now();
     // Hoisted above the try so the finally block can read them when emitting the
     // server_call_tool completion event (duration + status), even on the crash path.
@@ -1458,8 +1496,10 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             case "report_task_progress":
                 try {
                     const progressArgs = ReportTaskProgressArgsSchema.parse(args ?? {});
-                    const policy = await loadPolicyRuntimeConfig();
-                    const progress = buildProgressReport(progressArgs, policy.tier);
+                    const progress = buildProgressReport(progressArgs, {
+                        tier: runtimeAccess.entitlement.tier,
+                        includeEta: runtimeAccess.capabilities.has('progress.eta'),
+                    });
                     result = {
                         content: [{
                             type: "text",
@@ -1801,12 +1841,21 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         // agent-driven tool calls.
         const durationMs = Date.now() - startTime;
 
-        await recordPolicyExecutionResult(
-            policyGate,
-            name,
-            isError ? 'failure' : 'success',
-            durationMs,
-        );
+        if (runtimePolicyHook.recordExecution) {
+            try {
+                await runtimePolicyHook.recordExecution(
+                    policyGate,
+                    name,
+                    isError ? 'failure' : 'success',
+                    durationMs,
+                );
+            } catch (error) {
+                logToStderr(
+                    'warning',
+                    `Policy execution audit failed: ${error instanceof Error ? error.message : String(error)}`,
+                );
+            }
+        }
 
         if (name !== 'track_ui_event') {
             capture_call_tool('server_call_tool', {

@@ -9,12 +9,18 @@ import {
     PolicyDecision,
 } from './types.js';
 
+export interface PolicyGateOptions {
+    allowDeviceScope?: boolean;
+    auditEnabled?: boolean;
+}
+
 export interface PolicyGateResult {
     allowed: boolean;
     decision: PolicyDecision;
     matchedRuleId?: string;
     result?: ServerResult;
     auditRequestId?: string;
+    auditEnabled?: boolean;
     tier?: DesktopCommanderTier;
     action?: PolicyAction;
     resource?: string;
@@ -30,13 +36,15 @@ function policyResult(text: string): ServerResult {
 
 function gateMetadata(
     evaluation: PolicyPreflightResult,
-    auditRequestId?: string,
+    auditRequestId: string | undefined,
+    auditEnabled: boolean,
 ): Pick<
     PolicyGateResult,
-    'auditRequestId' | 'tier' | 'action' | 'resource' | 'deviceId'
+    'auditRequestId' | 'auditEnabled' | 'tier' | 'action' | 'resource' | 'deviceId'
 > {
     return {
         ...(auditRequestId ? { auditRequestId } : {}),
+        auditEnabled,
         tier: evaluation.tier,
         ...(evaluation.action ? { action: evaluation.action } : {}),
         ...(evaluation.resource ? { resource: evaluation.resource } : {}),
@@ -49,10 +57,16 @@ async function appendTeamPolicyAudit(
     requestId: string | undefined,
     tool: string,
     decision: PolicyDecision,
+    auditEnabled: boolean,
     auditPath?: string,
     approvalRequestId?: string,
 ): Promise<void> {
-    if (evaluation.tier !== 'team' || !evaluation.action || !requestId) {
+    if (
+        !auditEnabled ||
+        evaluation.tier !== 'team' ||
+        !evaluation.action ||
+        !requestId
+    ) {
         return;
     }
 
@@ -94,11 +108,18 @@ export async function applyPolicyGate(
     policyPath?: string,
     approvalPath?: string,
     auditPath?: string,
+    options: PolicyGateOptions = {},
 ): Promise<PolicyGateResult> {
     try {
-        const evaluation = await preflightToolRequest(tool, args, policyPath);
+        const auditEnabled = options.auditEnabled ?? true;
+        const evaluation = await preflightToolRequest(
+            tool,
+            args,
+            policyPath,
+            { allowDeviceScope: options.allowDeviceScope },
+        );
         const auditRequestId =
-            evaluation.tier === 'team' && evaluation.action
+            auditEnabled && evaluation.tier === 'team' && evaluation.action
                 ? randomUUID()
                 : undefined;
 
@@ -108,6 +129,7 @@ export async function applyPolicyGate(
                 auditRequestId,
                 tool,
                 'allow',
+                auditEnabled,
                 auditPath,
             );
 
@@ -115,7 +137,7 @@ export async function applyPolicyGate(
                 allowed: true,
                 decision: 'allow',
                 matchedRuleId: evaluation.matchedRuleId,
-                ...gateMetadata(evaluation, auditRequestId),
+                ...gateMetadata(evaluation, auditRequestId, auditEnabled),
             };
         }
 
@@ -133,6 +155,7 @@ export async function applyPolicyGate(
                     auditRequestId,
                     tool,
                     'allow',
+                    auditEnabled,
                     auditPath,
                     consumedApproval.id,
                 );
@@ -141,7 +164,7 @@ export async function applyPolicyGate(
                     allowed: true,
                     decision: 'allow',
                     matchedRuleId: evaluation.matchedRuleId,
-                    ...gateMetadata(evaluation, auditRequestId),
+                    ...gateMetadata(evaluation, auditRequestId, auditEnabled),
                 };
             }
 
@@ -163,6 +186,7 @@ export async function applyPolicyGate(
                 auditRequestId,
                 tool,
                 'require_approval',
+                auditEnabled,
                 auditPath,
                 pending.id,
             );
@@ -175,7 +199,7 @@ export async function applyPolicyGate(
                 allowed: false,
                 decision: 'require_approval',
                 matchedRuleId: evaluation.matchedRuleId,
-                ...gateMetadata(evaluation, auditRequestId),
+                ...gateMetadata(evaluation, auditRequestId, auditEnabled),
                 result: policyResult(
                     `Approval required before ${tool} can run. No action was executed. Approval request ID: ${pending.id}.${ruleText}`,
                 ),
@@ -187,6 +211,7 @@ export async function applyPolicyGate(
             auditRequestId,
             tool,
             'deny',
+            auditEnabled,
             auditPath,
         );
 
@@ -198,7 +223,7 @@ export async function applyPolicyGate(
             allowed: false,
             decision: 'deny',
             matchedRuleId: evaluation.matchedRuleId,
-            ...gateMetadata(evaluation, auditRequestId),
+            ...gateMetadata(evaluation, auditRequestId, auditEnabled),
             result: policyResult(
                 `Blocked by Desktop Commander access policy. No action was executed.${ruleText}`,
             ),
@@ -224,6 +249,7 @@ export async function recordPolicyExecutionResult(
     auditPath?: string,
 ): Promise<void> {
     if (
+        !gate.auditEnabled ||
         gate.tier !== 'team' ||
         !gate.auditRequestId ||
         !gate.action

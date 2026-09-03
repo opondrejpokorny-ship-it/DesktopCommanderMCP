@@ -18,7 +18,7 @@ const base = {
   estimatedRemainingMinutes: 25,
 };
 
-const free = buildProgressReport(base, 'free');
+const free = buildProgressReport(base, { tier: 'free', includeEta: false });
 assert.strictEqual(free.tier, 'free');
 assert.strictEqual(free.percentRemaining, 40);
 assert.strictEqual(free.percentComplete, 60);
@@ -28,7 +28,7 @@ assert.ok(!('estimatedRemainingText' in free), 'Free must not expose paid ETA te
 assert.doesNotMatch(free.message, /minute|hour|ETA|estimated time/i);
 
 for (const tier of ['pro', 'team']) {
-  const paid = buildProgressReport(base, tier);
+  const paid = buildProgressReport(base, { tier, includeEta: true });
   assert.strictEqual(paid.tier, tier);
   assert.strictEqual(paid.percentRemaining, 40);
   assert.strictEqual(paid.percentComplete, 60);
@@ -42,14 +42,14 @@ const rounded = buildProgressReport({
   percentRemaining: 35,
   currentPhase: 'integration',
   estimatedRemainingMinutes: 82,
-}, 'pro');
+}, { tier: 'pro', includeEta: true });
 assert.strictEqual(rounded.estimatedRemainingText, 'about 1 h 20 min');
 
 const complete = buildProgressReport({
   percentRemaining: 0,
   currentPhase: 'complete',
   estimatedRemainingMinutes: 0,
-}, 'team');
+}, { tier: 'team', includeEta: true });
 assert.strictEqual(complete.percentComplete, 100);
 assert.strictEqual(complete.estimatedRemainingText, 'complete');
 

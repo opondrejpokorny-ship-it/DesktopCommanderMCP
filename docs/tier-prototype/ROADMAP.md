@@ -198,10 +198,11 @@ Native lifecycle progress reporting is tier-aware through the real MCP tool
 - Pro / Team → approximate percent remaining + estimated time remaining.
 
 The estimate is intentionally rounded and described as approximate, never as a
-deadline or guarantee. The tool reads the actual configured policy tier
-server-side, so Free output strips ETA even if an agent supplies one. Progress
-arguments contain only percentage, a short phase label, and the numeric time
-estimate; file contents and raw terminal commands are not needed.
+deadline or guarantee. The tool now asks the runtime CapabilityRegistry for
+`progress.eta`; the current prototype entitlement provider derives that capability
+from the local tier simulator, while a Free entitlement omits it. Progress arguments
+contain only percentage, a short phase label, and the numeric time estimate; file
+contents and raw terminal commands are not needed.
 
 The progress reporter is protected by contract tests plus a real MCP stdio test
 for `tools/list` and `tools/call`.
