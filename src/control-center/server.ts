@@ -270,6 +270,7 @@ function renderControlCenterHtml(token: string): string {
           </label>
         </div>
         <div id="policy"></div>
+        <div id="detected-device"></div>
         <div class="folder-editor">
           <input id="folder-path" type="text" autocomplete="off" placeholder="/projects/production or C:\\Projects\\Production">
           <select id="folder-permission">
@@ -385,6 +386,42 @@ function renderControlCenterHtml(token: string): string {
         ));
         root.appendChild(row);
       }
+    }
+
+    function renderDetectedDevice(identity, policy) {
+      const root = document.getElementById('detected-device');
+      root.replaceChildren();
+
+      if (!identity || !identity.deviceId) {
+        return;
+      }
+
+      const row = createElement('div', undefined, 'row');
+      row.appendChild(createElement('div', 'Detected Remote Device', 'subtle'));
+      row.appendChild(createElement('code', identity.deviceId, 'row-title'));
+
+      if (policy.deviceId !== identity.deviceId) {
+        const actions = createElement('div', undefined, 'actions');
+        const useButton = createElement('button', 'Use this device');
+        useButton.addEventListener('click', async () => {
+          try {
+            await api('/api/policy/device', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ deviceId: identity.deviceId })
+            });
+            await refresh();
+          } catch (error) {
+            document.getElementById('status').textContent = error.message;
+          }
+        });
+        actions.appendChild(useButton);
+        row.appendChild(actions);
+      } else {
+        row.appendChild(createElement('div', 'Active policy identity', 'meta'));
+      }
+
+      root.appendChild(row);
     }
 
     function renderFolderPermissions(items) {
@@ -529,13 +566,17 @@ function renderControlCenterHtml(token: string): string {
         const state = await api('/api/state');
         document.getElementById('tier').textContent = state.policy.tier || 'free';
         document.getElementById('profile').textContent = state.policy.profile || 'full_access';
-        document.getElementById('device').textContent = state.policy.deviceId || 'local';
+        document.getElementById('device').textContent =
+          state.policy.deviceId ||
+          (state.detectedDeviceIdentity && state.detectedDeviceIdentity.deviceId) ||
+          'local';
         document.getElementById('pending-count').textContent = String(state.pendingApprovals.length);
         document.getElementById('connection').textContent = 'Local · connected';
         status.textContent = '';
         renderApprovals(state.pendingApprovals);
         renderAudit(state.auditEvents);
         renderPolicy(state.policy);
+        renderDetectedDevice(state.detectedDeviceIdentity, state.policy);
         renderFolderPermissions(state.folderPermissions || []);
         renderCommandPermissions(state.commandPermissions || []);
       } catch (error) {
