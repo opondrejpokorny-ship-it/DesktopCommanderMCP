@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - prototype/free-pro-team
+      - feat/opportunistic-work-scheduling
   pull_request:
     branches:
       - main
