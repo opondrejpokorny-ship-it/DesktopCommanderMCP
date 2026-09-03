@@ -12,11 +12,14 @@ import {
 import { listAuditEvents } from '../policy/audit-store.js';
 import {
     isAbsolutePolicyPath,
+    isCommandPermission,
     isDesktopCommanderTier,
     isFolderPermission,
     isPolicyProfile,
+    listCommandPermissions,
     listFolderPermissions,
     loadPolicyRuntimeConfig,
+    setCommandPermission,
     setFolderPermission,
     setPolicyProfile,
     setPolicyTier,
@@ -497,6 +500,7 @@ async function buildState(): Promise<Record<string, unknown>> {
         generatedAt: new Date().toISOString(),
         policy,
         folderPermissions: listFolderPermissions(policy),
+        commandPermissions: listCommandPermissions(policy),
         pendingApprovals: approvals.filter((record) => record.status === 'pending'),
         auditEvents,
     };
@@ -593,6 +597,60 @@ export async function startControlCenter(
                     policy,
                     folderPermissions: listFolderPermissions(policy),
                 });
+                return;
+            }
+
+            if (
+                request.method === 'POST' &&
+                requestUrl.pathname === '/api/policy/commands'
+            ) {
+                if (!mutationOriginIsLocal(request)) {
+                    writeJson(response, 403, { error: 'Invalid mutation origin.' });
+                    return;
+                }
+
+                let body: unknown;
+                try {
+                    body = await readJsonBody(request);
+                } catch {
+                    writeJson(response, 400, { error: 'Invalid JSON request body.' });
+                    return;
+                }
+
+                if (!body || typeof body !== 'object') {
+                    writeJson(response, 400, { error: 'Invalid command permission request.' });
+                    return;
+                }
+
+                const commandPrefix = (body as Record<string, unknown>).commandPrefix;
+                const permissionValue = (body as Record<string, unknown>).permission;
+
+                if (
+                    typeof commandPrefix !== 'string' ||
+                    !commandPrefix.trim() ||
+                    typeof permissionValue !== 'string' ||
+                    !isCommandPermission(permissionValue)
+                ) {
+                    writeJson(response, 400, { error: 'Invalid command permission.' });
+                    return;
+                }
+
+                try {
+                    const policy = await setCommandPermission(
+                        commandPrefix,
+                        permissionValue,
+                    );
+                    writeJson(response, 200, {
+                        policy,
+                        commandPermissions: listCommandPermissions(policy),
+                    });
+                } catch (error) {
+                    writeJson(response, 400, {
+                        error: error instanceof Error
+                            ? error.message
+                            : 'Invalid command permission.',
+                    });
+                }
                 return;
             }
 
