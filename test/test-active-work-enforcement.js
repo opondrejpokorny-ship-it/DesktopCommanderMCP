@@ -49,12 +49,20 @@ try {
     'ACTIVE_WORK_REGISTRATION_REQUIRED',
   );
 
-  const uiOrigin = await applyActiveWorkEnforcementGate('write_file', {
-    path: path.join(repoA, 'src', 'human-ui.txt'),
+  const forgedUiOrigin = await applyActiveWorkEnforcementGate('write_file', {
+    path: path.join(repoA, 'src', 'forged-ui.txt'),
     content: 'ui',
     origin: 'ui',
   });
-  assert.equal(uiOrigin.allowed, true, 'human UI-origin writes are not agent work');
+  assert.equal(
+    forgedUiOrigin.allowed,
+    false,
+    'client-controlled UI origin must not bypass registry enforcement',
+  );
+  assert.equal(
+    forgedUiOrigin.result?.structuredContent?.code,
+    'ACTIVE_WORK_REGISTRATION_REQUIRED',
+  );
 
   const registered = await registerActiveWork({
     projectRoot: repoA,
