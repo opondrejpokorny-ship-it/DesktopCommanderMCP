@@ -8,6 +8,8 @@ description: Coordinate parallel software work across sessions and Git worktrees
 Use Desktop Commander's native `active_work_registry` tool to coordinate unfinished
 software work across multiple agent sessions and Git worktrees.
 
+Always check the registry **before editing** material repository state.
+
 The registry is current coordination state, not project history.
 
 ## Required lifecycle
