@@ -184,6 +184,8 @@ Runtime:
 - required-stage completion checks
 - provider/agent evidence references with bounded summaries and credential redaction
 - server initialization guidance encouraging automatic start/resume on material software work
+- external-wait scheduling with `waiting_external`, dependency-aware ready stages, and conservative read-only opportunistic recommendations
+- optional `git_head` evidence scope so commit changes invalidate stale readiness evidence
 
 Security/privacy:
 
@@ -212,7 +214,7 @@ for `tools/list` and `tools/call`.
 
 The skill is byte-identical across root, Claude and Cursor packaging and protected by distribution/contract tests.
 
-Verification includes focused coordinator/security tests and a real built MCP stdio test proving instructions, tools/list registration, start→record→finish, filesystem tamper blocking, profile integrity and authorization rejection.
+Verification includes focused coordinator/security tests and real built MCP stdio coverage for instructions, tools/list registration, start→record→finish, filesystem tamper blocking, profile integrity, authorization rejection, and the CI-wait → planned read-only audit → dependency re-check flow.
 
 **Exit criteria: PASS.** A later agent/session can resume from persistent verified lifecycle state instead of relying only on prose guidance or rediscovering the project from scratch.
 
