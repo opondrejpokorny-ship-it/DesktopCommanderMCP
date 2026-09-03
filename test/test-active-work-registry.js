@@ -1,7 +1,7 @@
 /**
  * RED -> GREEN tests for the native active work registry.
  */
-// Assertions unchanged; this line triggers exact-head GREEN CI after the atomic implementation commit.
+// Assertions unchanged; this line triggers exact-head GREEN CI after integrating the current authoritative prototype baseline.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
