@@ -45,6 +45,24 @@ try {
     'Unrelated git command should remain allowed'
   );
 
+  for (const command of [
+    'echo ready && git push origin main',
+    '/usr/bin/git push origin main',
+    'GIT_TRACE=1 git push origin main',
+    'git.exe push origin main',
+    'echo "$(git push origin main)"',
+  ]) {
+    assert.strictEqual(
+      (await preflightToolRequest(
+        'start_process',
+        { command, timeout_ms: 5000 },
+        policyFile
+      )).decision,
+      'require_approval',
+      `Token-aware matcher should catch: ${command}`
+    );
+  }
+
   assert.strictEqual(
     (await preflightToolRequest(
       'start_process',
