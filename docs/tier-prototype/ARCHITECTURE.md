@@ -144,6 +144,7 @@ Suggested fields:
 - Preserve current low-friction behavior.
 - Existing Desktop Commander guardrails remain.
 - No new approval workflow by default.
+- Observational usage metering may count returned/write payload bytes, but no quota is enforced yet.
 
 ### Pro
 
@@ -162,6 +163,14 @@ Suggested fields:
 - Central approvals.
 - Cross-device audit log.
 - Private/self-hosted remote relay remains a future architecture concept, not part of the first prototype.
+
+## Usage metering
+
+The prototype now has a separate observational metering layer. It records only aggregate `returnedBytes`, `writtenBytes`, and `periodStartedAt`; it does not persist tool contents or arguments and currently enforces no quota.
+
+Returned usage is measured from the finalized MCP `ServerResult`, not from physical disk I/O. Accepted write/edit payload bytes are counted only for successful content-changing tools. Meter persistence is concurrency-safe across local MCP server processes and fails open so a meter problem cannot block Desktop Commander while no entitlement limit exists.
+
+See `USAGE_METERING.md` for exact accounting semantics and deferred quota decisions.
 
 ## First vertical slice
 

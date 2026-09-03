@@ -79,6 +79,11 @@ import {
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
 import { applyPolicyGate, recordPolicyExecutionResult } from './policy/policy-gate.js';
+import {
+    calculateReturnedBytes,
+    calculateWritePayloadBytes,
+    recordUsage,
+} from './utils/usageMetering.js';
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -1249,19 +1254,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 import * as handlers from './handlers/index.js';
 import { ServerResult } from './types.js';
 
+async function recordAgentToolUsage(
+    request: CallToolRequest,
+    result: ServerResult,
+): Promise<void> {
+    try {
+        const writtenBytes = result.isError
+            ? 0
+            : calculateWritePayloadBytes(
+                request.params.name,
+                request.params.arguments,
+            );
+        await recordUsage({
+            returnedBytes: calculateReturnedBytes(result),
+            writtenBytes,
+        });
+    } catch (error) {
+        // Metering is observational only for now. It must never block or alter
+        // Desktop Commander behavior if its local counter file is unavailable.
+        logToStderr(
+            'warning',
+            `Usage metering failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+    }
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<ServerResult> => {
     const args = request.params.arguments;
     // Calls fired programmatically by the widget UIs (file preview, config
     // editor) carry origin:'ui'. They are real tool executions but not agent
-    // actions, so they must produce zero telemetry: running them inside the
-    // UI-origin capture context makes capture() drop every event they raise
-    // (server_call_tool, server_read_file, server_edit_block, ...). Deliberate
-    // UI interactions are tracked separately via mcp_ui_event.
+    // actions, so they must produce zero telemetry and zero agent usage.
     const isUiOriginCall = !!(args && typeof args === 'object' && (args as any).origin === 'ui');
     if (isUiOriginCall) {
         return runInUiOriginCallContext(() => handleCallToolRequest(request));
     }
-    return handleCallToolRequest(request);
+
+    const result = await handleCallToolRequest(request);
+    await recordAgentToolUsage(request, result);
+    return result;
 });
 
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
