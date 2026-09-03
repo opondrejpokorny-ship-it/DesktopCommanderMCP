@@ -81,6 +81,10 @@ try {
   await client.connect(transport, { timeout: 30000 });
 
   try {
+    assert.match(client.getInstructions() ?? '', /waiting_external/);
+    assert.match(client.getInstructions() ?? '', /recommendedStage/);
+    assert.match(client.getInstructions() ?? '', /read-only work/i);
+
     const started = await client.callTool({
       name: 'project_workflow',
       arguments: {
