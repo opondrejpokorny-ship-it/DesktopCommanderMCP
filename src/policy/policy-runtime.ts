@@ -40,6 +40,17 @@ export interface FolderPermissionEntry {
     permission: Exclude<FolderPermission, 'inherit'>;
 }
 
+export type CommandPermission =
+    | 'inherit'
+    | 'allow'
+    | 'approval_required'
+    | 'blocked';
+
+export interface CommandPermissionEntry {
+    commandPrefix: string;
+    permission: Exclude<CommandPermission, 'inherit'>;
+}
+
 export const POLICY_FILE = path.join(
     USER_HOME,
     '.claude-server-commander',
@@ -60,6 +71,15 @@ export const VALID_FOLDER_PERMISSIONS = new Set<FolderPermission>([
     'approval_required',
     'blocked',
 ]);
+
+export const VALID_COMMAND_PERMISSIONS = new Set<CommandPermission>([
+    'inherit',
+    'allow',
+    'approval_required',
+    'blocked',
+]);
+
+const MANAGED_COMMAND_RULE_PREFIX = 'control-center-command:';
 
 const MANAGED_FOLDER_RULE_PREFIX = 'control-center-folder:';
 const MANAGED_FOLDER_ACTIONS: PolicyAction[] = [
@@ -186,6 +206,90 @@ export function isPolicyProfile(value: string): value is PolicyProfile {
 
 export function isFolderPermission(value: string): value is FolderPermission {
     return VALID_FOLDER_PERMISSIONS.has(value as FolderPermission);
+}
+
+export function isCommandPermission(value: string): value is CommandPermission {
+    return VALID_COMMAND_PERMISSIONS.has(value as CommandPermission);
+}
+
+function normalizeCommandPrefix(value: string): string {
+    const normalized = value.trim();
+    if (!normalized) {
+        throw new Error('Command prefix must not be empty');
+    }
+    if (normalized.includes('\0')) {
+        throw new Error('Command prefix must not contain NUL bytes');
+    }
+    if (normalized.length > 512) {
+        throw new Error('Command prefix is too long');
+    }
+    return normalized;
+}
+
+function managedCommandRuleId(commandPrefix: string): string {
+    const digest = crypto
+        .createHash('sha256')
+        .update(commandPrefix)
+        .digest('hex')
+        .slice(0, 16);
+    return `${MANAGED_COMMAND_RULE_PREFIX}${digest}`;
+}
+
+function commandDecision(
+    permission: Exclude<CommandPermission, 'inherit'>,
+): PolicyRule['decision'] {
+    if (permission === 'blocked') {
+        return 'deny';
+    }
+    if (permission === 'approval_required') {
+        return 'require_approval';
+    }
+    return 'allow';
+}
+
+export function listCommandPermissions(
+    config: PolicyRuntimeConfig,
+): CommandPermissionEntry[] {
+    return config.rules
+        .filter(
+            (rule) =>
+                rule.id.startsWith(MANAGED_COMMAND_RULE_PREFIX) &&
+                rule.action === 'terminal.execute' &&
+                !!rule.resourcePrefix,
+        )
+        .map((rule) => ({
+            commandPrefix: rule.resourcePrefix!,
+            permission:
+                rule.decision === 'deny'
+                    ? 'blocked'
+                    : rule.decision === 'require_approval'
+                        ? 'approval_required'
+                        : 'allow',
+        }));
+}
+
+export async function setCommandPermission(
+    commandPrefix: string,
+    permission: CommandPermission,
+    policyPath?: string,
+): Promise<PolicyRuntimeConfig> {
+    const normalized = normalizeCommandPrefix(commandPrefix);
+    const ruleId = managedCommandRuleId(normalized);
+
+    return updatePolicyRuntimeConfig((current) => {
+        const rules = current.rules.filter((rule) => rule.id !== ruleId);
+
+        if (permission !== 'inherit') {
+            rules.unshift({
+                id: ruleId,
+                action: 'terminal.execute',
+                resourcePrefix: normalized,
+                decision: commandDecision(permission),
+            });
+        }
+
+        return { ...current, rules };
+    }, policyPath);
 }
 
 export function isAbsolutePolicyPath(value: string): boolean {
