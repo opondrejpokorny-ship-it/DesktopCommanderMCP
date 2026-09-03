@@ -16,6 +16,11 @@ import {
   listApprovals,
 } from '../dist/policy/approval-store.js';
 import { listAuditEvents } from '../dist/policy/audit-store.js';
+import {
+  listCommandPermissions,
+  listFolderPermissions,
+  loadPolicyRuntimeConfig,
+} from '../dist/policy/policy-runtime.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +92,58 @@ try {
   assert.strictEqual(policy.tier, 'team');
   assert.strictEqual(policy.profile, 'safe_developer');
   assert.strictEqual(policy.deviceId, 'server-1');
+
+  const tierResult = runCli('set-tier', 'pro');
+  assert.strictEqual(tierResult.status, 0, tierResult.stderr);
+  assert.strictEqual(JSON.parse(tierResult.stdout).tier, 'pro');
+
+  const profileResult = runCli('set-profile', 'read_only');
+  assert.strictEqual(profileResult.status, 0, profileResult.stderr);
+  assert.strictEqual(JSON.parse(profileResult.stdout).profile, 'read_only');
+
+  const deviceResult = runCli('set-device', 'device-from-control-center');
+  assert.strictEqual(deviceResult.status, 0, deviceResult.stderr);
+  assert.strictEqual(
+    JSON.parse(deviceResult.stdout).deviceId,
+    'device-from-control-center'
+  );
+
+  const folderResult = runCli(
+    'set-folder',
+    'approval_required',
+    '/projects/production',
+    'device-from-control-center'
+  );
+  assert.strictEqual(folderResult.status, 0, folderResult.stderr);
+
+  const commandResult = runCli(
+    'set-command',
+    'approval_required',
+    'git push',
+    'device-from-control-center'
+  );
+  assert.strictEqual(commandResult.status, 0, commandResult.stderr);
+
+  const updatedPolicy = await loadPolicyRuntimeConfig(policyFile);
+  assert.strictEqual(updatedPolicy.tier, 'pro');
+  assert.strictEqual(updatedPolicy.profile, 'read_only');
+  assert.strictEqual(updatedPolicy.deviceId, 'device-from-control-center');
+
+  assert.deepStrictEqual(listFolderPermissions(updatedPolicy), [{
+    path: '/projects/production',
+    permission: 'approval_required',
+    deviceId: 'device-from-control-center',
+  }]);
+
+  assert.deepStrictEqual(listCommandPermissions(updatedPolicy), [{
+    commandPrefix: 'git push',
+    permission: 'approval_required',
+    deviceId: 'device-from-control-center',
+  }]);
+
+  const invalidTier = runCli('set-tier', 'enterprise');
+  assert.notStrictEqual(invalidTier.status, 0);
+  assert.match(invalidTier.stderr, /invalid.*tier/i);
 
   const missingResult = runCli('approve', 'not-a-real-request-id');
   assert.notStrictEqual(missingResult.status, 0);
