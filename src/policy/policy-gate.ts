@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { ServerResult } from '../types.js';
 import { createPendingApproval, consumeApprovedAction } from './approval-store.js';
-import { appendAuditEvent } from './audit-store.js';
+import type { AuditSink } from './audit-sink.js';
 import { PolicyPreflightResult, preflightToolRequest } from './policy-runtime.js';
 import {
     DesktopCommanderTier,
@@ -12,6 +12,7 @@ import {
 export interface PolicyGateOptions {
     allowDeviceScope?: boolean;
     auditEnabled?: boolean;
+    auditSink?: AuditSink;
 }
 
 export interface PolicyGateResult {
@@ -21,6 +22,7 @@ export interface PolicyGateResult {
     result?: ServerResult;
     auditRequestId?: string;
     auditEnabled?: boolean;
+    auditSink?: AuditSink;
     tier?: DesktopCommanderTier;
     action?: PolicyAction;
     resource?: string;
@@ -38,13 +40,15 @@ function gateMetadata(
     evaluation: PolicyPreflightResult,
     auditRequestId: string | undefined,
     auditEnabled: boolean,
+    auditSink: AuditSink | undefined,
 ): Pick<
     PolicyGateResult,
-    'auditRequestId' | 'auditEnabled' | 'tier' | 'action' | 'resource' | 'deviceId'
+    'auditRequestId' | 'auditEnabled' | 'auditSink' | 'tier' | 'action' | 'resource' | 'deviceId'
 > {
     return {
         ...(auditRequestId ? { auditRequestId } : {}),
         auditEnabled,
+        ...(auditSink ? { auditSink } : {}),
         tier: evaluation.tier,
         ...(evaluation.action ? { action: evaluation.action } : {}),
         ...(evaluation.resource ? { resource: evaluation.resource } : {}),
@@ -58,11 +62,12 @@ async function appendTeamPolicyAudit(
     tool: string,
     decision: PolicyDecision,
     auditEnabled: boolean,
-    auditPath?: string,
+    auditSink: AuditSink | undefined,
     approvalRequestId?: string,
 ): Promise<void> {
     if (
         !auditEnabled ||
+        !auditSink ||
         evaluation.tier !== 'team' ||
         !evaluation.action ||
         !requestId
@@ -71,8 +76,7 @@ async function appendTeamPolicyAudit(
     }
 
     try {
-        await appendAuditEvent(
-            {
+        await auditSink.append({
                 type: 'policy_decision',
                 requestId,
                 tool,
@@ -82,9 +86,7 @@ async function appendTeamPolicyAudit(
                 decision,
                 ruleId: evaluation.matchedRuleId,
                 approvalRequestId,
-            },
-            auditPath,
-        );
+            });
     } catch (error) {
         // Audit logging is observability in this prototype, not an OS security
         // boundary. A logging failure must not silently alter a policy decision.
@@ -111,7 +113,8 @@ export async function applyPolicyGate(
     options: PolicyGateOptions = {},
 ): Promise<PolicyGateResult> {
     try {
-        const auditEnabled = options.auditEnabled ?? true;
+        const auditSink = options.auditSink;
+        const auditEnabled = (options.auditEnabled ?? true) && !!auditSink;
         const evaluation = await preflightToolRequest(
             tool,
             args,
@@ -130,14 +133,14 @@ export async function applyPolicyGate(
                 tool,
                 'allow',
                 auditEnabled,
-                auditPath,
+                auditSink,
             );
 
             return {
                 allowed: true,
                 decision: 'allow',
                 matchedRuleId: evaluation.matchedRuleId,
-                ...gateMetadata(evaluation, auditRequestId, auditEnabled),
+                ...gateMetadata(evaluation, auditRequestId, auditEnabled, auditSink),
             };
         }
 
@@ -156,7 +159,7 @@ export async function applyPolicyGate(
                     tool,
                     'allow',
                     auditEnabled,
-                    auditPath,
+                    auditSink,
                     consumedApproval.id,
                 );
 
@@ -164,7 +167,7 @@ export async function applyPolicyGate(
                     allowed: true,
                     decision: 'allow',
                     matchedRuleId: evaluation.matchedRuleId,
-                    ...gateMetadata(evaluation, auditRequestId, auditEnabled),
+                    ...gateMetadata(evaluation, auditRequestId, auditEnabled, auditSink),
                 };
             }
 
@@ -187,7 +190,7 @@ export async function applyPolicyGate(
                 tool,
                 'require_approval',
                 auditEnabled,
-                auditPath,
+                auditSink,
                 pending.id,
             );
 
@@ -199,7 +202,7 @@ export async function applyPolicyGate(
                 allowed: false,
                 decision: 'require_approval',
                 matchedRuleId: evaluation.matchedRuleId,
-                ...gateMetadata(evaluation, auditRequestId, auditEnabled),
+                ...gateMetadata(evaluation, auditRequestId, auditEnabled, auditSink),
                 result: policyResult(
                     `Approval required before ${tool} can run. No action was executed. Approval request ID: ${pending.id}.${ruleText}`,
                 ),
@@ -212,7 +215,7 @@ export async function applyPolicyGate(
             tool,
             'deny',
             auditEnabled,
-            auditPath,
+            auditSink,
         );
 
         const ruleText = evaluation.matchedRuleId
@@ -223,7 +226,7 @@ export async function applyPolicyGate(
             allowed: false,
             decision: 'deny',
             matchedRuleId: evaluation.matchedRuleId,
-            ...gateMetadata(evaluation, auditRequestId, auditEnabled),
+            ...gateMetadata(evaluation, auditRequestId, auditEnabled, auditSink),
             result: policyResult(
                 `Blocked by Desktop Commander access policy. No action was executed.${ruleText}`,
             ),
@@ -246,7 +249,6 @@ export async function recordPolicyExecutionResult(
     tool: string,
     outcome: 'success' | 'failure',
     durationMs: number,
-    auditPath?: string,
 ): Promise<void> {
     if (
         !gate.auditEnabled ||
@@ -258,8 +260,7 @@ export async function recordPolicyExecutionResult(
     }
 
     try {
-        await appendAuditEvent(
-            {
+        await gate.auditSink?.append({
                 type: 'execution_result',
                 requestId: gate.auditRequestId,
                 tool,
@@ -268,9 +269,7 @@ export async function recordPolicyExecutionResult(
                 deviceId: gate.deviceId,
                 outcome,
                 durationMs,
-            },
-            auditPath,
-        );
+            });
     } catch (error) {
         console.error(
             'Desktop Commander prototype audit write failed:',

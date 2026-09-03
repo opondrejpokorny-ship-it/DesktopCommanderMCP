@@ -224,3 +224,19 @@ The first functional demo should be deliberately small:
 7. Audit log shows request -> approval -> execution.
 
 Once this works end-to-end, expand to commands and multiple devices.
+
+
+## Open-core composition proof
+
+The prototype now has two composition entry points over the same shared Desktop Commander runtime:
+
+- `src/index.ts` installs the prototype entitlement/policy adapters and represents the current Pro/Team showcase composition.
+- `src/free-index.ts` uses the shared runtime defaults (`FreeEntitlementProvider` + `NoopPolicyHook`) and has no dependency on `src/policy` or `src/prototype`.
+
+`scripts/build-free-package.cjs` compiles the Free entry point into an isolated build graph, stages a deliberately non-publishable npm package, runs a commercial-path denylist before packing, and writes a package manifest. The resulting tarball is then installed into a clean temporary consumer project and exercised through the real MCP SDK.
+
+The verified Free artifact does not contain `dist/policy/`, `dist/prototype/`, `dist/control-center/`, or the access-control CLI. Importing the approval implementation from the installed package must fail with module-not-found. The installed package still proves the intended Free product story by performing real MCP read and write side effects and by reporting lifecycle progress without paid ETA.
+
+Pro approvals are also no longer coupled to Team audit storage. Approval/policy code depends only on an injected `AuditSink` contract. The prototype supplies a file-backed sink only when the entitlement exposes the audit capability. This lets Pro approval behavior operate with Team audit implementation absent while Team retains policy/approval/execution audit events.
+
+This is a packaging and composition proof, not production licensing or DRM. The current prototype commercial implementation has already been published in this public showcase repository, and signed production entitlements/private commercial distribution remain later phases.

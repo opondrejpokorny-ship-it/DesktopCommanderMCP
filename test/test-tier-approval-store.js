@@ -12,7 +12,7 @@ import {
   consumeApprovedAction,
   listApprovals,
 } from '../dist/policy/approval-store.js';
-import { listAuditEvents } from '../dist/policy/audit-store.js';
+import { FileAuditSink, listAuditEvents } from '../dist/policy/audit-store.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-approval-store-test-'));
 const approvalFile = path.join(tempDir, 'approvals.json');
@@ -61,7 +61,7 @@ try {
     pending.id,
     'approved',
     approvalFile,
-    auditFile
+    new FileAuditSink(auditFile)
   );
   assert.strictEqual(approved?.status, 'approved');
 

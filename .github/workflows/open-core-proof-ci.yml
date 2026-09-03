@@ -1,0 +1,69 @@
+name: Open Core Composition Proof
+
+on:
+  push:
+    branches:
+      - prototype/free-pro-team
+      - feat/free-commercial-composition-proof
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-core-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  composition-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build prototype
+        run: npm run build
+
+      - name: Pro approval without Team audit storage
+        run: node test/test-open-core-boundaries.js
+
+      - name: Build, inspect, install and smoke Free package
+        run: node test/test-free-package-artifact.js
+
+      - name: Preserve Free presentation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-commander-free-proof-${{ github.sha }}
+          path: |
+            .artifacts/free/*.tgz
+            .artifacts/free/package-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Run all tier and security regressions
+        shell: bash
+        run: |
+          for test_file in test/test-tier-*.js; do
+            node "$test_file"
+          done
+
+      - name: Run all real MCP policy regressions
+        shell: bash
+        run: |
+          for test_file in test/integration/policy-*.js; do
+            node "$test_file"
+          done
+
+      - name: Diff whitespace check
+        run: git diff --check origin/prototype/free-pro-team...HEAD
