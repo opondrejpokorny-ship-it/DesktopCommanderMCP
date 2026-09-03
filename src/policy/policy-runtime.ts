@@ -474,6 +474,21 @@ export async function setPolicyProfile(
     );
 }
 
+export async function setPolicyDeviceId(
+    deviceId: string,
+    policyPath?: string,
+): Promise<PolicyRuntimeConfig> {
+    const normalized = deviceId.trim();
+    if (!normalized || normalized.length > 256 || /[\u0000-\u001f]/.test(normalized)) {
+        throw new Error('Invalid device ID');
+    }
+
+    return updatePolicyRuntimeConfig(
+        (current) => ({ ...current, deviceId: normalized }),
+        policyPath,
+    );
+}
+
 export async function loadPolicyRuntimeConfig(
     policyPath?: string,
 ): Promise<PolicyRuntimeConfig> {
