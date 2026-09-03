@@ -128,6 +128,22 @@ try {
     ),
   );
 
+  const refusedConflict = await registerActiveWork({
+    projectRoot: worktreeB,
+    title: 'Conflicting workflow mutation',
+    scope: 'Attempt a second mutation in the same workflow area',
+    affectedAreas: ['src/workflow'],
+    riskAreas: ['persistence'],
+    nextAction: 'Must not be registered',
+  });
+  assert.equal(refusedConflict.registered, false);
+  assert.equal(refusedConflict.guidance, 'wait_or_read_only');
+  assert.equal(
+    (await listActiveWork({ projectRoot: repoRoot })).entries.length,
+    1,
+    'conflicting register must not create another active entry',
+  );
+
   const safe = await checkActiveWork({
     projectRoot: worktreeB,
     title: 'Independent docs update',
@@ -183,6 +199,14 @@ try {
   assert.match(persisted, /\[REDACTED\]/);
   assert.ok(!persisted.includes('rawCommand'));
   assert.ok(!persisted.includes('fileContents'));
+
+  await fs.writeFile(registryPath, '{"version":1,"entries":', 'utf8');
+  await assert.rejects(
+    () => listActiveWork({ projectRoot: worktreeB }),
+    /Invalid active work registry|Refusing to continue/i,
+    'corrupt registry must fail closed instead of resetting active work',
+  );
+  await fs.writeFile(registryPath, persisted, 'utf8');
 
   const restartScript = `
     const mod = await import(process.argv[1]);

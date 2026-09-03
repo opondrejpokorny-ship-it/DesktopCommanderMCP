@@ -3,7 +3,22 @@ name: Active Work Registry RED-GREEN
 on:
   push:
     branches:
+      - prototype/free-pro-team
       - feat/active-work-registry
+    paths:
+      - 'src/workflow/active-work-registry.ts'
+      - 'src/tools/active-work-registry.ts'
+      - 'src/tools/active-work-registry-schema.ts'
+      - 'src/server.ts'
+      - 'skills/active-work-registry/**'
+      - 'plugins/claude/skills/active-work-registry/**'
+      - 'plugins/cursor/skills/active-work-registry/**'
+      - 'plugins/claude/README.md'
+      - 'plugins/cursor/README.md'
+      - 'test/test-active-work-registry.js'
+      - 'test/test-active-work-registry-skill.js'
+      - 'test/integration/active-work-registry.js'
+      - '.github/workflows/active-work-registry-red-green.yml'
   pull_request:
     branches:
       - prototype/free-pro-team
@@ -25,29 +40,36 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: active-work-registry-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   active-work-registry:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Run focused RED-GREEN suite
+      - name: Run focused registry + real MCP tests
+        run: |
+          node test/test-active-work-registry.js
+          node test/test-active-work-registry-skill.js
+          node test/integration/active-work-registry.js
+      - name: Run full unit regression suite
+        run: npm test
+      - name: Check diff whitespace
         shell: bash
         run: |
-          set +e
-          node test/test-active-work-registry.js
-          core=$?
-          node test/test-active-work-registry-skill.js
-          skill=$?
-          node test/integration/active-work-registry.js
-          integration=$?
-          set -e
-          if [ "$core" -ne 0 ] || [ "$skill" -ne 0 ] || [ "$integration" -ne 0 ]; then
-            exit 1
+          if [ "$GITHUB_REF_NAME" = "prototype/free-pro-team" ]; then
+            git diff --check HEAD^ HEAD
+          else
+            git diff --check origin/prototype/free-pro-team...HEAD
           fi

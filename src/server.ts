@@ -392,7 +392,7 @@ ${CMD_PREFIX_DESCRIPTION}`,
                 annotations: {
                     title: "Active Work Registry",
                     readOnlyHint: false,
-                    destructiveHint: false,
+                    destructiveHint: true,
                     openWorldHint: false,
                 },
             },
