@@ -179,6 +179,8 @@ function renderControlCenterHtml(token: string): string {
     button { border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 10px; padding: 8px 12px; background: Canvas; color: CanvasText; cursor: pointer; font-weight: 600; }
     button:hover { background: color-mix(in srgb, Canvas 90%, CanvasText 10%); }
     button:disabled { opacity: .5; cursor: wait; }
+    select { margin-left: 6px; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 9px; padding: 7px 9px; background: Canvas; color: CanvasText; }
+    .policy-controls { flex-wrap: wrap; margin-bottom: 10px; }
     .empty { opacity: .65; padding: 16px 0; }
     .status { min-height: 22px; margin: 0 0 12px; font-size: 13px; opacity: .8; }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
@@ -216,6 +218,22 @@ function renderControlCenterHtml(token: string): string {
 
       <section class="card policy">
         <h2>Active policy</h2>
+        <div class="actions policy-controls">
+          <label class="subtle">Tier
+            <select id="tier-select">
+              <option value="free">Free</option>
+              <option value="pro">Pro</option>
+              <option value="team">Team</option>
+            </select>
+          </label>
+          <label class="subtle">Profile
+            <select id="profile-select">
+              <option value="full_access">Full access</option>
+              <option value="safe_developer">Safe developer</option>
+              <option value="read_only">Read only</option>
+            </select>
+          </label>
+        </div>
         <div id="policy"></div>
         <p class="subtle">Raw file contents and terminal command text are not stored in approvals or audit records.</p>
       </section>
@@ -314,6 +332,8 @@ function renderControlCenterHtml(token: string): string {
     }
 
     function renderPolicy(policy) {
+      document.getElementById('tier-select').value = policy.tier || 'free';
+      document.getElementById('profile-select').value = policy.profile || 'full_access';
       const root = document.getElementById('policy');
       root.replaceChildren();
       const lines = [
@@ -329,6 +349,25 @@ function renderControlCenterHtml(token: string): string {
         root.appendChild(row);
       }
     }
+
+    async function changePolicy(kind, value) {
+      const status = document.getElementById('status');
+      status.textContent = 'Saving policy…';
+      try {
+        await api('/api/policy/' + kind + '/' + encodeURIComponent(value), { method: 'POST' });
+        await refresh();
+      } catch (error) {
+        status.textContent = error.message;
+        await refresh();
+      }
+    }
+
+    document.getElementById('tier-select').addEventListener('change', (event) => {
+      changePolicy('tier', event.target.value);
+    });
+    document.getElementById('profile-select').addEventListener('change', (event) => {
+      changePolicy('profile', event.target.value);
+    });
 
     async function refresh() {
       const status = document.getElementById('status');
