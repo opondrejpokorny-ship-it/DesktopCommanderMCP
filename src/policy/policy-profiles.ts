@@ -1,4 +1,29 @@
-import { PolicyProfile, PolicyRule } from './types.js';
+import { DesktopCommanderTier, PolicyProfile, PolicyRule } from './types.js';
+
+
+const PAID_TIER_BASELINE_RULES: readonly PolicyRule[] = [
+    {
+        id: 'tier:paid:terminal',
+        action: 'terminal.execute',
+        decision: 'require_approval',
+    },
+    {
+        id: 'tier:paid:process-terminate',
+        action: 'process.terminate',
+        decision: 'require_approval',
+    },
+    {
+        id: 'tier:paid:config',
+        action: 'config.change',
+        decision: 'require_approval',
+    },
+];
+
+export function getTierBaselineRules(
+    tier: DesktopCommanderTier,
+): readonly PolicyRule[] {
+    return tier === 'free' ? [] : PAID_TIER_BASELINE_RULES;
+}
 
 const SAFE_DEVELOPER_RULES: readonly PolicyRule[] = [
     {
