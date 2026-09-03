@@ -2,7 +2,18 @@
 
 import { listApprovals, setApprovalDecision } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
-import { loadPolicyRuntimeConfig } from '../policy/policy-runtime.js';
+import {
+    isCommandPermission,
+    isDesktopCommanderTier,
+    isFolderPermission,
+    isPolicyProfile,
+    loadPolicyRuntimeConfig,
+    setCommandPermission,
+    setFolderPermission,
+    setPolicyDeviceId,
+    setPolicyProfile,
+    setPolicyTier,
+} from '../policy/policy-runtime.js';
 
 function printJson(value: unknown): void {
     process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -14,7 +25,7 @@ function fail(message: string, exitCode = 1): never {
 }
 
 async function main(): Promise<void> {
-    const [command, value] = process.argv.slice(2);
+    const [command, value, second, third] = process.argv.slice(2);
 
     switch (command) {
         case 'approvals': {
@@ -46,6 +57,47 @@ async function main(): Promise<void> {
             return;
         }
 
+        case 'set-tier': {
+            if (!value || !isDesktopCommanderTier(value)) {
+                fail('Invalid policy tier. Use free, pro, or team.');
+            }
+            printJson(await setPolicyTier(value));
+            return;
+        }
+
+        case 'set-profile': {
+            if (!value || !isPolicyProfile(value)) {
+                fail('Invalid policy profile. Use full_access, safe_developer, or read_only.');
+            }
+            printJson(await setPolicyProfile(value));
+            return;
+        }
+
+        case 'set-device': {
+            if (!value) {
+                fail('Usage: access-control set-device <device-id>');
+            }
+            printJson(await setPolicyDeviceId(value));
+            return;
+        }
+
+        case 'set-folder': {
+            if (!value || !isFolderPermission(value) || !second) {
+                fail('Usage: access-control set-folder <permission> <absolute-path> [device-id]');
+            }
+            printJson(await setFolderPermission(second, value, undefined, third));
+            return;
+        }
+
+        case 'set-command': {
+            if (!value || !isCommandPermission(value) || !second) {
+                fail('Usage: access-control set-command <permission> <command-prefix> [device-id]');
+            }
+            printJson(await setCommandPermission(second, value, undefined, third));
+            return;
+        }
+
+
         case 'audit': {
             const events = await listAuditEvents();
             printJson(events);
@@ -65,6 +117,11 @@ async function main(): Promise<void> {
                     '  approve <request-id>   Approve one pending request',
                     '  deny <request-id>      Deny one pending request',
                     '  policy                 Show the active access policy',
+                    '  set-tier <tier>         Set free / pro / team',
+                    '  set-profile <profile>   Set full_access / safe_developer / read_only',
+                    '  set-device <device-id>  Bind policy identity to a device',
+                    '  set-folder <permission> <absolute-path> [device-id]',
+                    '  set-command <permission> <command-prefix> [device-id]',
                     '  audit                  Show recent Team audit events',
                     '',
                     'This CLI is intentionally outside the MCP tool surface.',
