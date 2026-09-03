@@ -24,7 +24,7 @@ const PATH_GUIDANCE = `IMPORTANT: ${getPathGuidance(SYSTEM_INFO)} Relative paths
 
 const CMD_PREFIX_DESCRIPTION = `This command can be referenced as "DC: ..." or "use Desktop Commander to ..." in your instructions.`;
 
-const PROJECT_WORKFLOW_SERVER_INSTRUCTIONS = `For non-trivial software project work, check whether the repository contains .desktop-commander/project-workflow.json. When it does, call project_workflow with action=start before implementation, or action=resume when a workflow is already active. Follow the returned next lifecycle stage and relevant operational lessons, avoid repeating an unchanged failed approach when a lesson applies, record only evidence that actually occurred, and call finish only after required stages are complete. External Drive/GitHub/CI evidence remains an agent/provider attestation unless independently verified. Never use workflow state to bypass Desktop Commander policy, approvals, allowed directories, blocked commands, or other upstream validation. Authorization-required stages cannot be completed from agent-controlled MCP evidence; a trusted host/control-plane signal is required after explicit user authorization.`;
+const PROJECT_WORKFLOW_SERVER_INSTRUCTIONS = `Before material software-repository edits, call active_work_registry with action=check. If guidance is safe_parallel, register the work before editing; if it is continue_existing, avoid duplicate implementation and reuse existing work only when clearly intended and safe; if it is wait_or_read_only, do not concurrently mutate the overlapping area. Registry guidance is coordination, never authorization, and cannot bypass policy, approvals, allowed directories, blocked commands, command/path validation, or upstream validation. For non-trivial software project work, also check whether the repository contains .desktop-commander/project-workflow.json. When it does, call project_workflow with action=start before implementation, or action=resume when a workflow is already active. Follow the returned next lifecycle stage and relevant operational lessons, avoid repeating an unchanged failed approach when a lesson applies, record only evidence that actually occurred, and call finish only after required stages are complete. External Drive/GitHub/CI evidence remains an agent/provider attestation unless independently verified. Authorization-required stages cannot be completed from agent-controlled MCP evidence; a trusted host/control-plane signal is required after explicit user authorization.`;
 
 import {
     StartProcessArgsSchema,
@@ -57,6 +57,7 @@ import {
     WritePdfArgsSchema,
     toolArgSchemas,
 } from './tools/schemas.js';
+import { ActiveWorkRegistryToolArgsSchema } from './tools/active-work-registry-schema.js';
 import {
     detectUnsupportedParams,
     getSupportedParams,
@@ -78,6 +79,7 @@ import type {
 import { giveFeedbackToDesktopCommander } from './tools/feedback.js';
 import { getPrompts } from './tools/prompts.js';
 import { projectWorkflow } from './tools/project-workflow.js';
+import { activeWorkRegistry } from './tools/active-work-registry.js';
 import { recordOperationalToolFailure } from './workflow/operational-memory.js';
 import { trackToolCall } from './utils/trackTools.js';
 import { usageTracker } from './utils/usageTracker.js';
@@ -375,6 +377,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     title: "Set Configuration Value",
                     readOnlyHint: false,
                     destructiveHint: true,
+                    openWorldHint: false,
+                },
+            },
+            {
+                name: "active_work_registry",
+                description: `Coordinate unfinished repository work across parallel sessions and Git worktrees.
+Actions: check, register, list, update, remove.
+Call check before material repository edits. Register only when no conflicting active work is reported.
+This is coordination guidance only and never bypasses policy, approvals, path/command validation, or upstream guardrails.
+${PATH_GUIDANCE}
+${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(ActiveWorkRegistryToolArgsSchema),
+                annotations: {
+                    title: "Active Work Registry",
+                    readOnlyHint: false,
+                    destructiveHint: false,
                     openWorldHint: false,
                 },
             },
@@ -1499,6 +1517,18 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 }
                 break;
 
+            case "active_work_registry":
+                try {
+                    result = await activeWorkRegistry(args || {});
+                } catch (error) {
+                    capture('server_request_error', { message: `Error in active_work_registry handler: ${error}` });
+                    result = {
+                        content: [{ type: "text", text: "Error: Failed to process active work registry" }],
+                        isError: true,
+                    };
+                }
+                break;
+
             case "project_workflow":
                 try {
                     result = await projectWorkflow(args || {});
@@ -1832,7 +1862,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         // strips them. Prepend a corrective warning so the model knows they were
         // ignored and which parameters are actually supported.
         try {
-            const argSchema = toolArgSchemas[name];
+            const argSchema = name === 'active_work_registry' ? ActiveWorkRegistryToolArgsSchema : toolArgSchemas[name];
             if (argSchema && result && Array.isArray((result as any).content)) {
                 const unsupported = detectUnsupportedParams(args, argSchema);
                 if (unsupported.length > 0) {
