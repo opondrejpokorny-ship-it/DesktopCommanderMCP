@@ -202,6 +202,7 @@ export async function consumeApprovedAction(
     tool: string,
     args: unknown,
     approvalPath?: string,
+    ruleId?: string,
 ): Promise<ApprovalRecord | null> {
     const store = await readStore(approvalPath);
     const changedByExpiry = expireOldApprovals(store);
@@ -210,7 +211,8 @@ export async function consumeApprovedAction(
     const record = store.approvals.find(
         (entry) =>
             entry.status === 'approved' &&
-            entry.fingerprint === fingerprint,
+            entry.fingerprint === fingerprint &&
+            (ruleId === undefined || entry.ruleId === ruleId),
     );
 
     if (!record) {
