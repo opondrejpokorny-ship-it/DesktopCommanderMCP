@@ -23,6 +23,16 @@ function renderWorkflowSummary(status: WorkflowStatus): string {
         lines.push('Warning: workflow profile changed after this task started.');
     }
 
+    if (status.operationalMemory.lessons.length > 0) {
+        lines.push('Relevant operational lessons from prior attempts:');
+        for (const item of status.operationalMemory.lessons) {
+            lines.push(
+                '- ' + item.lesson +
+                (item.occurrences > 1 ? ' (seen ' + item.occurrences + ' times)' : ''),
+            );
+        }
+    }
+
     if (status.nextStage) {
         lines.push(
             'Next lifecycle stage: ' + status.nextStage.id + ' — ' + status.nextStage.label,
