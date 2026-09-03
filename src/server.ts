@@ -78,6 +78,7 @@ import {
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
+import { applyPolicyGate } from './policy/policy-gate.js';
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -1265,6 +1266,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
 async function handleCallToolRequest(request: CallToolRequest): Promise<ServerResult> {
     const { name, arguments: args } = request.params;
+
+    // Prototype access-control layer. An ALLOW decision continues into the
+    // existing Desktop Commander handlers and guardrails unchanged. DENY or
+    // REQUIRE_APPROVAL returns before any tool side effect can occur.
+    const policyGate = await applyPolicyGate(name, args);
+    if (!policyGate.allowed) {
+        return policyGate.result!;
+    }
     const startTime = Date.now();
     // Hoisted above the try so the finally block can read them when emitting the
     // server_call_tool completion event (duration + status), even on the crash path.
