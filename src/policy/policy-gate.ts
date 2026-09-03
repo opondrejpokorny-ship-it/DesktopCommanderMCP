@@ -1,14 +1,24 @@
+import { randomUUID } from 'node:crypto';
 import { ServerResult } from '../types.js';
 import { createPendingApproval, consumeApprovedAction } from './approval-store.js';
-import { preflightToolRequest } from './policy-runtime.js';
-import { normalizeToolAction } from './tool-policy.js';
-import { PolicyDecision } from './types.js';
+import { appendAuditEvent } from './audit-store.js';
+import { PolicyPreflightResult, preflightToolRequest } from './policy-runtime.js';
+import {
+    DesktopCommanderTier,
+    PolicyAction,
+    PolicyDecision,
+} from './types.js';
 
 export interface PolicyGateResult {
     allowed: boolean;
     decision: PolicyDecision;
     matchedRuleId?: string;
     result?: ServerResult;
+    auditRequestId?: string;
+    tier?: DesktopCommanderTier;
+    action?: PolicyAction;
+    resource?: string;
+    deviceId?: string;
 }
 
 function policyResult(text: string): ServerResult {
@@ -16,6 +26,59 @@ function policyResult(text: string): ServerResult {
         content: [{ type: 'text', text }],
         isError: true,
     };
+}
+
+function gateMetadata(
+    evaluation: PolicyPreflightResult,
+    auditRequestId?: string,
+): Pick<
+    PolicyGateResult,
+    'auditRequestId' | 'tier' | 'action' | 'resource' | 'deviceId'
+> {
+    return {
+        ...(auditRequestId ? { auditRequestId } : {}),
+        tier: evaluation.tier,
+        ...(evaluation.action ? { action: evaluation.action } : {}),
+        ...(evaluation.resource ? { resource: evaluation.resource } : {}),
+        ...(evaluation.deviceId ? { deviceId: evaluation.deviceId } : {}),
+    };
+}
+
+async function appendTeamPolicyAudit(
+    evaluation: PolicyPreflightResult,
+    requestId: string | undefined,
+    tool: string,
+    decision: PolicyDecision,
+    auditPath?: string,
+    approvalRequestId?: string,
+): Promise<void> {
+    if (evaluation.tier !== 'team' || !evaluation.action || !requestId) {
+        return;
+    }
+
+    try {
+        await appendAuditEvent(
+            {
+                type: 'policy_decision',
+                requestId,
+                tool,
+                action: evaluation.action,
+                resource: evaluation.resource,
+                deviceId: evaluation.deviceId,
+                decision,
+                ruleId: evaluation.matchedRuleId,
+                approvalRequestId,
+            },
+            auditPath,
+        );
+    } catch (error) {
+        // Audit logging is observability in this prototype, not an OS security
+        // boundary. A logging failure must not silently alter a policy decision.
+        console.error(
+            'Desktop Commander prototype audit write failed:',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
 }
 
 /**
@@ -30,15 +93,29 @@ export async function applyPolicyGate(
     args: unknown,
     policyPath?: string,
     approvalPath?: string,
+    auditPath?: string,
 ): Promise<PolicyGateResult> {
     try {
         const evaluation = await preflightToolRequest(tool, args, policyPath);
+        const auditRequestId =
+            evaluation.tier === 'team' && evaluation.action
+                ? randomUUID()
+                : undefined;
 
         if (evaluation.decision === 'allow') {
+            await appendTeamPolicyAudit(
+                evaluation,
+                auditRequestId,
+                tool,
+                'allow',
+                auditPath,
+            );
+
             return {
                 allowed: true,
                 decision: 'allow',
                 matchedRuleId: evaluation.matchedRuleId,
+                ...gateMetadata(evaluation, auditRequestId),
             };
         }
 
@@ -51,22 +128,40 @@ export async function applyPolicyGate(
             );
 
             if (consumedApproval) {
+                await appendTeamPolicyAudit(
+                    evaluation,
+                    auditRequestId,
+                    tool,
+                    'allow',
+                    auditPath,
+                    consumedApproval.id,
+                );
+
                 return {
                     allowed: true,
                     decision: 'allow',
                     matchedRuleId: evaluation.matchedRuleId,
+                    ...gateMetadata(evaluation, auditRequestId),
                 };
             }
 
-            const normalized = normalizeToolAction(tool, args);
             const pending = await createPendingApproval(
                 {
                     tool,
                     args,
                     ruleId: evaluation.matchedRuleId,
-                    resource: normalized?.resource,
+                    resource: evaluation.resource,
                 },
                 approvalPath,
+            );
+
+            await appendTeamPolicyAudit(
+                evaluation,
+                auditRequestId,
+                tool,
+                'require_approval',
+                auditPath,
+                pending.id,
             );
 
             const ruleText = evaluation.matchedRuleId
@@ -77,11 +172,20 @@ export async function applyPolicyGate(
                 allowed: false,
                 decision: 'require_approval',
                 matchedRuleId: evaluation.matchedRuleId,
+                ...gateMetadata(evaluation, auditRequestId),
                 result: policyResult(
                     `Approval required before ${tool} can run. No action was executed. Approval request ID: ${pending.id}.${ruleText}`,
                 ),
             };
         }
+
+        await appendTeamPolicyAudit(
+            evaluation,
+            auditRequestId,
+            tool,
+            'deny',
+            auditPath,
+        );
 
         const ruleText = evaluation.matchedRuleId
             ? ` Policy rule: ${evaluation.matchedRuleId}.`
@@ -91,6 +195,7 @@ export async function applyPolicyGate(
             allowed: false,
             decision: 'deny',
             matchedRuleId: evaluation.matchedRuleId,
+            ...gateMetadata(evaluation, auditRequestId),
             result: policyResult(
                 `Blocked by Desktop Commander access policy. No action was executed.${ruleText}`,
             ),
@@ -105,5 +210,42 @@ export async function applyPolicyGate(
                 `Desktop Commander policy configuration error. No action was executed. ${reason}`,
             ),
         };
+    }
+}
+
+export async function recordPolicyExecutionResult(
+    gate: PolicyGateResult,
+    tool: string,
+    outcome: 'success' | 'failure',
+    durationMs: number,
+    auditPath?: string,
+): Promise<void> {
+    if (
+        gate.tier !== 'team' ||
+        !gate.auditRequestId ||
+        !gate.action
+    ) {
+        return;
+    }
+
+    try {
+        await appendAuditEvent(
+            {
+                type: 'execution_result',
+                requestId: gate.auditRequestId,
+                tool,
+                action: gate.action,
+                resource: gate.resource,
+                deviceId: gate.deviceId,
+                outcome,
+                durationMs,
+            },
+            auditPath,
+        );
+    } catch (error) {
+        console.error(
+            'Desktop Commander prototype audit write failed:',
+            error instanceof Error ? error.message : String(error),
+        );
     }
 }
