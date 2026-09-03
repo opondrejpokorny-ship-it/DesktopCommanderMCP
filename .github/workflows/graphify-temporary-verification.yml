@@ -1,0 +1,66 @@
+name: Graphify Temporary Verification
+
+on:
+  push:
+    branches:
+      - feat/graphify-local-discovery
+
+permissions:
+  contents: read
+
+jobs:
+  full-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Full DC2 test suite
+        run: npm test
+      - name: Diff whitespace check
+        run: |
+          git fetch origin prototype/free-pro-team:refs/remotes/origin/prototype/free-pro-team
+          git diff --check origin/prototype/free-pro-team...HEAD
+
+  windows-graphify-smoke:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Identify runner
+        shell: powershell
+        run: |
+          hostname
+          Write-Output "RUNNER_NAME=$env:RUNNER_NAME"
+      - name: Ensure authoritative prototype ref
+        shell: powershell
+        run: git fetch origin prototype/free-pro-team:refs/remotes/origin/prototype/free-pro-team
+      - name: Create local Graphify runtime
+        shell: powershell
+        run: |
+          if (Test-Path ".tools\graphify") { Remove-Item ".tools\graphify" -Recurse -Force }
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 -m venv .tools\graphify
+          } elseif (Get-Command python -ErrorAction SilentlyContinue) {
+            python -m venv .tools\graphify
+          } else {
+            throw "Python is not available on the Windows runner."
+          }
+          .\.tools\graphify\Scripts\python.exe -m pip install --disable-pip-version-check graphifyy==0.9.53
+      - name: Graphify code-only build
+        shell: cmd
+        run: scripts\graphify-local.cmd build
+      - name: Graphify god-nodes smoke
+        shell: cmd
+        run: scripts\graphify-local.cmd god-nodes
+      - name: Graphify tier-enforcement query smoke
+        shell: cmd
+        run: scripts\graphify-local.cmd query "where is tier access enforced?"
