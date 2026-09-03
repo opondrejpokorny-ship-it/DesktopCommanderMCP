@@ -14,6 +14,11 @@ import { capture } from './utils/capture.js';
 import { logToStderr, logger } from './utils/logger.js';
 import { runRemote } from './npm-scripts/remote.js';
 import { ensureChromeAvailable } from './tools/pdf/markdown.js';
+import { configurePrototypeRuntime } from './prototype/configure-prototype-runtime.js';
+
+// The public server defaults to Free/no-op commercial policy. This prototype
+// entry point explicitly installs the local tier simulator and commercial hook.
+configurePrototypeRuntime();
 
 // Store messages to defer until after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];

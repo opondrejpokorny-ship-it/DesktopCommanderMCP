@@ -753,15 +753,26 @@ export async function loadPolicyRuntimeConfig(
     }
 }
 
+export interface PolicyPreflightOptions {
+    allowDeviceScope?: boolean;
+}
+
 export async function preflightToolRequest(
     tool: string,
     args: unknown,
     policyPath?: string,
+    options: PolicyPreflightOptions = {},
 ): Promise<PolicyPreflightResult> {
     const config = await loadPolicyRuntimeConfig(policyPath);
     const normalizedActions = await canonicalizePolicyActions(
         normalizeToolActions(tool, args),
     );
+    const effectiveDeviceId = options.allowDeviceScope
+        ? config.deviceId
+        : undefined;
+    const explicitRules = options.allowDeviceScope
+        ? config.rules
+        : config.rules.filter((rule) => !rule.deviceId);
 
     const protectedEvaluation = await protectedControlPlaneEvaluation(
         config.tier,
@@ -774,7 +785,7 @@ export async function preflightToolRequest(
             ...protectedEvaluation,
             tier: config.tier,
             ...(config.profile ? { profile: config.profile } : {}),
-            ...(config.deviceId ? { deviceId: config.deviceId } : {}),
+            ...(effectiveDeviceId ? { deviceId: effectiveDeviceId } : {}),
         };
     }
 
@@ -786,7 +797,7 @@ export async function preflightToolRequest(
             normalizedActions,
             {
                 tier: config.tier,
-                deviceId: config.deviceId,
+                deviceId: effectiveDeviceId,
                 rules: getPolicyProfileRules('read_only'),
             },
         );
@@ -796,7 +807,7 @@ export async function preflightToolRequest(
                 ...ceilingEvaluation,
                 tier: config.tier,
                 profile: config.profile,
-                ...(config.deviceId ? { deviceId: config.deviceId } : {}),
+                ...(effectiveDeviceId ? { deviceId: effectiveDeviceId } : {}),
                 ...(ceilingEvaluation.action
                     ? { action: ceilingEvaluation.action }
                     : {}),
@@ -812,7 +823,7 @@ export async function preflightToolRequest(
     // behaves as its label promises. Filesystem resources and rule prefixes
     // are canonicalized first so symlinks/junctions cannot change policy scope.
     const effectiveRules = await canonicalizeFilesystemRules([
-        ...config.rules,
+        ...explicitRules,
         ...getPolicyProfileRules(config.profile),
         ...(config.profile === 'full_access'
             ? []
@@ -824,7 +835,7 @@ export async function preflightToolRequest(
         normalizedActions,
         {
             tier: config.tier,
-            deviceId: config.deviceId,
+            deviceId: effectiveDeviceId,
             rules: effectiveRules,
         },
     );
@@ -833,7 +844,7 @@ export async function preflightToolRequest(
         ...evaluation,
         tier: config.tier,
         ...(config.profile ? { profile: config.profile } : {}),
-        ...(config.deviceId ? { deviceId: config.deviceId } : {}),
+        ...(effectiveDeviceId ? { deviceId: effectiveDeviceId } : {}),
         ...(evaluation.action ? { action: evaluation.action } : {}),
         ...(evaluation.resource ? { resource: evaluation.resource } : {}),
     };

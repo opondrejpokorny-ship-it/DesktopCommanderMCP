@@ -1,4 +1,4 @@
-import type { DesktopCommanderTier } from '../policy/types.js';
+import type { ProductTier } from '../entitlements/capabilities.js';
 
 export interface ProgressReportInput {
     percentRemaining: number;
@@ -6,8 +6,13 @@ export interface ProgressReportInput {
     estimatedRemainingMinutes: number;
 }
 
+export interface ProgressAccess {
+    tier: ProductTier;
+    includeEta: boolean;
+}
+
 export interface ProgressReportBase {
-    tier: DesktopCommanderTier;
+    tier: ProductTier;
     percentRemaining: number;
     percentComplete: number;
     currentPhase: string;
@@ -56,7 +61,7 @@ export function formatEstimatedRemainingTime(minutes: number): string {
 
 export function buildProgressReport(
     input: ProgressReportInput,
-    tier: DesktopCommanderTier,
+    access: ProgressAccess,
 ): ProgressReport {
     const percentRemaining = normalizePercent(input.percentRemaining);
     const percentComplete = 100 - percentRemaining;
@@ -67,14 +72,14 @@ export function buildProgressReport(
     }
 
     const base: ProgressReportBase = {
-        tier,
+        tier: access.tier,
         percentRemaining,
         percentComplete,
         currentPhase,
         message: `${percentRemaining}% remaining. Current phase: ${currentPhase}.`,
     };
 
-    if (tier === 'free') {
+    if (!access.includeEta) {
         return base;
     }
 

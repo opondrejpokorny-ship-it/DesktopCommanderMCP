@@ -62,21 +62,36 @@ Policy Engine
 
 ## Best interception point
 
-The cleanest first interception point is the central `CallToolRequestSchema` handler in `src/server.ts`.
+The central `CallToolRequestSchema` handler in `src/server.ts` remains the interception point, but the shared server no longer imports prototype/commercial policy code directly.
 
-Today it receives every tool name + arguments and dispatches to the existing handlers.
+The request boundary is now:
 
-A policy preflight here can inspect:
+```
+MCP request
+  -> shared core-safety gate
+  -> EntitlementProvider
+  -> CapabilityRegistry
+  -> injected RuntimePolicyHook
+  -> existing Desktop Commander handler / upstream validation
+  -> optional policy execution-result hook
+```
 
-- tool name
-- arguments
-- target path / command
-- configured tier
-- device identity when available
+The default shared runtime is **Free**: `FreeEntitlementProvider` plus a no-op commercial policy hook. The current prototype entry point explicitly installs `PrototypeEntitlementProvider` and `PrototypePolicyHook`, which translate the local Free/Pro/Team selector into capabilities for demo/testing only.
 
-without rewriting every underlying tool.
+Current capability examples include:
 
-Tool-level checks such as `validatePath()` and `commandManager.validateCommand()` must still run afterwards as defense in depth.
+- `policy.filesystem`
+- `policy.command`
+- `approvals.local`
+- `progress.eta`
+- `team.device_policy`
+- `audit.local`
+
+This is the first open-core packaging boundary. `tsconfig.free.json` and its regression test prove that the dependency graph rooted at the shared `src/server.ts` does not require `src/policy` or `src/prototype`. It is not yet a complete independently released Free artifact; packaging/release composition remains follow-up work.
+
+The shared core-safety gate still protects the project-workflow control plane even when commercial policy is absent. Tool-level checks such as `validatePath()` and `commandManager.validateCommand()` still run afterwards as defense in depth.
+
+The local `tier` in `policy.json` remains only a prototype entitlement simulator. It must not become the production licensing authority.
 
 ## Initial policy model
 
