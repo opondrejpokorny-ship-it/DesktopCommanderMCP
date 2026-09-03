@@ -2,27 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
-import { PolicyAction, PolicyDecision } from './types.js';
-
-export type AuditEventType =
-    | 'policy_decision'
-    | 'approval_decision'
-    | 'execution_result';
-
-export interface AuditEventInput {
-    type: AuditEventType;
-    requestId: string;
-    tool: string;
-    action?: PolicyAction;
-    resource?: string;
-    deviceId?: string;
-    decision?: PolicyDecision;
-    ruleId?: string;
-    approvalRequestId?: string;
-    approvalDecision?: 'approved' | 'denied';
-    outcome?: 'success' | 'failure';
-    durationMs?: number;
-}
+import type { AuditEventInput, AuditSink } from './audit-sink.js';
+export type { AuditEventInput, AuditEventType, AuditSink } from './audit-sink.js';
 
 export interface AuditEvent extends AuditEventInput {
     id: string;
@@ -98,4 +79,12 @@ export async function listAuditEvents(
     return lines
         .slice(Math.max(0, lines.length - Math.max(0, limit)))
         .map((line) => JSON.parse(line) as AuditEvent);
+}
+
+export class FileAuditSink implements AuditSink {
+    constructor(private readonly auditPath?: string) {}
+
+    async append(input: AuditEventInput): Promise<AuditEvent> {
+        return appendAuditEvent(input, this.auditPath);
+    }
 }

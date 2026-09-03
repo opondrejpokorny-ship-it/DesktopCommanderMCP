@@ -10,6 +10,7 @@ import {
     setApprovalDecision,
 } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
+import { getPrototypeAuditSink } from '../prototype/prototype-audit-sink.js';
 import { loadRemoteDeviceIdentity } from '../policy/device-identity.js';
 import {
     isAbsolutePolicyPath,
@@ -909,7 +910,12 @@ export async function startControlCenter(
                     ? 'approved'
                     : 'denied';
 
-                const record = await setApprovalDecision(requestId, decision);
+                const record = await setApprovalDecision(
+                    requestId,
+                    decision,
+                    undefined,
+                    await getPrototypeAuditSink(),
+                );
                 if (!record) {
                     writeJson(response, 404, {
                         error: 'Approval request was not found, expired, or is not pending.',

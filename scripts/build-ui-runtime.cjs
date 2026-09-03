@@ -33,6 +33,9 @@ const TARGETS = {
 
 const STATIC_FILES = ['index.html'];
 const projectRoot = path.resolve(__dirname, '..');
+const configuredOutputRoot = process.env.DESKTOP_COMMANDER_UI_OUT_DIR
+  ? path.resolve(projectRoot, process.env.DESKTOP_COMMANDER_UI_OUT_DIR)
+  : null;
 
 const selectedTargets =
   target
@@ -48,7 +51,9 @@ if (target && !TARGETS[target]) {
 
 async function buildTarget(targetName) {
   const { entry, output, staticDir, styleLayers } = TARGETS[targetName];
-  const outputPath = path.join(projectRoot, output);
+  const outputPath = configuredOutputRoot
+    ? path.join(configuredOutputRoot, output.replace(/^dist[\\/]/, ''))
+    : path.join(projectRoot, output);
   const outputDir = path.dirname(outputPath);
 
   await fs.mkdir(outputDir, { recursive: true });

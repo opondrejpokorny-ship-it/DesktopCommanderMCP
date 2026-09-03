@@ -59,6 +59,9 @@ test_fix.js
 test_search.js
 .ripgrep-downloads/
 
+# Local release/package proof artifacts
+.artifacts/
+
 # Local Graphify developer tooling
 .tools/
 graphify-out/

@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setApprovalDecision } from '../../dist/policy/approval-store.js';
-import { listAuditEvents } from '../../dist/policy/audit-store.js';
+import { FileAuditSink, listAuditEvents } from '../../dist/policy/audit-store.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -89,7 +89,12 @@ try {
     assert.strictEqual(audit[0].deviceId, 'production-server-1');
     assert.strictEqual(audit[0].approvalRequestId, approvalId);
 
-    await setApprovalDecision(approvalId, 'approved', approvalFile, auditFile);
+    await setApprovalDecision(
+      approvalId,
+      'approved',
+      approvalFile,
+      new FileAuditSink(auditFile)
+    );
 
     const allowed = await client.callTool({ name: 'write_file', arguments: args });
     assert.ok(!allowed.isError);
