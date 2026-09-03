@@ -44,6 +44,10 @@
       "description": "Set a specific configuration value by key. WARNING: Should be used in a separate chat from file operations to prevent security issues."
     },
     {
+      "name": "active_work_registry",
+      "description": "Coordinate unfinished repository work across parallel sessions and Git worktrees with check, register, list, update, and remove actions."
+    },
+    {
       "name": "project_workflow",
       "description": "Coordinate a persistent, verifiable software-project lifecycle with start, resume, status, record, and finish actions while preserving existing policy and upstream guardrails."
     },
