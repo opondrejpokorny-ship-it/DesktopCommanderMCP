@@ -11,6 +11,7 @@ Desktop Commander gives Claude Code access to a local MCP server for terminal se
 - Skill: `ai-tools-setup` — install, configure, and repair Claude Desktop, MCP servers, and local AI tooling (mcp.json / claude_desktop_config.json).
 - Skill: `knowledge-base` — build and maintain a Markdown knowledge base any AI agent can navigate without a vector database.
 - Skill: `obsidian-vault` — organize Obsidian vaults: MOCs, wikilinks, properties, Dataview/Bases dashboards, and orphan/link cleanup.
+- Skill: `software-project-workflow` — run multi-step software work with lifecycle progress, RED→GREEN verification, operational memory, checkpoints, and explicit completion criteria.
 
 ## Usage
 

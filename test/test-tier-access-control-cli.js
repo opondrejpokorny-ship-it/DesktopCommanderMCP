@@ -31,6 +31,7 @@ const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-access-cli-'));
 const approvalFile = path.join(tempDir, 'approvals.json');
 const auditFile = path.join(tempDir, 'audit.jsonl');
 const policyFile = path.join(tempDir, 'policy.json');
+const usageFile = path.join(tempDir, 'usage.json');
 
 function runCli(...args) {
   return spawnSync(process.execPath, [CLI, ...args], {
@@ -41,6 +42,7 @@ function runCli(...args) {
       DESKTOP_COMMANDER_APPROVAL_FILE: approvalFile,
       DESKTOP_COMMANDER_AUDIT_FILE: auditFile,
       DESKTOP_COMMANDER_POLICY_FILE: policyFile,
+      DESKTOP_COMMANDER_USAGE_FILE: usageFile,
     },
   });
 }
@@ -145,6 +147,14 @@ try {
   assert.notStrictEqual(invalidTier.status, 0);
   assert.match(invalidTier.stderr, /invalid.*tier/i);
 
+  const usageResult = runCli('usage');
+  assert.strictEqual(usageResult.status, 0, usageResult.stderr);
+  assert.deepStrictEqual(JSON.parse(usageResult.stdout), {
+    returnedBytes: 0,
+    writtenBytes: 0,
+    periodStartedAt: null,
+  });
+
   const stateResult = runCli('state');
   assert.strictEqual(stateResult.status, 0, stateResult.stderr);
   const state = JSON.parse(stateResult.stdout);
@@ -161,6 +171,11 @@ try {
   }]);
   assert.ok(Array.isArray(state.pendingApprovals));
   assert.ok(Array.isArray(state.auditEvents));
+  assert.deepStrictEqual(state.usage, {
+    returnedBytes: 0,
+    writtenBytes: 0,
+    periodStartedAt: null,
+  });
 
   const missingResult = runCli('approve', 'not-a-real-request-id');
   assert.notStrictEqual(missingResult.status, 0);

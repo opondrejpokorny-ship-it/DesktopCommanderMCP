@@ -38,6 +38,7 @@ Repository:
 Responsibilities:
 
 - display Free / Pro / Team state,
+- display observational returned/write usage counters,
 - edit policy through the enforcement CLI,
 - show pending approvals,
 - approve once / deny,
@@ -126,6 +127,12 @@ real disk write after approval: PASS
 audit lifecycle: PASS
 raw file content persisted in approval/audit: NO
 ```
+
+## Observational usage metering
+
+The prototype also measures data usage without enforcing a quota. It tracks aggregate finalized MCP result bytes returned to the AI plus accepted write/edit payload bytes. It deliberately does not charge implementation-dependent physical disk scan bytes.
+
+Only `returnedBytes`, `writtenBytes`, and `periodStartedAt` are persisted. Metering problems fail open and do not alter tool execution. There is currently no fixed Free allowance or automatic period reset; those product decisions are deferred until real usage has been observed.
 
 ## Security choices
 

@@ -314,41 +314,18 @@ Do not checkpoint every minor edit.
 
 ## 10. Progress reporting
 
-For longer autonomous work, give the user short progress updates after meaningful
-milestones. Report progress across the **whole planned lifecycle**, not only the
-implementation phase.
-
-Use the Desktop Commander `report_task_progress` tool to apply the configured
-tier entitlement to each progress update:
-
-- **Free:** report approximate percent remaining. Do not promise or expose an ETA.
-- **Pro / Team:** report approximate percent remaining **and estimated time
-  remaining** on every progress update.
-
-The estimated time is approximate, not a deadline or guarantee. Re-estimate it
-after meaningful milestones or when a blocker materially changes the plan. Avoid
-false precision: prefer rounded estimates such as "about 20 min" or "about 1 h
-20 min".
-
-When calling `report_task_progress`, provide:
-
-- `percentRemaining` from 0 to 100,
-- a short `currentPhase`,
-- `estimatedRemainingMinutes` as a rounded best estimate grounded in the
-  remaining plan. The server will remove ETA from Free even though it is supplied.
-
-In the user-facing update, also summarize what was completed and what major work
-remains. Keep it brief enough to be useful during autonomous execution.
+For longer autonomous work, give the user short progress updates.
 
 Useful updates include:
 
 - approximate percent remaining,
-- paid-tier estimated time remaining,
 - a finding that changes the plan,
 - RED becoming GREEN,
 - a newly discovered risk,
 - the current blocker,
 - the next major phase.
+
+Base progress on the full plan.
 
 A suggested mental model:
 
@@ -358,8 +335,7 @@ A suggested mental model:
 - Verification: 20–30%
 - Review / docs / live check: 15–25%
 
-Adjust for the actual task. Reserve 0% remaining / 100% complete for work whose
-requested behavior is verified and whose required documentation is current.
+Adjust for the actual task.
 
 ## 11. Privacy and safety
 

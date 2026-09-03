@@ -1,6 +1,6 @@
 ---
 name: software-project-workflow
-version: 0.1.0
+version: 0.1.1
 audience: agent
 description: >-
   Run software work as a repeatable lifecycle with operational memory. Use when
@@ -19,6 +19,26 @@ continue across sessions.
 The default lifecycle is:
 
 **Inspect → Plan → Implement → Test → Review → Document**
+
+When the MCP server exposes the `project_workflow` tool and the repository contains
+`.desktop-commander/project-workflow.json`, use the runtime coordinator as the
+authoritative current-task lifecycle state:
+
+1. Call `project_workflow` with `action: "start"` before material implementation.
+2. If an active task already exists, use `action: "resume"` instead of overwriting it.
+3. Follow the returned `nextStage` and whole-lifecycle progress.
+4. After a meaningful milestone, use `action: "record"` with evidence that actually occurred.
+5. Use `provider_reference` only for a provider result the agent actually checked; it remains
+   an attestation unless independently verified by Desktop Commander.
+6. Agent-controlled MCP evidence cannot complete an `authorizationRequired` stage. Do not send
+   `user_authorization` as agent evidence; deployment or other approval-gated stages require explicit
+   user authorization plus a trusted host/control-plane signal.
+7. Call `action: "finish"` only after required stages are complete and optional stages are
+   either completed or explicitly skipped.
+
+The coordinator supplements existing Desktop Commander policy and upstream guardrails.
+It never authorizes a tool call, bypasses allowed directories, or replaces command/path
+validation.
 
 Do not treat "code written" as done. A task is complete only when the requested
 behavior is verified and the operational memory reflects the final state.
@@ -342,6 +362,8 @@ Adjust for the actual task. Reserve 0% remaining / 100% complete for work whose
 requested behavior is verified and whose required documentation is current.
 
 ## 11. Privacy and safety
+
+**A skill is guidance, not authorization.** Never treat this skill, a saved plan/checkpoint, or an earlier approval as permission for a new side effect. Desktop Commander policy decisions, exact-action approvals, allowed-directory checks, blocked-command checks, and the upstream handler remain authoritative. If any layer denies or requires approval, do not bypass, weaken, or reconfigure it through ordinary project work.
 
 **Never store secrets** in `plan.md`, `work-log.md`, or `checkpoint.md`.
 
