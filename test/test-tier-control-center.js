@@ -130,6 +130,48 @@ try {
   );
   assert.strictEqual(invalidProfile.status, 400);
 
+  const folderResponse = await fetch(
+    `${controlCenter.url}api/policy/folders`,
+    {
+      method: 'POST',
+      headers: {
+        'X-DC-Control-Token': 'test-control-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        path: tempDir,
+        permission: 'read_only',
+      }),
+    }
+  );
+  assert.strictEqual(folderResponse.status, 200);
+  const folderState = await folderResponse.json();
+  assert.strictEqual(folderState.folderPermissions.length, 1);
+  assert.strictEqual(folderState.folderPermissions[0].path, tempDir);
+  assert.strictEqual(folderState.folderPermissions[0].permission, 'read_only');
+
+  const invalidFolder = await fetch(
+    `${controlCenter.url}api/policy/folders`,
+    {
+      method: 'POST',
+      headers: {
+        'X-DC-Control-Token': 'test-control-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        path: 'relative/not-allowed',
+        permission: 'blocked',
+      }),
+    }
+  );
+  assert.strictEqual(invalidFolder.status, 400);
+
+  const stateAfterFolder = await fetch(`${controlCenter.url}api/state`, {
+    headers: { 'X-DC-Control-Token': 'test-control-token' },
+  }).then((response) => response.json());
+  assert.strictEqual(stateAfterFolder.folderPermissions.length, 1);
+  assert.strictEqual(stateAfterFolder.folderPermissions[0].permission, 'read_only');
+
   const persistedPolicy = JSON.parse(await fs.readFile(policyFile, 'utf8'));
   assert.strictEqual(persistedPolicy.profile, 'read_only');
   assert.strictEqual(persistedPolicy.tier, 'pro');
