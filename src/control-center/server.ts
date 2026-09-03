@@ -206,8 +206,11 @@ function renderControlCenterHtml(token: string): string {
     button { border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 10px; padding: 8px 12px; background: Canvas; color: CanvasText; cursor: pointer; font-weight: 600; }
     button:hover { background: color-mix(in srgb, Canvas 90%, CanvasText 10%); }
     button:disabled { opacity: .5; cursor: wait; }
-    select { margin-left: 6px; border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 9px; padding: 7px 9px; background: Canvas; color: CanvasText; }
+    select, input { border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); border-radius: 9px; padding: 7px 9px; background: Canvas; color: CanvasText; }
+    select { margin-left: 6px; }
+    input { min-width: min(440px, 100%); }
     .policy-controls { flex-wrap: wrap; margin-bottom: 10px; }
+    .folder-editor { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 14px 0; }
     .empty { opacity: .65; padding: 16px 0; }
     .status { min-height: 22px; margin: 0 0 12px; font-size: 13px; opacity: .8; }
     code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
@@ -262,6 +265,17 @@ function renderControlCenterHtml(token: string): string {
           </label>
         </div>
         <div id="policy"></div>
+        <div class="folder-editor">
+          <input id="folder-path" type="text" autocomplete="off" placeholder="/projects/production or C:\\Projects\\Production">
+          <select id="folder-permission">
+            <option value="read_write">Read / write</option>
+            <option value="read_only">Read only</option>
+            <option value="approval_required">Writes need approval</option>
+            <option value="blocked">Blocked</option>
+          </select>
+          <button id="save-folder">Add folder rule</button>
+        </div>
+        <div id="folder-permissions"></div>
         <p class="subtle">Raw file contents and terminal command text are not stored in approvals or audit records.</p>
       </section>
     </div>
@@ -358,6 +372,46 @@ function renderControlCenterHtml(token: string): string {
       }
     }
 
+    function renderFolderPermissions(items) {
+      const root = document.getElementById('folder-permissions');
+      root.replaceChildren();
+
+      if (!items.length) {
+        root.appendChild(createElement('div', 'No custom folder rules. Profile defaults apply.', 'empty'));
+        return;
+      }
+
+      for (const item of items) {
+        const row = createElement('div', undefined, 'row');
+        row.appendChild(createElement('div', item.path, 'row-title'));
+        row.appendChild(createElement('div', item.permission.replaceAll('_', ' '), 'meta'));
+        const actions = createElement('div', undefined, 'actions');
+        const remove = createElement('button', 'Use profile default');
+        remove.addEventListener('click', async () => {
+          await saveFolderPermission(item.path, 'inherit');
+        });
+        actions.appendChild(remove);
+        row.appendChild(actions);
+        root.appendChild(row);
+      }
+    }
+
+    async function saveFolderPermission(pathValue, permission) {
+      const status = document.getElementById('status');
+      status.textContent = 'Saving folder policy…';
+      try {
+        await api('/api/policy/folders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: pathValue, permission })
+        });
+        document.getElementById('folder-path').value = '';
+        await refresh();
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    }
+
     function renderPolicy(policy) {
       document.getElementById('tier-select').value = policy.tier || 'free';
       document.getElementById('profile-select').value = policy.profile || 'full_access';
@@ -395,6 +449,15 @@ function renderControlCenterHtml(token: string): string {
     document.getElementById('profile-select').addEventListener('change', (event) => {
       changePolicy('profile', event.target.value);
     });
+    document.getElementById('save-folder').addEventListener('click', () => {
+      const pathValue = document.getElementById('folder-path').value.trim();
+      const permission = document.getElementById('folder-permission').value;
+      if (!pathValue) {
+        document.getElementById('status').textContent = 'Enter an absolute folder path.';
+        return;
+      }
+      saveFolderPermission(pathValue, permission);
+    });
 
     async function refresh() {
       const status = document.getElementById('status');
@@ -409,6 +472,7 @@ function renderControlCenterHtml(token: string): string {
         renderApprovals(state.pendingApprovals);
         renderAudit(state.auditEvents);
         renderPolicy(state.policy);
+        renderFolderPermissions(state.folderPermissions || []);
       } catch (error) {
         document.getElementById('connection').textContent = 'Disconnected';
         status.textContent = error.message;
