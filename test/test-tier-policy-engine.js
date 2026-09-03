@@ -92,6 +92,53 @@ function runTests() {
     'Unmatched actions should remain allowed so existing upstream guardrails still decide'
   );
 
+  assert.strictEqual(
+    evaluatePolicy(
+      {
+        tier: 'pro',
+        tool: 'write_file',
+        action: 'filesystem.write',
+        resource: '/projects/public/../production/app.ts'
+      },
+      [protectedWriteRule]
+    ).decision,
+    'require_approval',
+    'Filesystem policy matching must normalize dot-segments before prefix checks'
+  );
+
+  assert.strictEqual(
+    evaluatePolicy(
+      {
+        tier: 'pro',
+        tool: 'write_file',
+        action: 'filesystem.write',
+        resource: 'c:/projects/production/app.ts'
+      },
+      [{
+        id: 'windows-production',
+        action: 'filesystem.write',
+        resourcePrefix: 'C:\\Projects\\Production',
+        decision: 'require_approval'
+      }]
+    ).decision,
+    'require_approval',
+    'Windows filesystem policy matching must handle mixed separators and case'
+  );
+
+  assert.strictEqual(
+    evaluatePolicy(
+      {
+        tier: 'pro',
+        tool: 'write_file',
+        action: 'filesystem.write',
+        resource: '/projects/production-old/app.ts'
+      },
+      [protectedWriteRule]
+    ).decision,
+    'allow',
+    'Normalized filesystem matching must still respect sibling path boundaries'
+  );
+
   console.log('✅ Prototype policy engine tests passed');
 }
 
