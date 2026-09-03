@@ -1,0 +1,98 @@
+/**
+ * RED -> GREEN test for the local, non-MCP access-control CLI.
+ *
+ * Human approval must live outside the MCP tool surface so an AI cannot approve
+ * its own pending request.
+ */
+
+import assert from 'node:assert';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  createPendingApproval,
+  listApprovals,
+} from '../dist/policy/approval-store.js';
+import { listAuditEvents } from '../dist/policy/audit-store.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const CLI = path.join(PROJECT_ROOT, 'dist', 'npm-scripts', 'access-control.js');
+
+const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-access-cli-'));
+const approvalFile = path.join(tempDir, 'approvals.json');
+const auditFile = path.join(tempDir, 'audit.jsonl');
+const policyFile = path.join(tempDir, 'policy.json');
+
+function runCli(...args) {
+  return spawnSync(process.execPath, [CLI, ...args], {
+    cwd: PROJECT_ROOT,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DESKTOP_COMMANDER_APPROVAL_FILE: approvalFile,
+      DESKTOP_COMMANDER_AUDIT_FILE: auditFile,
+      DESKTOP_COMMANDER_POLICY_FILE: policyFile,
+    },
+  });
+}
+
+try {
+  await fs.writeFile(policyFile, JSON.stringify({
+    version: 1,
+    tier: 'team',
+    profile: 'safe_developer',
+    deviceId: 'server-1',
+    rules: [],
+  }));
+
+  const pending = await createPendingApproval({
+    tool: 'write_file',
+    args: { path: '/projects/app.ts', content: 'change' },
+    ruleId: 'team-write',
+    resource: '/projects/app.ts',
+    action: 'filesystem.write',
+    deviceId: 'server-1',
+    auditRequestId: 'audit-request-cli-1',
+  }, approvalFile);
+
+  const listResult = runCli('approvals');
+  assert.strictEqual(listResult.status, 0, listResult.stderr);
+  const listed = JSON.parse(listResult.stdout);
+  assert.ok(Array.isArray(listed));
+  assert.strictEqual(listed[0].id, pending.id);
+  assert.strictEqual(listed[0].status, 'pending');
+  assert.ok(!listResult.stdout.includes('change'), 'CLI must not expose raw file contents');
+
+  const approveResult = runCli('approve', pending.id);
+  assert.strictEqual(approveResult.status, 0, approveResult.stderr);
+  const approved = JSON.parse(approveResult.stdout);
+  assert.strictEqual(approved.id, pending.id);
+  assert.strictEqual(approved.status, 'approved');
+
+  const stored = await listApprovals(approvalFile);
+  assert.strictEqual(stored[0].status, 'approved');
+
+  const audit = await listAuditEvents(auditFile);
+  assert.strictEqual(audit.length, 1);
+  assert.strictEqual(audit[0].type, 'approval_decision');
+  assert.strictEqual(audit[0].approvalDecision, 'approved');
+
+  const policyResult = runCli('policy');
+  assert.strictEqual(policyResult.status, 0, policyResult.stderr);
+  const policy = JSON.parse(policyResult.stdout);
+  assert.strictEqual(policy.tier, 'team');
+  assert.strictEqual(policy.profile, 'safe_developer');
+  assert.strictEqual(policy.deviceId, 'server-1');
+
+  const missingResult = runCli('approve', 'not-a-real-request-id');
+  assert.notStrictEqual(missingResult.status, 0);
+  assert.match(missingResult.stderr, /not found|not pending/i);
+
+  console.log('✅ Local access-control CLI tests passed');
+} finally {
+  await fs.rm(tempDir, { recursive: true, force: true });
+}
