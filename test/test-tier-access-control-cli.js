@@ -145,6 +145,23 @@ try {
   assert.notStrictEqual(invalidTier.status, 0);
   assert.match(invalidTier.stderr, /invalid.*tier/i);
 
+  const stateResult = runCli('state');
+  assert.strictEqual(stateResult.status, 0, stateResult.stderr);
+  const state = JSON.parse(stateResult.stdout);
+  assert.strictEqual(state.policy.tier, 'pro');
+  assert.deepStrictEqual(state.folderPermissions, [{
+    path: '/projects/production',
+    permission: 'approval_required',
+    deviceId: 'device-from-control-center',
+  }]);
+  assert.deepStrictEqual(state.commandPermissions, [{
+    commandPrefix: 'git push',
+    permission: 'approval_required',
+    deviceId: 'device-from-control-center',
+  }]);
+  assert.ok(Array.isArray(state.pendingApprovals));
+  assert.ok(Array.isArray(state.auditEvents));
+
   const missingResult = runCli('approve', 'not-a-real-request-id');
   assert.notStrictEqual(missingResult.status, 0);
   assert.match(missingResult.stderr, /not found|not pending/i);
