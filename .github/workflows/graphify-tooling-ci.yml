@@ -1,0 +1,33 @@
+name: Graphify Tooling CI
+
+on:
+  push:
+    branches:
+      - feat/graphify-local-discovery
+      - prototype/free-pro-team
+  pull_request:
+    branches:
+      - prototype/free-pro-team
+
+permissions:
+  contents: read
+
+concurrency:
+  group: graphify-tooling-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  graphify-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run deterministic Graphify Git preflight tests
+        run: node --test test/test-graphify-git-preflight.js
