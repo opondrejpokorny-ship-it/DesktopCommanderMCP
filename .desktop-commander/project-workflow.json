@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "id": "desktop-commander-free-pro-team",
+  "name": "Desktop Commander Free / Pro / Team prototype",
+  "definitionOfDone": "Requested behavior is verified, intended changes are integrated into prototype/free-pro-team, the exact prototype SHA is verified, required documentation/Work Log is current, and no unauthorized deploy or merge to main occurred.",
+  "metadata": {
+    "roadmap": "https://docs.google.com/document/d/1quNeCk0GreH1Z_FYffUmhVsoZ_soRcWn6_xFueRN89Q/edit",
+    "drive": "https://drive.google.com/drive/folders/1qfxW_Q95ckMECfwMCfPceFNcu_3Mp2Am",
+    "fork": "opondrejpokorny-ship-it/DesktopCommanderMCP",
+    "upstream": "wonderwhy-er/DesktopCommanderMCP",
+    "prototypeBranch": "prototype/free-pro-team",
+    "mainBranch": "main"
+  },
+  "constraints": [
+    "Drive is the authority for approved decisions and project history.",
+    "main remains a clean fast-forwardable upstream mirror.",
+    "Never merge prototype/free-pro-team into main without explicit user approval.",
+    "Preserve upstream allowed directories, path validation, blocked commands, command validation and other security guardrails.",
+    "Deploy only after explicit user authorization; live verification is required after an authorized deploy.",
+    "Do not store secrets, raw file contents for approval, or raw terminal commands in workflow evidence."
+  ],
+  "stages": [
+    {
+      "id": "drive-pre-read",
+      "label": "Drive pre-read",
+      "required": true,
+      "description": "Read the Roadmap & Work Log and relevant Drive documentation before material work."
+    },
+    {
+      "id": "work-log-start",
+      "label": "Work Log start",
+      "required": true,
+      "description": "Record task start and scope in the Roadmap & Work Log."
+    },
+    {
+      "id": "repo-upstream-audit",
+      "label": "Repo / upstream audit",
+      "required": true,
+      "description": "Verify branch, status, remotes, upstream and unrelated work before editing."
+    },
+    {
+      "id": "graphify",
+      "label": "Graphify architecture check",
+      "required": false,
+      "description": "Use Graphify when it materially helps discover call paths or blast radius; confirm findings in source."
+    },
+    {
+      "id": "analysis",
+      "label": "Root-cause / design analysis",
+      "required": true,
+      "description": "Analyze root cause, affected flow, upstream behavior and security/privacy implications."
+    },
+    {
+      "id": "red-green",
+      "label": "RED → GREEN",
+      "required": false,
+      "description": "Establish the smallest meaningful RED and turn it GREEN when practical."
+    },
+    {
+      "id": "implementation",
+      "label": "Implementation",
+      "required": true,
+      "description": "Make the smallest coherent implementation while preserving upstream architecture and guardrails."
+    },
+    {
+      "id": "verification",
+      "label": "Verification",
+      "required": true,
+      "description": "Run focused tests, broader regressions, build/typecheck/lint and real MCP side-effect checks as applicable."
+    },
+    {
+      "id": "diff-review",
+      "label": "Diff / security review",
+      "required": true,
+      "description": "Review full diff, unrelated changes, security/privacy implications and git diff --check."
+    },
+    {
+      "id": "commit-push",
+      "label": "Commit / push",
+      "required": true,
+      "description": "Commit the reviewed task branch and push it without force rewriting."
+    },
+    {
+      "id": "ci-pr",
+      "label": "CI / PR",
+      "required": true,
+      "description": "Use CI and a PR for substantial work where practical; do not target main with prototype work."
+    },
+    {
+      "id": "prototype-integration",
+      "label": "Integrate into prototype",
+      "required": true,
+      "description": "Integrate the reviewed change into prototype/free-pro-team."
+    },
+    {
+      "id": "verify-prototype-sha",
+      "label": "Verify prototype SHA",
+      "required": true,
+      "description": "Verify the exact authoritative prototype SHA and intended change."
+    },
+    {
+      "id": "docs-sync",
+      "label": "Documentation / Work Log sync",
+      "required": true,
+      "description": "Update durable docs and Work Log with implementation, verification, limitations and next state."
+    },
+    {
+      "id": "deploy",
+      "label": "Deploy",
+      "required": false,
+      "authorizationRequired": true,
+      "description": "Deploy only when explicitly authorized by the user."
+    },
+    {
+      "id": "live-verify",
+      "label": "Live verification",
+      "required": false,
+      "description": "After an authorized deploy, verify actual live behavior; otherwise skip explicitly."
+    },
+    {
+      "id": "final-report",
+      "label": "Final report",
+      "required": true,
+      "description": "Report task/root cause, docs read, repo state, RED→GREEN, changes, verification, commit/PR/CI, prototype SHA, deploy status and blockers."
+    }
+  ]
+}

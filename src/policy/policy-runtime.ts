@@ -13,6 +13,7 @@ import {
     evaluateToolRequestPolicy,
     normalizeToolActions,
 } from './tool-policy.js';
+import { isProjectWorkflowControlPlaneResource } from '../workflow/project-workflow.js';
 import {
     DesktopCommanderTier,
     PolicyAction,
@@ -236,12 +237,36 @@ function normalizedPolicyPathIdentity(value: string): string {
     return `posix:${path.posix.resolve(value)}`;
 }
 
-function protectedControlPlaneEvaluation(
+async function protectedControlPlaneEvaluation(
     tier: DesktopCommanderTier,
     tool: string,
     args: unknown,
     policyPath?: string,
-): Pick<PolicyPreflightResult, 'decision' | 'matchedRuleId' | 'action' | 'resource'> | null {
+): Promise<Pick<PolicyPreflightResult, 'decision' | 'matchedRuleId' | 'action' | 'resource'> | null> {
+    const normalizedActions = normalizeToolActions(tool, args);
+
+    for (const normalized of normalizedActions) {
+        if (
+            normalized.action !== 'filesystem.write' &&
+            normalized.action !== 'filesystem.move' &&
+            normalized.action !== 'filesystem.delete'
+        ) {
+            continue;
+        }
+
+        if (
+            normalized.resource &&
+            await isProjectWorkflowControlPlaneResource(normalized.resource)
+        ) {
+            return {
+                decision: 'deny',
+                matchedRuleId: 'system:project-workflow-control-plane',
+                action: normalized.action,
+                resource: normalized.resource,
+            };
+        }
+    }
+
     if (tier === 'free') {
         return null;
     }
@@ -252,7 +277,7 @@ function protectedControlPlaneEvaluation(
         normalizedPolicyPathIdentity(resolveAuditPath()),
     ]);
 
-    for (const normalized of normalizeToolActions(tool, args)) {
+    for (const normalized of normalizedActions) {
         if (
             normalized.action !== 'filesystem.write' &&
             normalized.action !== 'filesystem.move' &&
@@ -638,7 +663,7 @@ export async function preflightToolRequest(
 ): Promise<PolicyPreflightResult> {
     const config = await loadPolicyRuntimeConfig(policyPath);
 
-    const protectedEvaluation = protectedControlPlaneEvaluation(
+    const protectedEvaluation = await protectedControlPlaneEvaluation(
         config.tier,
         tool,
         args,
