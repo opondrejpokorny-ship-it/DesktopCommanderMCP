@@ -106,10 +106,12 @@ exit /b 22
 :graphify
 if "%GRAPHIFY_MODE%"=="python" (
   "%GRAPHIFY_BIN%" -m graphify %*
-  exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
+  exit /b 0
 )
 "%GRAPHIFY_BIN%" %*
-exit /b %errorlevel%
+if errorlevel 1 exit /b 1
+exit /b 0
 
 :usage
 echo Usage:
