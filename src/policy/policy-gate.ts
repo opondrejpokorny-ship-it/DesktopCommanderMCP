@@ -1,5 +1,7 @@
 import { ServerResult } from '../types.js';
+import { createPendingApproval, consumeApprovedAction } from './approval-store.js';
 import { preflightToolRequest } from './policy-runtime.js';
+import { normalizeToolAction } from './tool-policy.js';
 import { PolicyDecision } from './types.js';
 
 export interface PolicyGateResult {
@@ -27,6 +29,7 @@ export async function applyPolicyGate(
     tool: string,
     args: unknown,
     policyPath?: string,
+    approvalPath?: string,
 ): Promise<PolicyGateResult> {
     try {
         const evaluation = await preflightToolRequest(tool, args, policyPath);
@@ -40,6 +43,32 @@ export async function applyPolicyGate(
         }
 
         if (evaluation.decision === 'require_approval') {
+            const consumedApproval = await consumeApprovedAction(
+                tool,
+                args,
+                approvalPath,
+                evaluation.matchedRuleId,
+            );
+
+            if (consumedApproval) {
+                return {
+                    allowed: true,
+                    decision: 'allow',
+                    matchedRuleId: evaluation.matchedRuleId,
+                };
+            }
+
+            const normalized = normalizeToolAction(tool, args);
+            const pending = await createPendingApproval(
+                {
+                    tool,
+                    args,
+                    ruleId: evaluation.matchedRuleId,
+                    resource: normalized?.resource,
+                },
+                approvalPath,
+            );
+
             const ruleText = evaluation.matchedRuleId
                 ? ` Policy rule: ${evaluation.matchedRuleId}.`
                 : '';
@@ -49,7 +78,7 @@ export async function applyPolicyGate(
                 decision: 'require_approval',
                 matchedRuleId: evaluation.matchedRuleId,
                 result: policyResult(
-                    `Approval required before ${tool} can run. No action was executed.${ruleText}`,
+                    `Approval required before ${tool} can run. No action was executed. Approval request ID: ${pending.id}.${ruleText}`,
                 ),
             };
         }
