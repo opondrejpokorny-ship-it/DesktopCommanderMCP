@@ -725,18 +725,28 @@ export async function startControlCenter(
 
                 const pathValue = (body as Record<string, unknown>).path;
                 const permissionValue = (body as Record<string, unknown>).permission;
+                const deviceIdValue = (body as Record<string, unknown>).deviceId;
 
                 if (
                     typeof pathValue !== 'string' ||
                     !isAbsolutePolicyPath(pathValue) ||
                     typeof permissionValue !== 'string' ||
-                    !isFolderPermission(permissionValue)
+                    !isFolderPermission(permissionValue) ||
+                    (
+                        deviceIdValue !== undefined &&
+                        (typeof deviceIdValue !== 'string' || !deviceIdValue.trim())
+                    )
                 ) {
                     writeJson(response, 400, { error: 'Invalid folder permission.' });
                     return;
                 }
 
-                const policy = await setFolderPermission(pathValue, permissionValue);
+                const policy = await setFolderPermission(
+                    pathValue,
+                    permissionValue,
+                    undefined,
+                    typeof deviceIdValue === 'string' ? deviceIdValue : undefined,
+                );
                 writeJson(response, 200, {
                     policy,
                     folderPermissions: listFolderPermissions(policy),
@@ -768,12 +778,17 @@ export async function startControlCenter(
 
                 const commandPrefix = (body as Record<string, unknown>).commandPrefix;
                 const permissionValue = (body as Record<string, unknown>).permission;
+                const deviceIdValue = (body as Record<string, unknown>).deviceId;
 
                 if (
                     typeof commandPrefix !== 'string' ||
                     !commandPrefix.trim() ||
                     typeof permissionValue !== 'string' ||
-                    !isCommandPermission(permissionValue)
+                    !isCommandPermission(permissionValue) ||
+                    (
+                        deviceIdValue !== undefined &&
+                        (typeof deviceIdValue !== 'string' || !deviceIdValue.trim())
+                    )
                 ) {
                     writeJson(response, 400, { error: 'Invalid command permission.' });
                     return;
@@ -783,6 +798,8 @@ export async function startControlCenter(
                     const policy = await setCommandPermission(
                         commandPrefix,
                         permissionValue,
+                        undefined,
+                        typeof deviceIdValue === 'string' ? deviceIdValue : undefined,
                     );
                     writeJson(response, 200, {
                         policy,
