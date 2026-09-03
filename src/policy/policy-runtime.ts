@@ -39,6 +39,7 @@ export type FolderPermission =
 export interface FolderPermissionEntry {
     path: string;
     permission: Exclude<FolderPermission, 'inherit'>;
+    deviceId?: string;
 }
 
 export type CommandPermission =
@@ -50,6 +51,7 @@ export type CommandPermission =
 export interface CommandPermissionEntry {
     commandPrefix: string;
     permission: Exclude<CommandPermission, 'inherit'>;
+    deviceId?: string;
 }
 
 export const POLICY_FILE = path.join(
@@ -220,6 +222,20 @@ export function isCommandPermission(value: string): value is CommandPermission {
     return VALID_COMMAND_PERMISSIONS.has(value as CommandPermission);
 }
 
+function normalizeOptionalPolicyDeviceId(
+    deviceId?: string,
+): string | undefined {
+    if (deviceId === undefined) {
+        return undefined;
+    }
+
+    const normalized = deviceId.trim();
+    if (!normalized || normalized.length > 256 || /[\u0000-\u001f]/.test(normalized)) {
+        throw new Error('Invalid device ID');
+    }
+    return normalized;
+}
+
 function normalizeManagedCommandPrefix(value: string): string {
     const input = value.trim();
     if (!input) {
@@ -234,10 +250,14 @@ function normalizeManagedCommandPrefix(value: string): string {
     return normalizeShellCommandPrefix(input);
 }
 
-function managedCommandRuleId(commandPrefix: string): string {
+function managedCommandRuleId(
+    commandPrefix: string,
+    deviceId?: string,
+): string {
+    const key = deviceId ? `${deviceId}\0${commandPrefix}` : commandPrefix;
     const digest = crypto
         .createHash('sha256')
-        .update(commandPrefix)
+        .update(key)
         .digest('hex')
         .slice(0, 16);
     return `${MANAGED_COMMAND_RULE_PREFIX}${digest}`;
@@ -267,6 +287,7 @@ export function listCommandPermissions(
         )
         .map((rule) => ({
             commandPrefix: rule.commandPrefix!,
+            ...(rule.deviceId ? { deviceId: rule.deviceId } : {}),
             permission:
                 rule.decision === 'deny'
                     ? 'blocked'
@@ -280,9 +301,11 @@ export async function setCommandPermission(
     commandPrefix: string,
     permission: CommandPermission,
     policyPath?: string,
+    deviceId?: string,
 ): Promise<PolicyRuntimeConfig> {
     const normalized = normalizeManagedCommandPrefix(commandPrefix);
-    const ruleId = managedCommandRuleId(normalized);
+    const normalizedDeviceId = normalizeOptionalPolicyDeviceId(deviceId);
+    const ruleId = managedCommandRuleId(normalized, normalizedDeviceId);
 
     return updatePolicyRuntimeConfig((current) => {
         const rules = current.rules.filter((rule) => rule.id !== ruleId);
@@ -292,6 +315,7 @@ export async function setCommandPermission(
                 id: ruleId,
                 action: 'terminal.execute',
                 commandPrefix: normalized,
+                ...(normalizedDeviceId ? { deviceId: normalizedDeviceId } : {}),
                 decision: commandDecision(permission),
             });
         }
@@ -304,10 +328,14 @@ export function isAbsolutePolicyPath(value: string): boolean {
     return path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
 }
 
-function managedFolderRulePrefix(resourcePrefix: string): string {
+function managedFolderRulePrefix(
+    resourcePrefix: string,
+    deviceId?: string,
+): string {
+    const key = deviceId ? `${deviceId}\0${resourcePrefix}` : resourcePrefix;
     const digest = crypto
         .createHash('sha256')
-        .update(resourcePrefix)
+        .update(key)
         .digest('hex')
         .slice(0, 16);
     return `${MANAGED_FOLDER_RULE_PREFIX}${digest}:`;
@@ -335,12 +363,14 @@ function decisionForFolderAction(
 function buildManagedFolderRules(
     resourcePrefix: string,
     permission: Exclude<FolderPermission, 'inherit'>,
+    deviceId?: string,
 ): PolicyRule[] {
-    const idPrefix = managedFolderRulePrefix(resourcePrefix);
+    const idPrefix = managedFolderRulePrefix(resourcePrefix, deviceId);
     return MANAGED_FOLDER_ACTIONS.map((action) => ({
         id: `${idPrefix}${action.replace('filesystem.', '')}`,
         action,
         resourcePrefix,
+        ...(deviceId ? { deviceId } : {}),
         decision: decisionForFolderAction(permission, action),
     }));
 }
@@ -348,7 +378,11 @@ function buildManagedFolderRules(
 export function listFolderPermissions(
     config: PolicyRuntimeConfig,
 ): FolderPermissionEntry[] {
-    const grouped = new Map<string, PolicyRule[]>();
+    const grouped = new Map<string, {
+        resourcePrefix: string;
+        deviceId?: string;
+        rules: PolicyRule[];
+    }>();
 
     for (const rule of config.rules) {
         if (
@@ -357,12 +391,18 @@ export function listFolderPermissions(
         ) {
             continue;
         }
-        const rules = grouped.get(rule.resourcePrefix) ?? [];
-        rules.push(rule);
-        grouped.set(rule.resourcePrefix, rules);
+
+        const key = JSON.stringify([rule.resourcePrefix, rule.deviceId ?? null]);
+        const group = grouped.get(key) ?? {
+            resourcePrefix: rule.resourcePrefix,
+            ...(rule.deviceId ? { deviceId: rule.deviceId } : {}),
+            rules: [],
+        };
+        group.rules.push(rule);
+        grouped.set(key, group);
     }
 
-    return [...grouped.entries()].map(([resourcePrefix, rules]) => {
+    return [...grouped.values()].map(({ resourcePrefix, deviceId, rules }) => {
         const read = rules.find((rule) => rule.action === 'filesystem.read');
         const write = rules.find((rule) => rule.action === 'filesystem.write');
 
@@ -377,7 +417,11 @@ export function listFolderPermissions(
             permission = 'read_only';
         }
 
-        return { path: resourcePrefix, permission };
+        return {
+            path: resourcePrefix,
+            permission,
+            ...(deviceId ? { deviceId } : {}),
+        };
     });
 }
 
@@ -385,20 +429,26 @@ export async function setFolderPermission(
     resourcePrefix: string,
     permission: FolderPermission,
     policyPath?: string,
+    deviceId?: string,
 ): Promise<PolicyRuntimeConfig> {
     const normalizedInput = resourcePrefix.trim();
     if (!isAbsolutePolicyPath(normalizedInput)) {
         throw new Error('Folder permission path must be absolute');
     }
 
-    const idPrefix = managedFolderRulePrefix(normalizedInput);
+    const normalizedDeviceId = normalizeOptionalPolicyDeviceId(deviceId);
+    const idPrefix = managedFolderRulePrefix(normalizedInput, normalizedDeviceId);
     return updatePolicyRuntimeConfig((current) => {
         const rules = current.rules.filter(
             (rule) => !rule.id.startsWith(idPrefix),
         );
 
         if (permission !== 'inherit') {
-            rules.unshift(...buildManagedFolderRules(normalizedInput, permission));
+            rules.unshift(...buildManagedFolderRules(
+                normalizedInput,
+                permission,
+                normalizedDeviceId,
+            ));
         }
 
         return { ...current, rules };
@@ -478,10 +528,7 @@ export async function setPolicyDeviceId(
     deviceId: string,
     policyPath?: string,
 ): Promise<PolicyRuntimeConfig> {
-    const normalized = deviceId.trim();
-    if (!normalized || normalized.length > 256 || /[\u0000-\u001f]/.test(normalized)) {
-        throw new Error('Invalid device ID');
-    }
+    const normalized = normalizeOptionalPolicyDeviceId(deviceId)!;
 
     return updatePolicyRuntimeConfig(
         (current) => ({ ...current, deviceId: normalized }),
