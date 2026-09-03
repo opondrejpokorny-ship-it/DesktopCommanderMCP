@@ -39,5 +39,9 @@ jobs:
             node "$test_file"
           done
 
-      - name: Run real MCP policy integration
-        run: node test/integration/policy-gate-write.js
+      - name: Run real MCP policy integrations
+        shell: bash
+        run: |
+          for test_file in test/integration/policy-*.js; do
+            node "$test_file"
+          done
