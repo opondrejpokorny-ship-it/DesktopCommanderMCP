@@ -679,12 +679,16 @@ export async function preflightToolRequest(
         };
     }
 
-    // Explicit rules remain higher priority than profile/tier defaults. This
-    // allows narrow command exceptions while keeping the paid-tier baseline.
+    // Explicit rules remain higher priority than profile defaults.
+    // Full Access deliberately skips the paid-tier approval baseline so it
+    // behaves as its label promises, while explicit user rules and protected
+    // control-plane denies above still remain enforced.
     const effectiveRules = [
         ...config.rules,
         ...getPolicyProfileRules(config.profile),
-        ...getTierBaselineRules(config.tier),
+        ...(config.profile === 'full_access'
+            ? []
+            : getTierBaselineRules(config.tier)),
     ];
 
     const evaluation = evaluateToolRequestPolicy(tool, args, {
