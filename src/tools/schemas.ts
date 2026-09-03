@@ -180,6 +180,13 @@ export const InteractWithProcessArgsSchema = z.object({
 // Usage stats schema
 export const GetUsageStatsArgsSchema = z.object({});
 
+// Tier-aware lifecycle progress reporting
+export const ReportTaskProgressArgsSchema = z.object({
+  percentRemaining: z.number().min(0).max(100),
+  currentPhase: z.string().trim().min(1).max(120),
+  estimatedRemainingMinutes: z.number().min(0).max(100000),
+});
+
 // Feedback tool schema - no pre-filled parameters, all user input
 export const GiveFeedbackArgsSchema = z.object({
   // No parameters needed - form will be filled manually by user
@@ -270,6 +277,7 @@ export const toolArgSchemas: Record<string, z.ZodTypeAny> = {
   list_processes: ListProcessesArgsSchema,
   kill_process: KillProcessArgsSchema,
   get_usage_stats: GetUsageStatsArgsSchema,
+  report_task_progress: ReportTaskProgressArgsSchema,
   get_recent_tool_calls: GetRecentToolCallsArgsSchema,
   give_feedback_to_desktop_commander: GiveFeedbackArgsSchema,
   get_prompts: GetPromptsArgsSchema,

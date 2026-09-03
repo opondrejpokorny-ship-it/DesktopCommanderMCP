@@ -177,9 +177,23 @@ Operational memory covers:
 - final state
 - resumable checkpoint
 
+Native lifecycle progress reporting is now tier-aware through the real MCP tool
+`report_task_progress`:
+
+- Free → approximate percent remaining,
+- Pro / Team → approximate percent remaining + estimated time remaining.
+
+The estimate is intentionally rounded and described as approximate, never as a
+deadline or guarantee. The tool reads the actual configured policy tier
+server-side, so Free output strips ETA even if an agent supplies one. Progress
+arguments contain only percentage, a short phase label, and the numeric time
+estimate; file contents and raw terminal commands are not needed.
+
 Privacy rules explicitly prohibit storing secrets.
 
-The skill is mirrored for the supported plugin layout and protected by a contract test.
+The skill is mirrored for the supported plugin layout and protected by contract
+tests plus a real MCP stdio integration test for `tools/list` and
+`tools/call`.
 
 **Exit criteria: PASS.** A later agent/session receives a clear plan, work log and checkpoint model instead of rediscovering the project from scratch.
 
