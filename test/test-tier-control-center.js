@@ -169,6 +169,32 @@ try {
   assert.strictEqual(folderState.folderPermissions[0].path, tempDir);
   assert.strictEqual(folderState.folderPermissions[0].permission, 'read_only');
 
+  const scopedFolderResponse = await fetch(
+    `${controlCenter.url}api/policy/folders`,
+    {
+      method: 'POST',
+      headers: {
+        'X-DC-Control-Token': 'test-control-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        path: tempDir,
+        permission: 'read_write',
+        deviceId: 'remote-device-1',
+      }),
+    }
+  );
+  assert.strictEqual(scopedFolderResponse.status, 200);
+  const scopedFolderState = await scopedFolderResponse.json();
+  assert.ok(
+    scopedFolderState.folderPermissions.some(
+      (entry) =>
+        entry.path === tempDir &&
+        entry.permission === 'read_write' &&
+        entry.deviceId === 'remote-device-1'
+    )
+  );
+
   const invalidFolder = await fetch(
     `${controlCenter.url}api/policy/folders`,
     {
