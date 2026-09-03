@@ -104,7 +104,34 @@ export function evaluatePolicy(
         return { decision: 'allow' };
     }
 
-    const matchedRule = rules.find((rule) => ruleMatches(context, rule));
+    let matchedRule: PolicyRule | undefined;
+    let bestResourceSpecificity = -1;
+    let bestDeviceSpecificity = -1;
+
+    for (const rule of rules) {
+        if (!ruleMatches(context, rule)) {
+            continue;
+        }
+
+        // A nested resource rule must beat a broader folder rule regardless of
+        // which one was edited most recently. Rules without a resource prefix
+        // (for example profile defaults) are least specific.
+        const resourceSpecificity = rule.resourcePrefix?.length ?? 0;
+        const deviceSpecificity = rule.deviceId ? 1 : 0;
+
+        if (
+            !matchedRule ||
+            resourceSpecificity > bestResourceSpecificity ||
+            (
+                resourceSpecificity === bestResourceSpecificity &&
+                deviceSpecificity > bestDeviceSpecificity
+            )
+        ) {
+            matchedRule = rule;
+            bestResourceSpecificity = resourceSpecificity;
+            bestDeviceSpecificity = deviceSpecificity;
+        }
+    }
 
     if (!matchedRule) {
         return { decision: 'allow' };
