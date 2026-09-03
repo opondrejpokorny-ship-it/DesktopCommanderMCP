@@ -28,6 +28,37 @@ function genericResourceMatches(
     );
 }
 
+function commandResourceMatches(
+    resource: string | undefined,
+    prefix: string | undefined,
+): boolean {
+    if (!prefix) {
+        return true;
+    }
+
+    if (!resource) {
+        return false;
+    }
+
+    const normalizedPrefix = prefix.trim();
+    const normalizedResource = resource.trim();
+
+    if (!normalizedPrefix) {
+        return true;
+    }
+
+    if (normalizedResource === normalizedPrefix) {
+        return true;
+    }
+
+    if (!normalizedResource.startsWith(normalizedPrefix)) {
+        return false;
+    }
+
+    const nextCharacter = normalizedResource.charAt(normalizedPrefix.length);
+    return /\s|[;&|()]/.test(nextCharacter);
+}
+
 function looksLikeWindowsPath(value: string): boolean {
     return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
@@ -81,6 +112,13 @@ function ruleMatches(context: PolicyContext, rule: PolicyRule): boolean {
 
     if (context.action.startsWith('filesystem.')) {
         return filesystemResourceMatches(
+            context.resource,
+            rule.resourcePrefix,
+        );
+    }
+
+    if (context.action === 'terminal.execute') {
+        return commandResourceMatches(
             context.resource,
             rule.resourcePrefix,
         );
