@@ -215,7 +215,7 @@ export async function applyPolicyGate(
             tool,
             'deny',
             auditEnabled,
-            auditPath,
+            auditSink,
         );
 
         const ruleText = evaluation.matchedRuleId
