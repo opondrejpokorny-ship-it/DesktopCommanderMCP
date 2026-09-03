@@ -159,29 +159,38 @@ Optional remaining showcase work:
 
 **Status: DONE**
 
-Added `software-project-workflow` skill.
+Added `software-project-workflow` skill plus a persistent runtime coordinator.
 
-Lifecycle:
+Lifecycle guidance:
 
 **Inspect → Plan → Implement → Test → Review → Document**
 
-Operational memory covers:
+Runtime:
 
-- goal
-- plan
-- estimated progress
-- changes
-- failed attempts
-- lessons
-- verification
-- final state
-- resumable checkpoint
+- versioned per-project `.desktop-commander/project-workflow.json` profile
+- `project_workflow` MCP tool with `start / status / resume / record / finish`
+- local Git preflight and refreshed Git evidence
+- whole-lifecycle progress and next-stage reporting
+- persistent task state outside the repository
+- profile fingerprint/drift protection before completion
+- required-stage completion checks
+- provider/agent evidence references with bounded summaries and credential redaction
+- server initialization guidance encouraging automatic start/resume on material software work
 
-Privacy rules explicitly prohibit storing secrets.
+Security/privacy:
 
-The skill is mirrored for the supported plugin layout and protected by a contract test.
+- existing policy and upstream validation remain authoritative
+- ordinary filesystem write/move/delete cannot modify workflow profile/state, including through symlink aliases
+- agent-controlled MCP evidence cannot mint `user_authorization`
+- authorization-required stages need a future trusted host/control-plane signal after explicit user authorization
+- no raw file contents or raw terminal command output are persisted in workflow state
+- the coordinator is operational control, not an OS security sandbox
 
-**Exit criteria: PASS.** A later agent/session receives a clear plan, work log and checkpoint model instead of rediscovering the project from scratch.
+The skill is byte-identical across root, Claude and Cursor packaging and protected by distribution/contract tests.
+
+Verification includes focused coordinator/security tests and a real built MCP stdio test proving instructions, tools/list registration, start→record→finish, filesystem tamper blocking, profile integrity and authorization rejection.
+
+**Exit criteria: PASS.** A later agent/session can resume from persistent verified lifecycle state instead of relying only on prose guidance or rediscovering the project from scratch.
 
 ## Phase 9 — Portfolio polish
 
@@ -224,14 +233,19 @@ A real local E2E test on the primary Remote Device verified:
 
 ## Current verification
 
-At the latest full verified SHA before this documentation update:
+For the project-workflow coordinator change on the merged task branch:
 
-- Focused policy suite: **PASS**
-- Real MCP policy integrations: **PASS**
-- Full prototype test suite: **PASS**
-- Clean upstream baseline test suite: **PASS**
-- Standalone Control Center CI: **PASS**
-- Local MCP build: **PASS**
+- Local MCP build / TypeScript: **PASS**
+- Focused project-workflow coordinator tests: **PASS**
+- Workflow skill contract + root/Claude/Cursor distribution: **PASS**
+- Policy/control-plane focused regression tests: **PASS**
+- Real built MCP project-workflow stdio integration: **PASS**
+- Server/manifest tool registration via official MCP SDK: **PASS (27/27 tools)**
+- Broad unit runner: **65/66 PASS**; the only failure is `test-enhanced-repl.js` because Python is unavailable in PATH, reproduced unchanged on pre-task baseline `2aab8cb`
+- Broad integration runner exposed pre-existing fuzzy edit-block and terminal-approval test failures; both were reproduced unchanged on exact pre-task baseline `2aab8cb`
+- `git diff --check`: **PASS**
+
+These baseline/environment failures are tracked separately and are not attributed to the workflow coordinator change.
 
 ## Deferred ideas
 
