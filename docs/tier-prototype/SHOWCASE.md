@@ -184,6 +184,8 @@ ETA is explicitly approximate rather than guaranteed. The reporter uses only pro
 
 This is different from generic knowledge management: it records how work was executed so a later session can continue without repeating the same mistakes.
 
+The same workflow can also use otherwise idle wait time productively. If CI, a build, indexing, or another independent external operation is still running, the coordinator can recommend another already-planned read-only stage whose dependencies are satisfied, then direct the agent back to re-check the awaited dependency. A true blocker is not routed around, side-effecting work is not automatically selected as opportunistic work, and normal policy/approval/upstream validation remains authoritative.
+
 ## Verification
 
 Verified before this documentation-only update:
@@ -220,6 +222,6 @@ That single flow demonstrates the product thesis without needing billing, hosted
 - Skills marketplace.
 - Full private/self-hosted relay implementation.
 - Enterprise SSO / centralized RBAC.
-- Background workers.
+- Background autonomous workers (the cooperative external-wait scheduler above is intentionally narrower and is not a background worker).
 
 Those are potential product extensions after the access-control concept is proven.
