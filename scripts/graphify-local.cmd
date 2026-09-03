@@ -26,33 +26,37 @@ if /I "%ACTION%"=="update" goto :rebuild
 if /I "%ACTION%"=="query" (
   if "%~2"=="" goto :usage
   if "%NEED_REFRESH%"=="1" call :rebuild_or_fail
-  if errorlevel 1 exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
   call :graphify query "%~2" --graph "%GRAPH%"
-  exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
+  exit /b 0
 )
 
 if /I "%ACTION%"=="path" (
   if "%~2"=="" goto :usage
   if "%~3"=="" goto :usage
   if "%NEED_REFRESH%"=="1" call :rebuild_or_fail
-  if errorlevel 1 exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
   call :graphify path "%~2" "%~3" --graph "%GRAPH%"
-  exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
+  exit /b 0
 )
 
 if /I "%ACTION%"=="explain" (
   if "%~2"=="" goto :usage
   if "%NEED_REFRESH%"=="1" call :rebuild_or_fail
-  if errorlevel 1 exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
   call :graphify explain "%~2" --graph "%GRAPH%"
-  exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
+  exit /b 0
 )
 
 if /I "%ACTION%"=="god-nodes" (
   if "%NEED_REFRESH%"=="1" call :rebuild_or_fail
-  if errorlevel 1 exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
   call :graphify god-nodes --graph "%GRAPH%"
-  exit /b %errorlevel%
+  if errorlevel 1 exit /b 1
+  exit /b 0
 )
 
 echo Unknown Graphify action: %ACTION%
@@ -60,7 +64,8 @@ goto :usage
 
 :rebuild
 call :rebuild_or_fail
-exit /b %errorlevel%
+if errorlevel 1 exit /b 1
+exit /b 0
 
 :rebuild_or_fail
 pushd "%REPO%"
