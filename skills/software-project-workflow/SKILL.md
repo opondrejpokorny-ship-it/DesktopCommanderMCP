@@ -1,6 +1,6 @@
 ---
 name: software-project-workflow
-version: 0.1.1
+version: 0.1.2
 audience: agent
 description: >-
   Run software work as a repeatable lifecycle with operational memory. Use when
@@ -36,6 +36,23 @@ authoritative current-task lifecycle state:
    user authorization plus a trusted host/control-plane signal.
 8. Call `action: "finish"` only after required stages are complete and optional stages are
    either completed or explicitly skipped.
+
+### External waits and opportunistic work
+
+When an independent external dependency is still running (for example CI, a build,
+a test process, indexing, or a provider operation), record the affected stage as
+`waiting_external` rather than a true `blocked` stage. Then use the coordinator's
+`readyStages`, `opportunisticStages`, and `recommendedStage` to decide what can
+proceed without that dependency.
+
+- Treat `blocked` as a real stop condition; do not route around it automatically.
+- Only `read_only` stages are automatically eligible in `opportunisticStages`.
+- Work only on relevant, already-planned lifecycle stages. **Do not invent unrelated busy-work.**
+- A waiting stage never grants permission for side effects. Normal Desktop Commander policy,
+  approvals, allowed-directory checks, command validation, and upstream validation still apply.
+- After useful opportunistic work is exhausted, **re-check** the external dependency before advancing.
+- If a `git_head`-scoped stage reports `evidenceStale`, refresh that evidence before relying on it
+  or finishing the workflow; a changed commit can invalidate an earlier readiness audit.
 
 The coordinator supplements existing Desktop Commander policy and upstream guardrails.
 It never authorizes a tool call, bypasses allowed directories, or replaces command/path
