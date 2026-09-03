@@ -131,6 +131,10 @@ function parsePolicyRule(value: unknown, index: number): PolicyRule {
         throw new Error(`rules[${index}].resourcePrefix must be a string`);
     }
 
+    if (rule.commandPrefix !== undefined && typeof rule.commandPrefix !== 'string') {
+        throw new Error(`rules[${index}].commandPrefix must be a string`);
+    }
+
     if (rule.deviceId !== undefined && typeof rule.deviceId !== 'string') {
         throw new Error(`rules[${index}].deviceId must be a string`);
     }
@@ -140,6 +144,9 @@ function parsePolicyRule(value: unknown, index: number): PolicyRule {
         action: rule.action as PolicyAction,
         decision: rule.decision as PolicyRule['decision'],
         ...(rule.resourcePrefix !== undefined ? { resourcePrefix: rule.resourcePrefix } : {}),
+        ...(rule.commandPrefix !== undefined
+            ? { commandPrefix: normalizeCommandPrefix(rule.commandPrefix) }
+            : {}),
         ...(rule.deviceId !== undefined ? { deviceId: rule.deviceId } : {}),
     };
 }
@@ -256,10 +263,10 @@ export function listCommandPermissions(
             (rule) =>
                 rule.id.startsWith(MANAGED_COMMAND_RULE_PREFIX) &&
                 rule.action === 'terminal.execute' &&
-                !!rule.resourcePrefix,
+                !!rule.commandPrefix,
         )
         .map((rule) => ({
-            commandPrefix: rule.resourcePrefix!,
+            commandPrefix: rule.commandPrefix!,
             permission:
                 rule.decision === 'deny'
                     ? 'blocked'
@@ -284,7 +291,7 @@ export async function setCommandPermission(
             rules.unshift({
                 id: ruleId,
                 action: 'terminal.execute',
-                resourcePrefix: normalized,
+                commandPrefix: normalized,
                 decision: commandDecision(permission),
             });
         }
