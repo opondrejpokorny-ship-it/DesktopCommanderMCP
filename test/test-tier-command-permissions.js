@@ -1,3 +1,5 @@
+[Reading 161 lines from start (total: 161 lines, 0 remaining)]
+
 /**
  * RED -> GREEN tests for managed command permissions.
  */
@@ -113,6 +115,24 @@ try {
     'Blocked command prefix should deny execution'
   );
 
+  for (const wrapped of [
+    'cmd.exe /d /s /c "npm publish --access public"',
+    'powershell.exe -NoProfile -Command "npm publish --access public"',
+    'pwsh -NoProfile -Command "npm publish --access public"',
+    'bash -lc "npm publish --access public"',
+    'sh -c "npm publish --access public"',
+  ]) {
+    assert.strictEqual(
+      (await preflightToolRequest(
+        'start_process',
+        { command: wrapped, timeout_ms: 5000 },
+        policyFile
+      )).decision,
+      'deny',
+      `Common shell wrapper must not bypass a managed command restriction: ${wrapped}`
+    );
+  }
+
   const npmBoundary = await preflightToolRequest(
     'start_process',
     { command: 'npm publisher-info', timeout_ms: 5000 },
@@ -141,3 +161,5 @@ try {
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }
+
+[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

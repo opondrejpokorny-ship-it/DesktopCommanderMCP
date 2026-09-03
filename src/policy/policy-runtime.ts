@@ -1,3 +1,5 @@
+[Reading 840 lines from start (total: 840 lines, 0 remaining)]
+
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -10,8 +12,9 @@ import {
     getTierBaselineRules,
 } from './policy-profiles.js';
 import {
-    evaluateToolRequestPolicy,
+    evaluateNormalizedToolActionsPolicy,
     normalizeToolActions,
+    NormalizedToolAction,
 } from './tool-policy.js';
 import { isProjectWorkflowControlPlaneResource } from '../workflow/project-workflow.js';
 import {
@@ -109,6 +112,8 @@ const VALID_ACTIONS = new Set<PolicyAction>([
     'terminal.execute',
     'process.terminate',
     'config.change',
+    'workflow.change',
+    'external.open',
 ]);
 
 function defaultPolicyConfig(): PolicyRuntimeConfig {
@@ -237,13 +242,103 @@ function normalizedPolicyPathIdentity(value: string): string {
     return `posix:${path.posix.resolve(value)}`;
 }
 
+function looksLikeUri(value: string): boolean {
+    return /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value);
+}
+
+function expandPolicyHome(value: string): string {
+    if (value === '~') {
+        return USER_HOME;
+    }
+    if (value.startsWith('~/') || value.startsWith('~\\')) {
+        return path.join(USER_HOME, value.slice(2));
+    }
+    return value;
+}
+
+async function canonicalizePolicyFilesystemPath(value: string): Promise<string> {
+    if (looksLikeUri(value)) {
+        return value;
+    }
+
+    const expanded = expandPolicyHome(value);
+    const absolute = path.isAbsolute(expanded)
+        ? path.resolve(expanded)
+        : path.resolve(process.cwd(), expanded);
+
+    try {
+        return await fs.realpath(absolute);
+    } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+
+    let current = absolute;
+    const remaining: string[] = [];
+
+    while (true) {
+        try {
+            const resolvedAncestor = await fs.realpath(current);
+            return path.join(resolvedAncestor, ...remaining);
+        } catch (error) {
+            const err = error as NodeJS.ErrnoException;
+            if (err.code !== 'ENOENT') {
+                throw error;
+            }
+        }
+
+        const parent = path.dirname(current);
+        if (parent === current) {
+            return absolute;
+        }
+
+        remaining.unshift(path.basename(current));
+        current = parent;
+    }
+}
+
+async function canonicalizePolicyActions(
+    actions: readonly NormalizedToolAction[],
+): Promise<NormalizedToolAction[]> {
+    return Promise.all(actions.map(async (entry) => {
+        if (!entry.action.startsWith('filesystem.') || !entry.resource) {
+            return entry;
+        }
+
+        return {
+            ...entry,
+            resource: await canonicalizePolicyFilesystemPath(entry.resource),
+        };
+    }));
+}
+
+async function canonicalizeFilesystemRules(
+    rules: readonly PolicyRule[],
+): Promise<PolicyRule[]> {
+    return Promise.all(rules.map(async (rule) => {
+        if (
+            !rule.action.startsWith('filesystem.') ||
+            !rule.resourcePrefix
+        ) {
+            return rule;
+        }
+
+        return {
+            ...rule,
+            resourcePrefix: await canonicalizePolicyFilesystemPath(
+                rule.resourcePrefix,
+            ),
+        };
+    }));
+}
+
 async function protectedControlPlaneEvaluation(
     tier: DesktopCommanderTier,
-    tool: string,
-    args: unknown,
+    normalizedActions: readonly NormalizedToolAction[],
     policyPath?: string,
 ): Promise<Pick<PolicyPreflightResult, 'decision' | 'matchedRuleId' | 'action' | 'resource'> | null> {
-    const normalizedActions = normalizeToolActions(tool, args);
 
     for (const normalized of normalizedActions) {
         if (
@@ -271,11 +366,15 @@ async function protectedControlPlaneEvaluation(
         return null;
     }
 
-    const protectedPaths = new Set([
-        normalizedPolicyPathIdentity(resolvePolicyPath(policyPath)),
-        normalizedPolicyPathIdentity(resolveApprovalPath()),
-        normalizedPolicyPathIdentity(resolveAuditPath()),
-    ]);
+    const protectedPaths = new Set(
+        await Promise.all([
+            resolvePolicyPath(policyPath),
+            resolveApprovalPath(),
+            resolveAuditPath(),
+        ].map(async (protectedPath) => normalizedPolicyPathIdentity(
+            await canonicalizePolicyFilesystemPath(protectedPath),
+        ))),
+    );
 
     for (const normalized of normalizedActions) {
         if (
@@ -662,11 +761,13 @@ export async function preflightToolRequest(
     policyPath?: string,
 ): Promise<PolicyPreflightResult> {
     const config = await loadPolicyRuntimeConfig(policyPath);
+    const normalizedActions = await canonicalizePolicyActions(
+        normalizeToolActions(tool, args),
+    );
 
     const protectedEvaluation = await protectedControlPlaneEvaluation(
         config.tier,
-        tool,
-        args,
+        normalizedActions,
         policyPath,
     );
 
@@ -679,23 +780,56 @@ export async function preflightToolRequest(
         };
     }
 
-    // Explicit rules remain higher priority than profile defaults.
+    // Read Only is an absolute safety ceiling. Explicit rules may make reads
+    // stricter, but must never reopen write/terminal/process/config actions.
+    if (config.profile === 'read_only') {
+        const ceilingEvaluation = evaluateNormalizedToolActionsPolicy(
+            tool,
+            normalizedActions,
+            {
+                tier: config.tier,
+                deviceId: config.deviceId,
+                rules: getPolicyProfileRules('read_only'),
+            },
+        );
+
+        if (ceilingEvaluation.decision === 'deny') {
+            return {
+                ...ceilingEvaluation,
+                tier: config.tier,
+                profile: config.profile,
+                ...(config.deviceId ? { deviceId: config.deviceId } : {}),
+                ...(ceilingEvaluation.action
+                    ? { action: ceilingEvaluation.action }
+                    : {}),
+                ...(ceilingEvaluation.resource
+                    ? { resource: ceilingEvaluation.resource }
+                    : {}),
+            };
+        }
+    }
+
+    // Explicit rules remain higher priority than ordinary profile defaults.
     // Full Access deliberately skips the paid-tier approval baseline so it
-    // behaves as its label promises, while explicit user rules and protected
-    // control-plane denies above still remain enforced.
-    const effectiveRules = [
+    // behaves as its label promises. Filesystem resources and rule prefixes
+    // are canonicalized first so symlinks/junctions cannot change policy scope.
+    const effectiveRules = await canonicalizeFilesystemRules([
         ...config.rules,
         ...getPolicyProfileRules(config.profile),
         ...(config.profile === 'full_access'
             ? []
             : getTierBaselineRules(config.tier)),
-    ];
+    ]);
 
-    const evaluation = evaluateToolRequestPolicy(tool, args, {
-        tier: config.tier,
-        deviceId: config.deviceId,
-        rules: effectiveRules,
-    });
+    const evaluation = evaluateNormalizedToolActionsPolicy(
+        tool,
+        normalizedActions,
+        {
+            tier: config.tier,
+            deviceId: config.deviceId,
+            rules: effectiveRules,
+        },
+    );
 
     return {
         ...evaluation,
@@ -706,3 +840,5 @@ export async function preflightToolRequest(
         ...(evaluation.resource ? { resource: evaluation.resource } : {}),
     };
 }
+
+[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

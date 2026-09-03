@@ -1,3 +1,5 @@
+[Reading 240 lines from start (total: 240 lines, 0 remaining)]
+
 /**
  * RED -> GREEN tests for built-in policy profiles.
  */
@@ -94,6 +96,67 @@ try {
     'Read Only should preserve reads'
   );
 
+  for (const [tool, args] of [
+    ['project_workflow', { action: 'start', projectRoot: '/projects/app', goal: 'test' }],
+    ['project_workflow', { action: 'resume', projectRoot: '/projects/app' }],
+    ['stop_search', { sessionId: 'search-1' }],
+    ['give_feedback_to_desktop_commander', {}],
+  ]) {
+    assert.strictEqual(
+      (await preflightToolRequest(tool, args, readOnly)).decision,
+      'deny',
+      `Read Only should deny side-effecting meta-tool ${tool}`
+    );
+  }
+
+  assert.strictEqual(
+    (await preflightToolRequest(
+      'project_workflow',
+      { action: 'status', projectRoot: '/projects/app' },
+      readOnly
+    )).decision,
+    'allow',
+    'Read Only should still allow project workflow status reads'
+  );
+
+  const readOnlyWithExplicitAllows = await writePolicy('read-only-explicit-allows.json', {
+    version: 1,
+    tier: 'pro',
+    profile: 'read_only',
+    rules: [
+      {
+        id: 'explicit-write-allow',
+        action: 'filesystem.write',
+        resourcePrefix: '/projects',
+        decision: 'allow',
+      },
+      {
+        id: 'explicit-terminal-allow',
+        action: 'terminal.execute',
+        decision: 'allow',
+      },
+    ],
+  });
+
+  assert.strictEqual(
+    (await preflightToolRequest(
+      'write_file',
+      { path: '/projects/app.ts', content: 'change' },
+      readOnlyWithExplicitAllows
+    )).decision,
+    'deny',
+    'Read Only must remain an absolute ceiling even when an explicit write allow exists'
+  );
+  assert.strictEqual(
+    (await preflightToolRequest(
+      'start_process',
+      { command: 'echo should-not-run', timeout_ms: 5000 },
+      readOnlyWithExplicitAllows
+    )).decision,
+    'deny',
+    'Read Only must remain an absolute ceiling even when an explicit terminal allow exists'
+  );
+
   const fullAccess = await writePolicy('full-access.json', {
     version: 1,
     tier: 'pro',
@@ -177,3 +240,5 @@ try {
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }
+
+[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

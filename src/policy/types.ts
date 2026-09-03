@@ -1,3 +1,5 @@
+[Reading 41 lines from start (total: 41 lines, 0 remaining)]
+
 export type DesktopCommanderTier = 'free' | 'pro' | 'team';
 
 export type PolicyProfile =
@@ -14,7 +16,9 @@ export type PolicyAction =
     | 'filesystem.delete'
     | 'terminal.execute'
     | 'process.terminate'
-    | 'config.change';
+    | 'config.change'
+    | 'workflow.change'
+    | 'external.open';
 
 export interface PolicyContext {
     tier: DesktopCommanderTier;
@@ -37,3 +41,5 @@ export interface PolicyEvaluation {
     decision: PolicyDecision;
     matchedRuleId?: string;
 }
+
+[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

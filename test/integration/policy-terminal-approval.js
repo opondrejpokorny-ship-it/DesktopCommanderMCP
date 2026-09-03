@@ -1,3 +1,5 @@
+[Reading 155 lines from start (total: 155 lines, 0 remaining)]
+
 /**
  * End-to-end terminal policy integration test.
  *
@@ -62,6 +64,15 @@ async function exists(filePath) {
   }
 }
 
+async function waitForFile(filePath, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await exists(filePath)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return exists(filePath);
+}
+
 try {
   await fs.writeFile(policyFile, JSON.stringify({
     version: 1,
@@ -73,9 +84,18 @@ try {
     }],
   }));
 
-  const script = `require('fs').writeFileSync(${JSON.stringify(markerFile)}, 'executed')`;
-  const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
-  const args = { command, timeout_ms: 5000 };
+  const scriptPath = markerFile.replace(/\\/g, '/').replace(/'/g, "\\'");
+  const script = `require('fs').writeFileSync('${scriptPath}', 'executed')`;
+  const args = process.platform === 'win32'
+    ? {
+        command: `& '${process.execPath.replace(/'/g, "''")}' -e \"${script}\"`,
+        timeout_ms: 5000,
+        shell: 'powershell.exe',
+      }
+    : {
+        command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+        timeout_ms: 5000,
+      };
 
   const client = await createClient();
 
@@ -104,6 +124,11 @@ try {
 
     assert.ok(!allowed.isError, 'Approved exact terminal retry should execute');
     assert.strictEqual(
+      await waitForFile(markerFile),
+      true,
+      'Approved terminal process should create its marker within 3 seconds'
+    );
+    assert.strictEqual(
       await fs.readFile(markerFile, 'utf8'),
       'executed',
       'Approved terminal process should produce its real side effect'
@@ -130,3 +155,5 @@ try {
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }
+
+[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

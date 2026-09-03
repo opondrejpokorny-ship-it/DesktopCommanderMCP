@@ -1,3 +1,5 @@
+[Reading 286 lines from start (total: 286 lines, 0 remaining)]
+
 import { evaluatePolicy } from './policy-engine.js';
 import {
     DesktopCommanderTier,
@@ -172,8 +174,26 @@ export function normalizeToolActions(
 
         case 'force_terminate':
         case 'kill_process':
+        case 'stop_search':
             return [{
                 action: 'process.terminate',
+            }];
+
+        case 'project_workflow': {
+            const workflowAction = getStringArg(args, 'action');
+            if (workflowAction === 'status') {
+                return [];
+            }
+            return [{
+                action: 'workflow.change',
+                resource: getStringArg(args, 'projectRoot'),
+            }];
+        }
+
+        case 'give_feedback_to_desktop_commander':
+            return [{
+                action: 'external.open',
+                resource: 'desktop-commander-feedback',
             }];
 
         case 'set_config_value':
@@ -210,13 +230,11 @@ const DECISION_PRIORITY: Record<PolicyDecision, number> = {
  * Every policy-relevant resource touched by a multi-resource tool is evaluated.
  * The strongest decision wins: deny > require_approval > allow.
  */
-export function evaluateToolRequestPolicy(
+export function evaluateNormalizedToolActionsPolicy(
     tool: string,
-    args: unknown,
+    normalizedActions: readonly NormalizedToolAction[],
     options: ToolPolicyOptions,
 ): ToolPolicyEvaluation {
-    const normalizedActions = normalizeToolActions(tool, args);
-
     if (normalizedActions.length === 0) {
         return { decision: 'allow' };
     }
@@ -256,3 +274,17 @@ export function evaluateToolRequestPolicy(
 
     return selected ?? { decision: 'allow' };
 }
+
+export function evaluateToolRequestPolicy(
+    tool: string,
+    args: unknown,
+    options: ToolPolicyOptions,
+): ToolPolicyEvaluation {
+    return evaluateNormalizedToolActionsPolicy(
+        tool,
+        normalizeToolActions(tool, args),
+        options,
+    );
+}
+
+[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]

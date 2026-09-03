@@ -1,3 +1,5 @@
+[Reading 101 lines from start (total: 101 lines, 0 remaining)]
+
 import { DesktopCommanderTier, PolicyProfile, PolicyRule } from './types.js';
 
 
@@ -74,6 +76,16 @@ const READ_ONLY_RULES: readonly PolicyRule[] = [
         action: 'config.change',
         decision: 'deny',
     },
+    {
+        id: 'profile:read-only:workflow-change',
+        action: 'workflow.change',
+        decision: 'deny',
+    },
+    {
+        id: 'profile:read-only:external-open',
+        action: 'external.open',
+        decision: 'deny',
+    },
 ];
 
 export function getPolicyProfileRules(
@@ -89,3 +101,5 @@ export function getPolicyProfileRules(
             return [];
     }
 }
+
+[executed on device: WIN-A0OFGC4ORFI (998ddf48-83cd-4223-bfeb-7ac96a8f7a93)]
