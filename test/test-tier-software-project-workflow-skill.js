@@ -62,6 +62,12 @@ for (const required of [
   'checkpoint.md',
   'failed attempts',
   'Resume',
+  'waiting_external',
+  'recommendedStage',
+  'readyStages',
+  'opportunisticStages',
+  'Do not invent unrelated busy-work',
+  're-check',
   'A skill is guidance, not authorization',
   'Never store secrets',
 ]) {

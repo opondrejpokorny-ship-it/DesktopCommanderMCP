@@ -23,6 +23,35 @@ function renderWorkflowSummary(status: WorkflowStatus): string {
         lines.push('Warning: workflow profile changed after this task started.');
     }
 
+    const staleStages = status.stages.filter((stage) => stage.evidenceStale);
+    if (staleStages.length) {
+        lines.push(
+            'Warning: Git-HEAD scoped evidence is stale: ' +
+                staleStages.map((stage) => stage.id).join(', '),
+        );
+    }
+
+    if (status.waitingStages.length) {
+        lines.push(
+            'Waiting on external dependency: ' +
+                status.waitingStages
+                    .map((stage) => stage.id + ' — ' + stage.label)
+                    .join(', '),
+        );
+        if (
+            status.recommendedStage &&
+            status.nextStage &&
+            status.recommendedStage.id !== status.nextStage.id
+        ) {
+            lines.push(
+                'Recommended safe work while waiting: ' +
+                    status.recommendedStage.id + ' — ' + status.recommendedStage.label,
+            );
+        } else {
+            lines.push('Re-check the external dependency before advancing.');
+        }
+    }
+
     if (status.nextStage) {
         lines.push(
             'Next lifecycle stage: ' + status.nextStage.id + ' — ' + status.nextStage.label,
