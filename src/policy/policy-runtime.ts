@@ -8,12 +8,20 @@ import {
     PolicyEvaluation,
     PolicyRule,
 } from './types.js';
+import { normalizeToolAction } from './tool-policy.js';
 
 export interface PolicyRuntimeConfig {
     version: 1;
     tier: DesktopCommanderTier;
     deviceId?: string;
     rules: PolicyRule[];
+}
+
+export interface PolicyPreflightResult extends PolicyEvaluation {
+    tier: DesktopCommanderTier;
+    deviceId?: string;
+    action?: PolicyAction;
+    resource?: string;
 }
 
 export const POLICY_FILE = path.join(
@@ -145,12 +153,20 @@ export async function preflightToolRequest(
     tool: string,
     args: unknown,
     policyPath?: string,
-): Promise<PolicyEvaluation> {
+): Promise<PolicyPreflightResult> {
     const config = await loadPolicyRuntimeConfig(policyPath);
-
-    return evaluateToolRequestPolicy(tool, args, {
+    const normalized = normalizeToolAction(tool, args);
+    const evaluation = evaluateToolRequestPolicy(tool, args, {
         tier: config.tier,
         deviceId: config.deviceId,
         rules: config.rules,
     });
+
+    return {
+        ...evaluation,
+        tier: config.tier,
+        ...(config.deviceId ? { deviceId: config.deviceId } : {}),
+        ...(normalized ? { action: normalized.action } : {}),
+        ...(normalized?.resource ? { resource: normalized.resource } : {}),
+    };
 }
