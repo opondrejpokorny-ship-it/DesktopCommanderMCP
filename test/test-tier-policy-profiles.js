@@ -101,14 +101,19 @@ try {
     rules: [],
   });
 
+  const fullAccessTerminal = await preflightToolRequest(
+    'start_process',
+    { command: 'npm test', timeout_ms: 5000 },
+    fullAccess
+  );
   assert.strictEqual(
-    (await preflightToolRequest(
-      'start_process',
-      { command: 'npm test', timeout_ms: 5000 },
-      fullAccess
-    )).decision,
-    'allow',
-    'Full Access should add no restrictions'
+    fullAccessTerminal.decision,
+    'require_approval',
+    'Full Access keeps broad filesystem access, but paid tiers still protect terminal execution'
+  );
+  assert.strictEqual(
+    fullAccessTerminal.matchedRuleId,
+    'tier:paid:terminal'
   );
 
   const safeWithOverride = await writePolicy('safe-override.json', {
