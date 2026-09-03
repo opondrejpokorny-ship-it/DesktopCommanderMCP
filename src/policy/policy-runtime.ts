@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
@@ -27,6 +28,18 @@ export interface PolicyPreflightResult extends PolicyEvaluation {
     resource?: string;
 }
 
+export type FolderPermission =
+    | 'inherit'
+    | 'read_write'
+    | 'read_only'
+    | 'approval_required'
+    | 'blocked';
+
+export interface FolderPermissionEntry {
+    path: string;
+    permission: Exclude<FolderPermission, 'inherit'>;
+}
+
 export const POLICY_FILE = path.join(
     USER_HOME,
     '.claude-server-commander',
@@ -39,6 +52,22 @@ export const VALID_PROFILES = new Set<PolicyProfile>([
     'safe_developer',
     'read_only',
 ]);
+
+export const VALID_FOLDER_PERMISSIONS = new Set<FolderPermission>([
+    'inherit',
+    'read_write',
+    'read_only',
+    'approval_required',
+    'blocked',
+]);
+
+const MANAGED_FOLDER_RULE_PREFIX = 'control-center-folder:';
+const MANAGED_FOLDER_ACTIONS: PolicyAction[] = [
+    'filesystem.read',
+    'filesystem.write',
+    'filesystem.move',
+    'filesystem.delete',
+];
 const VALID_DECISIONS = new Set(['allow', 'deny', 'require_approval']);
 const VALID_ACTIONS = new Set<PolicyAction>([
     'filesystem.read',
@@ -153,6 +182,115 @@ export function isDesktopCommanderTier(value: string): value is DesktopCommander
 
 export function isPolicyProfile(value: string): value is PolicyProfile {
     return VALID_PROFILES.has(value as PolicyProfile);
+}
+
+export function isFolderPermission(value: string): value is FolderPermission {
+    return VALID_FOLDER_PERMISSIONS.has(value as FolderPermission);
+}
+
+export function isAbsolutePolicyPath(value: string): boolean {
+    return path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
+function managedFolderRulePrefix(resourcePrefix: string): string {
+    const digest = crypto
+        .createHash('sha256')
+        .update(resourcePrefix)
+        .digest('hex')
+        .slice(0, 16);
+    return `${MANAGED_FOLDER_RULE_PREFIX}${digest}:`;
+}
+
+function decisionForFolderAction(
+    permission: Exclude<FolderPermission, 'inherit'>,
+    action: PolicyAction,
+): PolicyRule['decision'] {
+    if (permission === 'blocked') {
+        return 'deny';
+    }
+    if (action === 'filesystem.read') {
+        return 'allow';
+    }
+    if (permission === 'read_write') {
+        return 'allow';
+    }
+    if (permission === 'read_only') {
+        return 'deny';
+    }
+    return 'require_approval';
+}
+
+function buildManagedFolderRules(
+    resourcePrefix: string,
+    permission: Exclude<FolderPermission, 'inherit'>,
+): PolicyRule[] {
+    const idPrefix = managedFolderRulePrefix(resourcePrefix);
+    return MANAGED_FOLDER_ACTIONS.map((action) => ({
+        id: `${idPrefix}${action.replace('filesystem.', '')}`,
+        action,
+        resourcePrefix,
+        decision: decisionForFolderAction(permission, action),
+    }));
+}
+
+export function listFolderPermissions(
+    config: PolicyRuntimeConfig,
+): FolderPermissionEntry[] {
+    const grouped = new Map<string, PolicyRule[]>();
+
+    for (const rule of config.rules) {
+        if (
+            !rule.id.startsWith(MANAGED_FOLDER_RULE_PREFIX) ||
+            !rule.resourcePrefix
+        ) {
+            continue;
+        }
+        const rules = grouped.get(rule.resourcePrefix) ?? [];
+        rules.push(rule);
+        grouped.set(rule.resourcePrefix, rules);
+    }
+
+    return [...grouped.entries()].map(([resourcePrefix, rules]) => {
+        const read = rules.find((rule) => rule.action === 'filesystem.read');
+        const write = rules.find((rule) => rule.action === 'filesystem.write');
+
+        let permission: FolderPermissionEntry['permission'];
+        if (read?.decision === 'deny') {
+            permission = 'blocked';
+        } else if (write?.decision === 'allow') {
+            permission = 'read_write';
+        } else if (write?.decision === 'require_approval') {
+            permission = 'approval_required';
+        } else {
+            permission = 'read_only';
+        }
+
+        return { path: resourcePrefix, permission };
+    });
+}
+
+export async function setFolderPermission(
+    resourcePrefix: string,
+    permission: FolderPermission,
+    policyPath?: string,
+): Promise<PolicyRuntimeConfig> {
+    const normalizedInput = resourcePrefix.trim();
+    if (!isAbsolutePolicyPath(normalizedInput)) {
+        throw new Error('Folder permission path must be absolute');
+    }
+
+    const idPrefix = managedFolderRulePrefix(normalizedInput);
+    return updatePolicyRuntimeConfig((current) => {
+        const rules = current.rules.filter(
+            (rule) => !rule.id.startsWith(idPrefix),
+        );
+
+        if (permission !== 'inherit') {
+            rules.unshift(...buildManagedFolderRules(normalizedInput, permission));
+        }
+
+        return { ...current, rules };
+    }, policyPath);
 }
 
 async function persistPolicyRuntimeConfig(
