@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: policy-engine-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   policy-engine:
     runs-on: ubuntu-latest
