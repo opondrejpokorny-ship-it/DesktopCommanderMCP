@@ -86,6 +86,44 @@ try {
     'Removing the specific rule should inherit the broad blocked rule'
   );
 
+  await setFolderPermission(broad, 'blocked', policyFile);
+  await setFolderPermission(specific, 'read_write', policyFile);
+  await fs.mkdir(specific, { recursive: true });
+  await fs.mkdir(sibling, { recursive: true });
+  await fs.writeFile(path.join(sibling, 'app.ts'), 'sibling');
+
+  const link = path.join(specific, 'link-to-sibling');
+  try {
+    await fs.symlink(
+      sibling,
+      link,
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
+
+    assert.strictEqual(
+      (await preflightToolRequest(
+        'read_file',
+        { path: path.join(link, 'app.ts') },
+        policyFile
+      )).decision,
+      'deny',
+      'A symlink/junction must not escape a more-specific allowed folder into a blocked sibling'
+    );
+    assert.strictEqual(
+      (await preflightToolRequest(
+        'write_file',
+        { path: path.join(link, 'new.ts'), content: 'change' },
+        policyFile
+      )).decision,
+      'deny',
+      'A symlink/junction write must be evaluated against its canonical target'
+    );
+  } finally {
+    await fs.rm(link, { recursive: true, force: true }).catch(() => {});
+  }
+
+  await setFolderPermission(specific, 'inherit', policyFile);
+
   const config = await loadPolicyRuntimeConfig(policyFile);
   const folders = listFolderPermissions(config);
   assert.deepStrictEqual(folders, [{ path: broad, permission: 'blocked' }]);

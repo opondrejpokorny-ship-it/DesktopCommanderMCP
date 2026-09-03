@@ -113,6 +113,24 @@ try {
     'Blocked command prefix should deny execution'
   );
 
+  for (const wrapped of [
+    'cmd.exe /d /s /c "npm publish --access public"',
+    'powershell.exe -NoProfile -Command "npm publish --access public"',
+    'pwsh -NoProfile -Command "npm publish --access public"',
+    'bash -lc "npm publish --access public"',
+    'sh -c "npm publish --access public"',
+  ]) {
+    assert.strictEqual(
+      (await preflightToolRequest(
+        'start_process',
+        { command: wrapped, timeout_ms: 5000 },
+        policyFile
+      )).decision,
+      'deny',
+      `Common shell wrapper must not bypass a managed command restriction: ${wrapped}`
+    );
+  }
+
   const npmBoundary = await preflightToolRequest(
     'start_process',
     { command: 'npm publisher-info', timeout_ms: 5000 },

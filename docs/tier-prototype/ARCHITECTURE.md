@@ -103,6 +103,16 @@ Initial normalized actions:
 - terminal.execute
 - process.terminate
 - config.change
+- workflow.change
+- external.open
+
+### Restriction hardening semantics
+
+- Filesystem policy resources and folder-rule prefixes are canonicalized before policy matching, so symlink/junction aliases are evaluated against their real target.
+- `Read Only` is an absolute ceiling for write/move/delete, terminal execution, process/search termination, config changes, workflow mutations, and browser-opening feedback. Explicit `allow` rules cannot reopen those mutation classes. `project_workflow status` remains readable; `start`, `resume`, `record`, and `finish` are mutations.
+- Managed command-prefix rules inspect common shell wrappers (`cmd`, PowerShell/pwsh, bash/sh/zsh/dash) in addition to direct commands. They are still command guardrails, not a complete shell-language or OS sandbox.
+- Folder rules are scoped rules, not an implicit allowlist. A single `read_write` folder rule does not deny unmatched folders; use a broader blocked/read-only rule plus narrower exceptions when default-deny behavior is required.
+- `Full Access` intentionally removes prototype default approval prompts. Because it permits arbitrary terminal execution under the same OS identity, neither prototype folder rules nor MCP filesystem control-plane denies can honestly prevent every filesystem effect performed *inside* that terminal. Stronger containment requires OS/container/process isolation or a narrower terminal policy. Existing upstream `allowedDirectories` and `blockedCommands` remain defense-in-depth guardrails and are not represented as a complete terminal sandbox.
 
 ## Approval model
 

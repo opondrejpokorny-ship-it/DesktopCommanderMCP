@@ -74,6 +74,16 @@ const READ_ONLY_RULES: readonly PolicyRule[] = [
         action: 'config.change',
         decision: 'deny',
     },
+    {
+        id: 'profile:read-only:workflow-change',
+        action: 'workflow.change',
+        decision: 'deny',
+    },
+    {
+        id: 'profile:read-only:external-open',
+        action: 'external.open',
+        decision: 'deny',
+    },
 ];
 
 export function getPolicyProfileRules(

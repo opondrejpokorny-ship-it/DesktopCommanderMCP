@@ -50,8 +50,10 @@ Do not build the Server Builder, billing, marketplace, or a replacement hosted R
   - inherit profile default
 - Preserved existing Desktop Commander filesystem/path validation.
 - Added path-boundary and normalization tests.
-- Added nested-rule specificity tests.
+- Added canonical filesystem policy evaluation so symlink/junction aliases are matched against their real target.
+- Added nested-rule specificity tests, including blocked-sibling junction escape coverage.
 - Added per-device folder rules.
+- Documented that folder rules are scoped rules rather than an implicit default-deny allowlist.
 
 **Exit criteria: PASS.** A protected real MCP write is stopped before the file changes; an allowed/approved write behaves like upstream.
 
@@ -99,7 +101,10 @@ Do not build the Server Builder, billing, marketplace, or a replacement hosted R
   - inherit
 - Added per-device command rules.
 - Added token-aware command matching and bypass-focused tests.
-- Handles common forms such as executable paths, `.exe`, environment prefixes, shell chains and command substitution.
+- Handles common forms such as executable paths, `.exe`, environment prefixes, shell chains, command substitution, and common shell wrappers (`cmd`, PowerShell/pwsh, bash/sh/zsh/dash).
+- `Read Only` is enforced as a hard ceiling even when more-specific explicit allow rules exist.
+- Side-effecting meta-tools are policy-mapped: workflow mutations, search termination, and browser-opening feedback no longer slip through `Read Only` as unmapped calls.
+- Command rules remain guardrails rather than a complete shell/OS sandbox; `Full Access` with arbitrary terminal execution is documented accordingly.
 
 **Exit criteria: PASS.** Command governance is additive and does not replace upstream command validation.
 
