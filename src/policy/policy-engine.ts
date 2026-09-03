@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { commandMatchesPrefix } from './command-policy.js';
 import {
     PolicyContext,
     PolicyEvaluation,
@@ -26,37 +27,6 @@ function genericResourceMatches(
             ? prefix
             : `${prefix}\\`,
     );
-}
-
-function commandResourceMatches(
-    resource: string | undefined,
-    prefix: string | undefined,
-): boolean {
-    if (!prefix) {
-        return true;
-    }
-
-    if (!resource) {
-        return false;
-    }
-
-    const normalizedPrefix = prefix.trim();
-    const normalizedResource = resource.trim();
-
-    if (!normalizedPrefix) {
-        return true;
-    }
-
-    if (normalizedResource === normalizedPrefix) {
-        return true;
-    }
-
-    if (!normalizedResource.startsWith(normalizedPrefix)) {
-        return false;
-    }
-
-    const nextCharacter = normalizedResource.charAt(normalizedPrefix.length);
-    return /\s|[;&|()]/.test(nextCharacter);
 }
 
 function looksLikeWindowsPath(value: string): boolean {
@@ -117,11 +87,9 @@ function ruleMatches(context: PolicyContext, rule: PolicyRule): boolean {
         );
     }
 
-    if (context.action === 'terminal.execute') {
-        return commandResourceMatches(
-            context.resource,
-            rule.resourcePrefix,
-        );
+    if (context.action === 'terminal.execute' && rule.commandPrefix) {
+        return !!context.resource &&
+            commandMatchesPrefix(context.resource, rule.commandPrefix);
     }
 
     return genericResourceMatches(context.resource, rule.resourcePrefix);
@@ -154,7 +122,10 @@ export function evaluatePolicy(
         // A nested resource rule must beat a broader folder rule regardless of
         // which one was edited most recently. Rules without a resource prefix
         // (for example profile defaults) are least specific.
-        const resourceSpecificity = rule.resourcePrefix?.length ?? 0;
+        const resourceSpecificity =
+            rule.resourcePrefix?.length ??
+            rule.commandPrefix?.length ??
+            0;
         const deviceSpecificity = rule.deviceId ? 1 : 0;
 
         if (
