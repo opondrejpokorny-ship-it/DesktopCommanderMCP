@@ -12,7 +12,7 @@ const __dirname = path.dirname(__filename);
 const root = path.resolve(__dirname, '..');
 
 const rootSkill = path.join(root, 'skills', 'software-project-workflow', 'SKILL.md');
-const pluginSkill = path.join(
+const claudeSkill = path.join(
   root,
   'plugins',
   'claude',
@@ -20,16 +20,30 @@ const pluginSkill = path.join(
   'software-project-workflow',
   'SKILL.md'
 );
+const cursorSkill = path.join(
+  root,
+  'plugins',
+  'cursor',
+  'skills',
+  'software-project-workflow',
+  'SKILL.md'
+);
 
-const [rootText, pluginText] = await Promise.all([
+const [rootText, claudeText, cursorText] = await Promise.all([
   fs.readFile(rootSkill, 'utf8'),
-  fs.readFile(pluginSkill, 'utf8'),
+  fs.readFile(claudeSkill, 'utf8'),
+  fs.readFile(cursorSkill, 'utf8'),
 ]);
 
 assert.strictEqual(
-  pluginText,
+  claudeText,
   rootText,
   'Root skill and Claude plugin mirror must stay byte-for-byte identical'
+);
+assert.strictEqual(
+  cursorText,
+  rootText,
+  'Root skill and Cursor plugin mirror must stay byte-for-byte identical'
 );
 
 for (const required of [
@@ -45,6 +59,7 @@ for (const required of [
   'checkpoint.md',
   'failed attempts',
   'Resume',
+  'A skill is guidance, not authorization',
   'Never store secrets',
 ]) {
   assert.ok(
