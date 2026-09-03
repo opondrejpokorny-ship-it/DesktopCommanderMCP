@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
+import { normalizeCommandPrefix as normalizeShellCommandPrefix } from './command-policy.js';
 import { getPolicyProfileRules } from './policy-profiles.js';
 import { evaluateToolRequestPolicy } from './tool-policy.js';
 import {
@@ -212,18 +213,18 @@ export function isCommandPermission(value: string): value is CommandPermission {
     return VALID_COMMAND_PERMISSIONS.has(value as CommandPermission);
 }
 
-function normalizeCommandPrefix(value: string): string {
-    const normalized = value.trim();
-    if (!normalized) {
+function normalizeManagedCommandPrefix(value: string): string {
+    const input = value.trim();
+    if (!input) {
         throw new Error('Command prefix must not be empty');
     }
-    if (normalized.includes('\0')) {
+    if (input.includes('\0')) {
         throw new Error('Command prefix must not contain NUL bytes');
     }
-    if (normalized.length > 512) {
+    if (input.length > 512) {
         throw new Error('Command prefix is too long');
     }
-    return normalized;
+    return normalizeShellCommandPrefix(input);
 }
 
 function managedCommandRuleId(commandPrefix: string): string {
@@ -273,7 +274,7 @@ export async function setCommandPermission(
     permission: CommandPermission,
     policyPath?: string,
 ): Promise<PolicyRuntimeConfig> {
-    const normalized = normalizeCommandPrefix(commandPrefix);
+    const normalized = normalizeManagedCommandPrefix(commandPrefix);
     const ruleId = managedCommandRuleId(normalized);
 
     return updatePolicyRuntimeConfig((current) => {
