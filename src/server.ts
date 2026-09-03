@@ -78,7 +78,7 @@ import {
 } from './ui/contracts.js';
 import { listUiResources, readUiResource } from './ui/resources.js';
 import { shouldShowMcpUiPreviews } from './utils/mcp-ui-ab-test.js';
-import { applyPolicyGate } from './policy/policy-gate.js';
+import { applyPolicyGate, recordPolicyExecutionResult } from './policy/policy-gate.js';
 
 // Store startup messages to send after initialization
 const deferredMessages: Array<{ level: string, message: string }> = [];
@@ -1694,10 +1694,19 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         // mcp_ui_event) — and UI-origin calls are dropped wholesale by the
         // capture layer, so server_call_tool reflects only genuine
         // agent-driven tool calls.
+        const durationMs = Date.now() - startTime;
+
+        await recordPolicyExecutionResult(
+            policyGate,
+            name,
+            isError ? 'failure' : 'success',
+            durationMs,
+        );
+
         if (name !== 'track_ui_event') {
             capture_call_tool('server_call_tool', {
                 ...telemetryData,
-                duration_ms: Date.now() - startTime,
+                duration_ms: durationMs,
                 is_error: String(isError),
             });
         }
