@@ -41,11 +41,19 @@ jobs:
       - name: Build, inspect, install and smoke Free package
         run: node test/test-free-package-artifact.js
 
-      - name: Real MCP Pro approval regression
-        run: node test/integration/policy-gate-write.js
+      - name: Run all tier and security regressions
+        shell: bash
+        run: |
+          for test_file in test/test-tier-*.js; do
+            node "$test_file"
+          done
 
-      - name: Real MCP Team audit regression
-        run: node test/integration/policy-team-audit.js
+      - name: Run all real MCP policy regressions
+        shell: bash
+        run: |
+          for test_file in test/integration/policy-*.js; do
+            node "$test_file"
+          done
 
       - name: Diff whitespace check
         run: git diff --check origin/prototype/free-pro-team...HEAD
