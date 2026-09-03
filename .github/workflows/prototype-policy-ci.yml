@@ -34,3 +34,6 @@ jobs:
           for test_file in test/test-tier-policy*.js; do
             node "$test_file"
           done
+
+      - name: Run real MCP policy integration
+        run: node test/integration/policy-gate-write.js
