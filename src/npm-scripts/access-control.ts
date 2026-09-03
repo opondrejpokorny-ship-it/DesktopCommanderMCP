@@ -2,11 +2,14 @@
 
 import { listApprovals, setApprovalDecision } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
+import { loadRemoteDeviceIdentity } from '../policy/device-identity.js';
 import {
     isCommandPermission,
     isDesktopCommanderTier,
     isFolderPermission,
     isPolicyProfile,
+    listCommandPermissions,
+    listFolderPermissions,
     loadPolicyRuntimeConfig,
     setCommandPermission,
     setFolderPermission,
@@ -98,6 +101,29 @@ async function main(): Promise<void> {
         }
 
 
+
+        case 'state': {
+            const [policy, approvals, auditEvents, detectedDeviceIdentity] =
+                await Promise.all([
+                    loadPolicyRuntimeConfig(),
+                    listApprovals(),
+                    listAuditEvents(),
+                    loadRemoteDeviceIdentity(),
+                ]);
+
+            printJson({
+                policy,
+                folderPermissions: listFolderPermissions(policy),
+                commandPermissions: listCommandPermissions(policy),
+                detectedDeviceIdentity,
+                pendingApprovals: approvals.filter(
+                    (record) => record.status === 'pending',
+                ),
+                auditEvents,
+            });
+            return;
+        }
+
         case 'audit': {
             const events = await listAuditEvents();
             printJson(events);
@@ -117,6 +143,7 @@ async function main(): Promise<void> {
                     '  approve <request-id>   Approve one pending request',
                     '  deny <request-id>      Deny one pending request',
                     '  policy                 Show the active access policy',
+                    '  state                  Show Control Center state',
                     '  set-tier <tier>         Set free / pro / team',
                     '  set-profile <profile>   Set full_access / safe_developer / read_only',
                     '  set-device <device-id>  Bind policy identity to a device',
