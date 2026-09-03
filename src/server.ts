@@ -24,7 +24,7 @@ const PATH_GUIDANCE = `IMPORTANT: ${getPathGuidance(SYSTEM_INFO)} Relative paths
 
 const CMD_PREFIX_DESCRIPTION = `This command can be referenced as "DC: ..." or "use Desktop Commander to ..." in your instructions.`;
 
-const PROJECT_WORKFLOW_SERVER_INSTRUCTIONS = `For non-trivial software project work, check whether the repository contains .desktop-commander/project-workflow.json. When it does, call project_workflow with action=start before implementation, or action=resume when a workflow is already active. Follow the returned next lifecycle stage, record only evidence that actually occurred, and call finish only after required stages are complete. External Drive/GitHub/CI evidence remains an agent/provider attestation unless independently verified. Never use workflow state to bypass Desktop Commander policy, approvals, allowed directories, blocked commands, or other upstream validation. Authorization-required stages cannot be completed from agent-controlled MCP evidence; a trusted host/control-plane signal is required after explicit user authorization.`;
+const PROJECT_WORKFLOW_SERVER_INSTRUCTIONS = `For non-trivial software project work, check whether the repository contains .desktop-commander/project-workflow.json. When it does, call project_workflow with action=start before implementation, or action=resume when a workflow is already active. Follow the returned next lifecycle stage and relevant operational lessons, avoid repeating an unchanged failed approach when a lesson applies, record only evidence that actually occurred, and call finish only after required stages are complete. External Drive/GitHub/CI evidence remains an agent/provider attestation unless independently verified. Never use workflow state to bypass Desktop Commander policy, approvals, allowed directories, blocked commands, or other upstream validation. Authorization-required stages cannot be completed from agent-controlled MCP evidence; a trusted host/control-plane signal is required after explicit user authorization.`;
 
 import {
     StartProcessArgsSchema,
@@ -78,6 +78,7 @@ import type {
 import { giveFeedbackToDesktopCommander } from './tools/feedback.js';
 import { getPrompts } from './tools/prompts.js';
 import { projectWorkflow } from './tools/project-workflow.js';
+import { recordOperationalToolFailure } from './workflow/operational-memory.js';
 import { trackToolCall } from './utils/trackTools.js';
 import { usageTracker } from './utils/usageTracker.js';
 import { processDockerPrompt } from './utils/dockerPrompt.js';
@@ -1306,6 +1307,28 @@ ${CMD_PREFIX_DESCRIPTION}`,
 import * as handlers from './handlers/index.js';
 import { ServerResult } from './types.js';
 
+async function recordOperationalFailureBestEffort(
+    tool: string,
+    args: unknown,
+    result: ServerResult,
+    policyDecision?: 'deny' | 'require_approval',
+): Promise<void> {
+    try {
+        await recordOperationalToolFailure({
+            tool,
+            args,
+            result,
+            ...(policyDecision ? { policyDecision } : {}),
+        });
+    } catch (error) {
+        logToStderr(
+            'warning',
+            'Operational memory capture failed: ' +
+                (error instanceof Error ? error.message : String(error)),
+        );
+    }
+}
+
 async function recordAgentToolUsage(
     request: CallToolRequest,
     result: ServerResult,
@@ -1383,6 +1406,12 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
     }
 
     if (!policyGate.allowed) {
+        await recordOperationalFailureBestEffort(
+            name,
+            args,
+            policyGate.result!,
+            policyGate.decision === 'require_approval' ? 'require_approval' : 'deny',
+        );
         return policyGate.result!;
     }
 
@@ -1690,6 +1719,10 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 };
         }
 
+        if (result.isError) {
+            await recordOperationalFailureBestEffort(name, args, result);
+        }
+
         // Add tool call to history (exclude only get_recent_tool_calls to prevent recursion)
         const duration = Date.now() - startTime;
         isError = !!result.isError;
@@ -1827,10 +1860,12 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         capture('server_request_error', {
             error: errorMessage
         });
-        return {
+        const failureResult: ServerResult = {
             content: [{ type: "text", text: `Error: ${errorMessage}` }],
             isError: true,
         };
+        await recordOperationalFailureBestEffort(name, args, failureResult);
+        return failureResult;
     } finally {
         // Single tool-call telemetry event, fired AFTER execution so it can carry
         // timing. In a finally so it still fires on the hard-crash path (the catch
