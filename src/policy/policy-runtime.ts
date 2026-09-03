@@ -117,12 +117,15 @@ function parsePolicyConfig(value: unknown): PolicyRuntimeConfig {
  * restrictions.
  */
 export async function loadPolicyRuntimeConfig(
-    policyPath: string = POLICY_FILE,
+    policyPath?: string,
 ): Promise<PolicyRuntimeConfig> {
+    const resolvedPolicyPath =
+        policyPath ?? process.env.DESKTOP_COMMANDER_POLICY_FILE ?? POLICY_FILE;
+
     let raw: string;
 
     try {
-        raw = await fs.readFile(policyPath, 'utf8');
+        raw = await fs.readFile(resolvedPolicyPath, 'utf8');
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
             return defaultPolicyConfig();
@@ -141,7 +144,7 @@ export async function loadPolicyRuntimeConfig(
 export async function preflightToolRequest(
     tool: string,
     args: unknown,
-    policyPath: string = POLICY_FILE,
+    policyPath?: string,
 ): Promise<PolicyEvaluation> {
     const config = await loadPolicyRuntimeConfig(policyPath);
 
