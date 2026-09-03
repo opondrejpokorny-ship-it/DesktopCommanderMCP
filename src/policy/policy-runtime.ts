@@ -145,7 +145,7 @@ function parsePolicyRule(value: unknown, index: number): PolicyRule {
         decision: rule.decision as PolicyRule['decision'],
         ...(rule.resourcePrefix !== undefined ? { resourcePrefix: rule.resourcePrefix } : {}),
         ...(rule.commandPrefix !== undefined
-            ? { commandPrefix: normalizeCommandPrefix(rule.commandPrefix) }
+            ? { commandPrefix: normalizeManagedCommandPrefix(rule.commandPrefix) }
             : {}),
         ...(rule.deviceId !== undefined ? { deviceId: rule.deviceId } : {}),
     };
