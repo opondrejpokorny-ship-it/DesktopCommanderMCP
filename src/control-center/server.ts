@@ -279,6 +279,10 @@ function renderControlCenterHtml(token: string): string {
             <option value="approval_required">Writes need approval</option>
             <option value="blocked">Blocked</option>
           </select>
+          <select id="folder-scope">
+            <option value="all">All devices</option>
+            <option value="device">This device</option>
+          </select>
           <button id="save-folder">Add folder rule</button>
         </div>
         <div id="folder-permissions"></div>
@@ -288,6 +292,10 @@ function renderControlCenterHtml(token: string): string {
             <option value="allow">Allow</option>
             <option value="approval_required">Require approval</option>
             <option value="blocked">Blocked</option>
+          </select>
+          <select id="command-scope">
+            <option value="all">All devices</option>
+            <option value="device">This device</option>
           </select>
           <button id="save-command">Add command rule</button>
         </div>
@@ -299,6 +307,7 @@ function renderControlCenterHtml(token: string): string {
 
   <script>
     const TOKEN = ${serializedToken};
+    let activeDeviceId = null;
 
     function createElement(tag, text, className) {
       const element = document.createElement(tag);
@@ -436,11 +445,16 @@ function renderControlCenterHtml(token: string): string {
       for (const item of items) {
         const row = createElement('div', undefined, 'row');
         row.appendChild(createElement('div', item.path, 'row-title'));
-        row.appendChild(createElement('div', item.permission.replaceAll('_', ' '), 'meta'));
+        row.appendChild(createElement(
+          'div',
+          item.permission.replaceAll('_', ' ') +
+            ' · ' + (item.deviceId ? 'device ' + item.deviceId : 'all devices'),
+          'meta'
+        ));
         const actions = createElement('div', undefined, 'actions');
         const remove = createElement('button', 'Use profile default');
         remove.addEventListener('click', async () => {
-          await saveFolderPermission(item.path, 'inherit');
+          await saveFolderPermission(item.path, 'inherit', item.deviceId);
         });
         actions.appendChild(remove);
         row.appendChild(actions);
@@ -448,14 +462,18 @@ function renderControlCenterHtml(token: string): string {
       }
     }
 
-    async function saveFolderPermission(pathValue, permission) {
+    async function saveFolderPermission(pathValue, permission, deviceId) {
       const status = document.getElementById('status');
       status.textContent = 'Saving folder policy…';
       try {
         await api('/api/policy/folders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: pathValue, permission })
+          body: JSON.stringify({
+            path: pathValue,
+            permission,
+            ...(deviceId ? { deviceId } : {})
+          })
         });
         document.getElementById('folder-path').value = '';
         await refresh();
@@ -476,11 +494,16 @@ function renderControlCenterHtml(token: string): string {
       for (const item of items) {
         const row = createElement('div', undefined, 'row');
         row.appendChild(createElement('div', item.commandPrefix, 'row-title'));
-        row.appendChild(createElement('div', item.permission.replaceAll('_', ' '), 'meta'));
+        row.appendChild(createElement(
+          'div',
+          item.permission.replaceAll('_', ' ') +
+            ' · ' + (item.deviceId ? 'device ' + item.deviceId : 'all devices'),
+          'meta'
+        ));
         const actions = createElement('div', undefined, 'actions');
         const remove = createElement('button', 'Use profile default');
         remove.addEventListener('click', async () => {
-          await saveCommandPermission(item.commandPrefix, 'inherit');
+          await saveCommandPermission(item.commandPrefix, 'inherit', item.deviceId);
         });
         actions.appendChild(remove);
         row.appendChild(actions);
@@ -488,14 +511,18 @@ function renderControlCenterHtml(token: string): string {
       }
     }
 
-    async function saveCommandPermission(commandPrefix, permission) {
+    async function saveCommandPermission(commandPrefix, permission, deviceId) {
       const status = document.getElementById('status');
       status.textContent = 'Saving command policy…';
       try {
         await api('/api/policy/commands', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ commandPrefix, permission })
+          body: JSON.stringify({
+            commandPrefix,
+            permission,
+            ...(deviceId ? { deviceId } : {})
+          })
         });
         document.getElementById('command-prefix').value = '';
         await refresh();
@@ -548,7 +575,16 @@ function renderControlCenterHtml(token: string): string {
         document.getElementById('status').textContent = 'Enter an absolute folder path.';
         return;
       }
-      saveFolderPermission(pathValue, permission);
+      const scope = document.getElementById('folder-scope').value;
+      if (scope === 'device' && !activeDeviceId) {
+        document.getElementById('status').textContent = 'No active device ID is available.';
+        return;
+      }
+      saveFolderPermission(
+        pathValue,
+        permission,
+        scope === 'device' ? activeDeviceId : undefined
+      );
     });
     document.getElementById('save-command').addEventListener('click', () => {
       const commandPrefix = document.getElementById('command-prefix').value.trim();
@@ -557,7 +593,16 @@ function renderControlCenterHtml(token: string): string {
         document.getElementById('status').textContent = 'Enter a command prefix.';
         return;
       }
-      saveCommandPermission(commandPrefix, permission);
+      const scope = document.getElementById('command-scope').value;
+      if (scope === 'device' && !activeDeviceId) {
+        document.getElementById('status').textContent = 'No active device ID is available.';
+        return;
+      }
+      saveCommandPermission(
+        commandPrefix,
+        permission,
+        scope === 'device' ? activeDeviceId : undefined
+      );
     });
 
     async function refresh() {
@@ -566,10 +611,13 @@ function renderControlCenterHtml(token: string): string {
         const state = await api('/api/state');
         document.getElementById('tier').textContent = state.policy.tier || 'free';
         document.getElementById('profile').textContent = state.policy.profile || 'full_access';
-        document.getElementById('device').textContent =
+        activeDeviceId =
           state.policy.deviceId ||
           (state.detectedDeviceIdentity && state.detectedDeviceIdentity.deviceId) ||
-          'local';
+          null;
+        document.getElementById('device').textContent = activeDeviceId || 'local';
+        document.querySelector('#folder-scope option[value="device"]').disabled = !activeDeviceId;
+        document.querySelector('#command-scope option[value="device"]').disabled = !activeDeviceId;
         document.getElementById('pending-count').textContent = String(state.pendingApprovals.length);
         document.getElementById('connection').textContent = 'Local · connected';
         status.textContent = '';
