@@ -177,6 +177,9 @@ Runtime:
 - local Git preflight and refreshed Git evidence
 - whole-lifecycle progress and next-stage reporting
 - persistent task state outside the repository
+- append-only privacy-safe operational failure/limit events outside the repository
+- deduplicated, relevance-ranked lessons returned by `status` / `resume`
+- automatic capture of policy denials/approval requirements and failed tool calls when they can be associated with the active project path
 - profile fingerprint/drift protection before completion
 - required-stage completion checks
 - provider/agent evidence references with bounded summaries and credential redaction
