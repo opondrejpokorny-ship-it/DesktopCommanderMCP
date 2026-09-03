@@ -2,10 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
 import { getPolicyProfileRules } from './policy-profiles.js';
-import {
-    evaluateToolRequestPolicy,
-    normalizeToolAction,
-} from './tool-policy.js';
+import { evaluateToolRequestPolicy } from './tool-policy.js';
 import {
     DesktopCommanderTier,
     PolicyAction,
@@ -177,7 +174,6 @@ export async function preflightToolRequest(
     policyPath?: string,
 ): Promise<PolicyPreflightResult> {
     const config = await loadPolicyRuntimeConfig(policyPath);
-    const normalized = normalizeToolAction(tool, args);
 
     // Explicit rules are evaluated before profile defaults so advanced users can
     // make deliberate exceptions while still starting from a safe preset.
@@ -197,7 +193,7 @@ export async function preflightToolRequest(
         tier: config.tier,
         ...(config.profile ? { profile: config.profile } : {}),
         ...(config.deviceId ? { deviceId: config.deviceId } : {}),
-        ...(normalized ? { action: normalized.action } : {}),
-        ...(normalized?.resource ? { resource: normalized.resource } : {}),
+        ...(evaluation.action ? { action: evaluation.action } : {}),
+        ...(evaluation.resource ? { resource: evaluation.resource } : {}),
     };
 }
