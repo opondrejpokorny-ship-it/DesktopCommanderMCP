@@ -11,9 +11,13 @@ import {
 } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
 import {
+    isAbsolutePolicyPath,
     isDesktopCommanderTier,
+    isFolderPermission,
     isPolicyProfile,
+    listFolderPermissions,
     loadPolicyRuntimeConfig,
+    setFolderPermission,
     setPolicyProfile,
     setPolicyTier,
 } from '../policy/policy-runtime.js';
@@ -142,6 +146,29 @@ function mutationOriginIsLocal(request: IncomingMessage): boolean {
     } catch {
         return false;
     }
+}
+
+async function readJsonBody(
+    request: IncomingMessage,
+    maxBytes: number = 8192,
+): Promise<unknown> {
+    const chunks: Buffer[] = [];
+    let total = 0;
+
+    for await (const chunk of request) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += buffer.length;
+        if (total > maxBytes) {
+            throw new Error('Request body is too large');
+        }
+        chunks.push(buffer);
+    }
+
+    if (chunks.length === 0) {
+        throw new Error('Request body is required');
+    }
+
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
 function renderControlCenterHtml(token: string): string {
@@ -405,6 +432,7 @@ async function buildState(): Promise<Record<string, unknown>> {
     return {
         generatedAt: new Date().toISOString(),
         policy,
+        folderPermissions: listFolderPermissions(policy),
         pendingApprovals: approvals.filter((record) => record.status === 'pending'),
         auditEvents,
     };
@@ -458,6 +486,49 @@ export async function startControlCenter(
 
             if (request.method === 'GET' && requestUrl.pathname === '/api/state') {
                 writeJson(response, 200, await buildState());
+                return;
+            }
+
+            if (
+                request.method === 'POST' &&
+                requestUrl.pathname === '/api/policy/folders'
+            ) {
+                if (!mutationOriginIsLocal(request)) {
+                    writeJson(response, 403, { error: 'Invalid mutation origin.' });
+                    return;
+                }
+
+                let body: unknown;
+                try {
+                    body = await readJsonBody(request);
+                } catch {
+                    writeJson(response, 400, { error: 'Invalid JSON request body.' });
+                    return;
+                }
+
+                if (!body || typeof body !== 'object') {
+                    writeJson(response, 400, { error: 'Invalid folder permission request.' });
+                    return;
+                }
+
+                const pathValue = (body as Record<string, unknown>).path;
+                const permissionValue = (body as Record<string, unknown>).permission;
+
+                if (
+                    typeof pathValue !== 'string' ||
+                    !isAbsolutePolicyPath(pathValue) ||
+                    typeof permissionValue !== 'string' ||
+                    !isFolderPermission(permissionValue)
+                ) {
+                    writeJson(response, 400, { error: 'Invalid folder permission.' });
+                    return;
+                }
+
+                const policy = await setFolderPermission(pathValue, permissionValue);
+                writeJson(response, 200, {
+                    policy,
+                    folderPermissions: listFolderPermissions(policy),
+                });
                 return;
             }
 
