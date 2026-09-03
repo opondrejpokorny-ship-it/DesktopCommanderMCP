@@ -99,6 +99,41 @@ try {
   const approved = await approveResponse.json();
   assert.strictEqual(approved.status, 'approved');
 
+  const profileResponse = await fetch(
+    `${controlCenter.url}api/policy/profile/read_only`,
+    {
+      method: 'POST',
+      headers: { 'X-DC-Control-Token': 'test-control-token' },
+    }
+  );
+  assert.strictEqual(profileResponse.status, 200);
+  const updatedProfile = await profileResponse.json();
+  assert.strictEqual(updatedProfile.profile, 'read_only');
+
+  const tierResponse = await fetch(
+    `${controlCenter.url}api/policy/tier/pro`,
+    {
+      method: 'POST',
+      headers: { 'X-DC-Control-Token': 'test-control-token' },
+    }
+  );
+  assert.strictEqual(tierResponse.status, 200);
+  const updatedTier = await tierResponse.json();
+  assert.strictEqual(updatedTier.tier, 'pro');
+
+  const invalidProfile = await fetch(
+    `${controlCenter.url}api/policy/profile/not-a-real-profile`,
+    {
+      method: 'POST',
+      headers: { 'X-DC-Control-Token': 'test-control-token' },
+    }
+  );
+  assert.strictEqual(invalidProfile.status, 400);
+
+  const persistedPolicy = JSON.parse(await fs.readFile(policyFile, 'utf8'));
+  assert.strictEqual(persistedPolicy.profile, 'read_only');
+  assert.strictEqual(persistedPolicy.tier, 'pro');
+
   const approvals = await listApprovals();
   assert.strictEqual(approvals[0].status, 'approved');
 
