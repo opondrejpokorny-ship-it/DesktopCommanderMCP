@@ -1,10 +1,14 @@
+import path from 'node:path';
 import {
     PolicyContext,
     PolicyEvaluation,
     PolicyRule,
 } from './types.js';
 
-function resourceMatches(resource: string | undefined, prefix: string | undefined): boolean {
+function genericResourceMatches(
+    resource: string | undefined,
+    prefix: string | undefined,
+): boolean {
     if (!prefix) {
         return true;
     }
@@ -13,15 +17,57 @@ function resourceMatches(resource: string | undefined, prefix: string | undefine
         return false;
     }
 
-    // Phase 1 intentionally keeps resources transport-neutral. Filesystem path
-    // canonicalization remains the responsibility of Desktop Commander's existing
-    // validatePath() guardrail and will be added to policy normalization when the
-    // engine is wired into real tool execution.
-    return resource === prefix || resource.startsWith(prefix.endsWith('/') || prefix.endsWith('\\')
-        ? prefix
-        : `${prefix}/`) || resource.startsWith(prefix.endsWith('/') || prefix.endsWith('\\')
-        ? prefix
-        : `${prefix}\\`);
+    return resource === prefix || resource.startsWith(
+        prefix.endsWith('/') || prefix.endsWith('\\')
+            ? prefix
+            : `${prefix}/`,
+    ) || resource.startsWith(
+        prefix.endsWith('/') || prefix.endsWith('\\')
+            ? prefix
+            : `${prefix}\\`,
+    );
+}
+
+function looksLikeWindowsPath(value: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+function filesystemResourceMatches(
+    resource: string | undefined,
+    prefix: string | undefined,
+): boolean {
+    if (!prefix) {
+        return true;
+    }
+
+    if (!resource) {
+        return false;
+    }
+
+    const windowsStyle =
+        looksLikeWindowsPath(resource) || looksLikeWindowsPath(prefix);
+    const flavor = windowsStyle ? path.win32 : path.posix;
+
+    let normalizedResource = windowsStyle
+        ? flavor.normalize(resource.replace(/\//g, '\\')).toLowerCase()
+        : flavor.normalize(resource);
+    let normalizedPrefix = windowsStyle
+        ? flavor.normalize(prefix.replace(/\//g, '\\')).toLowerCase()
+        : flavor.normalize(prefix);
+
+    // path.relative handles dot-segments and path boundaries correctly. It is
+    // intentionally lexical: symlink resolution remains the responsibility of
+    // Desktop Commander's existing validatePath()/filesystem guardrails.
+    const relative = flavor.relative(normalizedPrefix, normalizedResource);
+
+    return (
+        relative === '' ||
+        (
+            relative !== '..' &&
+            !relative.startsWith(`..${flavor.sep}`) &&
+            !flavor.isAbsolute(relative)
+        )
+    );
 }
 
 function ruleMatches(context: PolicyContext, rule: PolicyRule): boolean {
@@ -33,7 +79,14 @@ function ruleMatches(context: PolicyContext, rule: PolicyRule): boolean {
         return false;
     }
 
-    return resourceMatches(context.resource, rule.resourcePrefix);
+    if (context.action.startsWith('filesystem.')) {
+        return filesystemResourceMatches(
+            context.resource,
+            rule.resourcePrefix,
+        );
+    }
+
+    return genericResourceMatches(context.resource, rule.resourcePrefix);
 }
 
 /**
