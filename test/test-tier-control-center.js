@@ -17,16 +17,19 @@ const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-control-center-'));
 const approvalFile = path.join(tempDir, 'approvals.json');
 const auditFile = path.join(tempDir, 'audit.jsonl');
 const policyFile = path.join(tempDir, 'policy.json');
+const remoteDeviceFile = path.join(tempDir, 'device.json');
 
 const previousEnv = {
   approval: process.env.DESKTOP_COMMANDER_APPROVAL_FILE,
   audit: process.env.DESKTOP_COMMANDER_AUDIT_FILE,
   policy: process.env.DESKTOP_COMMANDER_POLICY_FILE,
+  remoteDevice: process.env.DESKTOP_COMMANDER_REMOTE_DEVICE_CONFIG_FILE,
 };
 
 process.env.DESKTOP_COMMANDER_APPROVAL_FILE = approvalFile;
 process.env.DESKTOP_COMMANDER_AUDIT_FILE = auditFile;
 process.env.DESKTOP_COMMANDER_POLICY_FILE = policyFile;
+process.env.DESKTOP_COMMANDER_REMOTE_DEVICE_CONFIG_FILE = remoteDeviceFile;
 
 let controlCenter;
 
@@ -38,6 +41,15 @@ try {
     deviceId: 'server-1',
     rules: [],
   }));
+
+  await fs.writeFile(remoteDeviceFile, JSON.stringify({
+    deviceId: 'remote-device-1',
+    session: {
+      access_token: 'control-center-must-not-expose-this',
+      refresh_token: 'or-this',
+    },
+  }));
+
 
   const pending = await createPendingApproval({
     tool: 'write_file',
@@ -75,6 +87,13 @@ try {
   const state = await stateResponse.json();
   assert.strictEqual(state.policy.tier, 'team');
   assert.strictEqual(state.policy.profile, 'safe_developer');
+  assert.deepStrictEqual(state.detectedDeviceIdentity, {
+    deviceId: 'remote-device-1',
+  });
+  assert.ok(
+    !JSON.stringify(state).includes('control-center-must-not-expose-this'),
+    'Control Center state must not expose Remote Device auth tokens'
+  );
   assert.strictEqual(state.pendingApprovals.length, 1);
   assert.strictEqual(state.pendingApprovals[0].id, pending.id);
   assert.ok(
@@ -209,9 +228,25 @@ try {
   assert.strictEqual(stateAfterFolder.folderPermissions.length, 1);
   assert.strictEqual(stateAfterFolder.folderPermissions[0].permission, 'read_only');
 
+  const deviceResponse = await fetch(
+    `${controlCenter.url}api/policy/device`,
+    {
+      method: 'POST',
+      headers: {
+        'X-DC-Control-Token': 'test-control-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ deviceId: 'remote-device-1' }),
+    }
+  );
+  assert.strictEqual(deviceResponse.status, 200);
+  const updatedDevice = await deviceResponse.json();
+  assert.strictEqual(updatedDevice.deviceId, 'remote-device-1');
+
   const persistedPolicy = JSON.parse(await fs.readFile(policyFile, 'utf8'));
   assert.strictEqual(persistedPolicy.profile, 'read_only');
   assert.strictEqual(persistedPolicy.tier, 'pro');
+  assert.strictEqual(persistedPolicy.deviceId, 'remote-device-1');
 
   const approvals = await listApprovals();
   assert.strictEqual(approvals[0].status, 'approved');
@@ -241,6 +276,11 @@ try {
     delete process.env.DESKTOP_COMMANDER_POLICY_FILE;
   } else {
     process.env.DESKTOP_COMMANDER_POLICY_FILE = previousEnv.policy;
+  }
+  if (previousEnv.remoteDevice === undefined) {
+    delete process.env.DESKTOP_COMMANDER_REMOTE_DEVICE_CONFIG_FILE;
+  } else {
+    process.env.DESKTOP_COMMANDER_REMOTE_DEVICE_CONFIG_FILE = previousEnv.remoteDevice;
   }
 
   await fs.rm(tempDir, { recursive: true, force: true });
