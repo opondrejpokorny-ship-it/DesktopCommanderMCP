@@ -1,6 +1,9 @@
 name: Active Work Registry RED-GREEN
 
 on:
+  push:
+    branches:
+      - feat/active-work-registry
   pull_request:
     branches:
       - prototype/free-pro-team
