@@ -1,6 +1,6 @@
 ---
 name: software-project-workflow
-version: 0.1.0
+version: 0.1.1
 audience: agent
 description: >-
   Run software work as a repeatable lifecycle with operational memory. Use when
@@ -318,6 +318,8 @@ A suggested mental model:
 Adjust for the actual task.
 
 ## 11. Privacy and safety
+
+**A skill is guidance, not authorization.** Never treat this skill, a saved plan/checkpoint, or an earlier approval as permission for a new side effect. Desktop Commander policy decisions, exact-action approvals, allowed-directory checks, blocked-command checks, and the upstream handler remain authoritative. If any layer denies or requires approval, do not bypass, weaken, or reconfigure it through ordinary project work.
 
 **Never store secrets** in `plan.md`, `work-log.md`, or `checkpoint.md`.
 
