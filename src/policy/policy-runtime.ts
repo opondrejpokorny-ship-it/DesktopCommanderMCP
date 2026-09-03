@@ -33,8 +33,8 @@ export const POLICY_FILE = path.join(
     'policy.json',
 );
 
-const VALID_TIERS = new Set<DesktopCommanderTier>(['free', 'pro', 'team']);
-const VALID_PROFILES = new Set<PolicyProfile>([
+export const VALID_TIERS = new Set<DesktopCommanderTier>(['free', 'pro', 'team']);
+export const VALID_PROFILES = new Set<PolicyProfile>([
     'full_access',
     'safe_developer',
     'read_only',
@@ -143,11 +143,91 @@ function parsePolicyConfig(value: unknown): PolicyRuntimeConfig {
  * Existing but invalid file = error, so a broken policy cannot silently disable
  * restrictions.
  */
+function resolvePolicyPath(policyPath?: string): string {
+    return policyPath ?? process.env.DESKTOP_COMMANDER_POLICY_FILE ?? POLICY_FILE;
+}
+
+export function isDesktopCommanderTier(value: string): value is DesktopCommanderTier {
+    return VALID_TIERS.has(value as DesktopCommanderTier);
+}
+
+export function isPolicyProfile(value: string): value is PolicyProfile {
+    return VALID_PROFILES.has(value as PolicyProfile);
+}
+
+async function persistPolicyRuntimeConfig(
+    config: PolicyRuntimeConfig,
+    policyPath?: string,
+): Promise<PolicyRuntimeConfig> {
+    const parsed = parsePolicyConfig(config);
+    const resolvedPolicyPath = resolvePolicyPath(policyPath);
+    await fs.mkdir(path.dirname(resolvedPolicyPath), { recursive: true });
+
+    const tempPath = `${resolvedPolicyPath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+        await fs.writeFile(tempPath, JSON.stringify(parsed, null, 2), 'utf8');
+        try {
+            await fs.rename(tempPath, resolvedPolicyPath);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'EPERM') {
+                throw error;
+            }
+            await fs.rm(resolvedPolicyPath, { force: true });
+            await fs.rename(tempPath, resolvedPolicyPath);
+        }
+    } finally {
+        await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    }
+
+    return parsed;
+}
+
+let policyWriteChain: Promise<void> = Promise.resolve();
+
+async function updatePolicyRuntimeConfig(
+    update: (current: PolicyRuntimeConfig) => PolicyRuntimeConfig,
+    policyPath?: string,
+): Promise<PolicyRuntimeConfig> {
+    let updated: PolicyRuntimeConfig | undefined;
+
+    const operation = policyWriteChain.then(async () => {
+        const current = await loadPolicyRuntimeConfig(policyPath);
+        updated = await persistPolicyRuntimeConfig(update(current), policyPath);
+    });
+
+    policyWriteChain = operation.catch(() => undefined);
+    await operation;
+
+    if (!updated) {
+        throw new Error('Policy update did not produce a result');
+    }
+    return updated;
+}
+
+export async function setPolicyTier(
+    tier: DesktopCommanderTier,
+    policyPath?: string,
+): Promise<PolicyRuntimeConfig> {
+    return updatePolicyRuntimeConfig(
+        (current) => ({ ...current, tier }),
+        policyPath,
+    );
+}
+
+export async function setPolicyProfile(
+    profile: PolicyProfile,
+    policyPath?: string,
+): Promise<PolicyRuntimeConfig> {
+    return updatePolicyRuntimeConfig(
+        (current) => ({ ...current, profile }),
+        policyPath,
+    );
+}
+
 export async function loadPolicyRuntimeConfig(
     policyPath?: string,
 ): Promise<PolicyRuntimeConfig> {
-    const resolvedPolicyPath =
-        policyPath ?? process.env.DESKTOP_COMMANDER_POLICY_FILE ?? POLICY_FILE;
+    const resolvedPolicyPath = resolvePolicyPath(policyPath);
 
     let raw: string;
 
