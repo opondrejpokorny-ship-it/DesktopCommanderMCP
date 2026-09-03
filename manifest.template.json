@@ -132,6 +132,10 @@
       "description": "Get usage statistics for debugging and analysis including tool usage and performance metrics."
     },
     {
+      "name": "report_task_progress",
+      "description": "Format whole-lifecycle task progress using the configured tier: Free receives approximate percentage remaining, while Pro and Team additionally receive an approximate rounded ETA."
+    },
+    {
       "name": "get_recent_tool_calls",
       "description": "Get recent tool call history with their arguments and outputs. Returns chronological list of tool calls made during this session for debugging, context recovery, and onboarding new chats."
     },

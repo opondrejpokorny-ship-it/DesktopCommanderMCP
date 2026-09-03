@@ -61,7 +61,14 @@ const pluginSkill = await fs.readFile(
   path.join(root, 'plugins', 'claude', 'skills', 'software-project-workflow', 'SKILL.md'),
   'utf8'
 );
+const manifestTemplate = JSON.parse(
+  await fs.readFile(path.join(root, 'manifest.template.json'), 'utf8')
+);
 
+assert.ok(
+  manifestTemplate.tools.some((tool) => tool.name === 'report_task_progress'),
+  'MCPB manifest template must expose report_task_progress'
+);
 assert.strictEqual(pluginSkill, rootSkill, 'Skill mirrors must remain byte-for-byte identical');
 assert.match(rootSkill, /report_task_progress/);
 assert.match(rootSkill, /Free.*percent/i);
