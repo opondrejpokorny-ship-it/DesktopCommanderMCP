@@ -11,6 +11,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const AUTHORITATIVE_PROTOTYPE = 'prototype/free-pro-team';
+const GRAPHIFY_PATHSPEC = [
+  '.',
+  ':(exclude)graphify-out/**',
+  ':(exclude).tools/**',
+];
 
 export class GraphifyPreflightError extends Error {
   constructor(code, message, details = {}) {
@@ -117,7 +122,7 @@ function relationToRef(repoPath, leftRef, rightRef) {
 }
 
 function statusBuffer(repoPath) {
-  return git(repoPath, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { encoding: null }).stdout ?? Buffer.alloc(0);
+  return git(repoPath, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...GRAPHIFY_PATHSPEC], { encoding: null }).stdout ?? Buffer.alloc(0);
 }
 
 function computeWorktreeFingerprint(repoPath) {
@@ -125,10 +130,10 @@ function computeWorktreeFingerprint(repoPath) {
   const status = statusBuffer(repoPath);
   hash.update(status);
 
-  const diff = git(repoPath, ['diff', '--binary', 'HEAD', '--'], { encoding: null }).stdout ?? Buffer.alloc(0);
+  const diff = git(repoPath, ['diff', '--binary', 'HEAD', '--', ...GRAPHIFY_PATHSPEC], { encoding: null }).stdout ?? Buffer.alloc(0);
   hash.update(diff);
 
-  const untracked = git(repoPath, ['ls-files', '--others', '--exclude-standard', '-z'], { encoding: null }).stdout ?? Buffer.alloc(0);
+  const untracked = git(repoPath, ['ls-files', '--others', '--exclude-standard', '-z', '--', ...GRAPHIFY_PATHSPEC], { encoding: null }).stdout ?? Buffer.alloc(0);
   const paths = Buffer.from(untracked)
     .toString('utf8')
     .split('\0')
