@@ -175,6 +175,13 @@ It maintains a model for:
 - verification,
 - resumable checkpoint.
 
+The real MCP tool `report_task_progress` applies the configured tier to each update:
+
+- **Free:** approximate percentage remaining.
+- **Pro / Team:** percentage remaining plus a rounded estimated time remaining.
+
+ETA is explicitly approximate rather than guaranteed. The reporter uses only progress numbers and a short phase label; it does not need file contents or raw terminal commands.
+
 This is different from generic knowledge management: it records how work was executed so a later session can continue without repeating the same mistakes.
 
 ## Verification

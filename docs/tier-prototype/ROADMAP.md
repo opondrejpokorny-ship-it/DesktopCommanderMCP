@@ -186,6 +186,21 @@ Security/privacy:
 - no raw file contents or raw terminal command output are persisted in workflow state
 - the coordinator is operational control, not an OS security sandbox
 
+Native lifecycle progress reporting is tier-aware through the real MCP tool
+`report_task_progress`:
+
+- Free → approximate percent remaining,
+- Pro / Team → approximate percent remaining + estimated time remaining.
+
+The estimate is intentionally rounded and described as approximate, never as a
+deadline or guarantee. The tool reads the actual configured policy tier
+server-side, so Free output strips ETA even if an agent supplies one. Progress
+arguments contain only percentage, a short phase label, and the numeric time
+estimate; file contents and raw terminal commands are not needed.
+
+The progress reporter is protected by contract tests plus a real MCP stdio test
+for `tools/list` and `tools/call`.
+
 The skill is byte-identical across root, Claude and Cursor packaging and protected by distribution/contract tests.
 
 Verification includes focused coordinator/security tests and a real built MCP stdio test proving instructions, tools/list registration, start→record→finish, filesystem tamper blocking, profile integrity and authorization rejection.

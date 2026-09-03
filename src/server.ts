@@ -45,6 +45,7 @@ import {
     ListProcessesArgsSchema,
     EditBlockArgsSchema,
     GetUsageStatsArgsSchema,
+    ReportTaskProgressArgsSchema,
     GiveFeedbackArgsSchema,
     StartSearchArgsSchema,
     GetMoreSearchResultsArgsSchema,
@@ -63,6 +64,8 @@ import {
 } from './utils/unsupportedParams.js';
 import { getConfig, setConfigValue } from './tools/config.js';
 import { getUsageStats } from './tools/usage.js';
+import { buildProgressReport } from './progress/progress-reporter.js';
+import { loadPolicyRuntimeConfig } from './policy/policy-runtime.js';
 import { giveFeedbackToDesktopCommander } from './tools/feedback.js';
 import { getPrompts } from './tools/prompts.js';
 import { projectWorkflow } from './tools/project-workflow.js';
@@ -1163,6 +1166,26 @@ ${CMD_PREFIX_DESCRIPTION}`,
                 },
             },
             {
+                name: "report_task_progress",
+                description: `
+                        Format lifecycle progress for a multi-step task using the configured Desktop Commander tier.
+
+                        Always reports approximate percent remaining and current phase.
+                        Pro and Team can additionally include an approximate estimated time remaining.
+                        Free never exposes ETA, even if estimatedRemainingMinutes is supplied.
+
+                        Use after meaningful milestones in longer autonomous work. Base the percentage and ETA
+                        on the whole planned lifecycle, not only coding. ETA is an estimate, never a guarantee.
+
+                        ${CMD_PREFIX_DESCRIPTION}`,
+                inputSchema: zodToJsonSchema(ReportTaskProgressArgsSchema),
+                annotations: {
+                    title: "Report Task Progress",
+                    readOnlyHint: true,
+                    openWorldHint: false,
+                },
+            },
+            {
                 name: "get_recent_tool_calls",
                 description: `
                         Get recent tool call history with their arguments and outputs.
@@ -1427,6 +1450,26 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                     capture('server_request_error', { message: `Error in get_usage_stats handler: ${error}` });
                     result = {
                         content: [{ type: "text", text: `Error: Failed to get usage statistics` }],
+                        isError: true,
+                    };
+                }
+                break;
+
+            case "report_task_progress":
+                try {
+                    const progressArgs = ReportTaskProgressArgsSchema.parse(args ?? {});
+                    const policy = await loadPolicyRuntimeConfig();
+                    const progress = buildProgressReport(progressArgs, policy.tier);
+                    result = {
+                        content: [{
+                            type: "text",
+                            text: JSON.stringify(progress),
+                        }],
+                    };
+                } catch (error) {
+                    capture('server_request_error', { message: `Error in report_task_progress handler: ${error}` });
+                    result = {
+                        content: [{ type: "text", text: `Error: Failed to report task progress` }],
                         isError: true,
                     };
                 }
