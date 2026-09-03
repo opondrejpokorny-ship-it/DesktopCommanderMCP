@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
   GraphifyPreflightError,
@@ -220,7 +221,7 @@ test('Windows repository identity uses canonical resolution rather than raw stri
 });
 
 test('wrapper and ignore rules preserve local code-only privacy boundaries', async () => {
-  const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const wrapper = await readFile(path.join(repoRoot, 'scripts', 'graphify-local.cmd'), 'utf8');
   const ignore = await readFile(path.join(repoRoot, '.gitignore'), 'utf8');
 
