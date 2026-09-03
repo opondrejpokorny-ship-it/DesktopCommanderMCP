@@ -28,6 +28,7 @@ export interface PolicyRule {
     id: string;
     action: PolicyAction;
     resourcePrefix?: string;
+    commandPrefix?: string;
     deviceId?: string;
     decision: PolicyDecision;
 }
