@@ -110,7 +110,8 @@ export class MCPDevice {
             }
 
 
-            // Initialize desktop integration
+            // Initialize desktop integration and supervise its local stdio bridge.
+            this.desktop.onDisconnect((reason) => void this.handleLocalMcpLoss(reason));
             await this.desktop.initialize();
 
             console.log(`⏳ Connecting to Remote MCP ${this.baseServerUrl}`);
@@ -281,6 +282,22 @@ export class MCPDevice {
     }
 
     // Methods moved to RemoteChannel
+
+    private async handleLocalMcpLoss(reason: string): Promise<void> {
+        if (this.isShuttingDown) return;
+        if (this.deviceId) {
+            await this.remoteChannel.setOnlineStatus(this.deviceId, 'offline')
+                .catch((error: any) => console.error('Failed to mark device offline:', error.message));
+        }
+        try {
+            await this.desktop.ensureReady();
+            if (this.deviceId) await this.remoteChannel.setOnlineStatus(this.deviceId, 'online');
+            console.log('♻️ Local Desktop Commander MCP recovered; device is online again');
+        } catch (error: any) {
+            console.error(`❌ Could not recover local Desktop Commander MCP: ${error.message}`);
+            await captureRemote('remote_device_local_mcp_restart_failed', { error, reason });
+        }
+    }
 
     /** Record a handled call id, evicting the oldest once the cap is reached. */
     private rememberCallId(callId: string) {
