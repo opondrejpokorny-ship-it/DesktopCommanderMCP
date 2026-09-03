@@ -10,7 +10,13 @@ import {
     setApprovalDecision,
 } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
-import { loadPolicyRuntimeConfig } from '../policy/policy-runtime.js';
+import {
+    isDesktopCommanderTier,
+    isPolicyProfile,
+    loadPolicyRuntimeConfig,
+    setPolicyProfile,
+    setPolicyTier,
+} from '../policy/policy-runtime.js';
 
 export interface ControlCenterOptions {
     host?: '127.0.0.1' | 'localhost' | '::1';
@@ -413,6 +419,37 @@ export async function startControlCenter(
 
             if (request.method === 'GET' && requestUrl.pathname === '/api/state') {
                 writeJson(response, 200, await buildState());
+                return;
+            }
+
+            const policyMatch = requestUrl.pathname.match(
+                /^\/api\/policy\/(tier|profile)\/([^/]+)$/,
+            );
+
+            if (request.method === 'POST' && policyMatch) {
+                if (!mutationOriginIsLocal(request)) {
+                    writeJson(response, 403, { error: 'Invalid mutation origin.' });
+                    return;
+                }
+
+                const kind = policyMatch[1];
+                const value = decodeURIComponent(policyMatch[2]);
+
+                if (kind === 'tier') {
+                    if (!isDesktopCommanderTier(value)) {
+                        writeJson(response, 400, { error: 'Invalid policy tier.' });
+                        return;
+                    }
+                    writeJson(response, 200, await setPolicyTier(value));
+                    return;
+                }
+
+                if (!isPolicyProfile(value)) {
+                    writeJson(response, 400, { error: 'Invalid policy profile.' });
+                    return;
+                }
+
+                writeJson(response, 200, await setPolicyProfile(value));
                 return;
             }
 
