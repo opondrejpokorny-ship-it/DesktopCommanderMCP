@@ -1,0 +1,39 @@
+name: Active Work Registry RED-GREEN
+
+on:
+  pull_request:
+    branches:
+      - prototype/free-pro-team
+    paths:
+      - 'src/workflow/active-work-registry.ts'
+      - 'src/tools/active-work-registry.ts'
+      - 'src/tools/active-work-registry-schema.ts'
+      - 'src/server.ts'
+      - 'skills/active-work-registry/**'
+      - 'plugins/claude/skills/active-work-registry/**'
+      - 'plugins/cursor/skills/active-work-registry/**'
+      - 'plugins/claude/README.md'
+      - 'plugins/cursor/README.md'
+      - 'test/test-active-work-registry.js'
+      - 'test/test-active-work-registry-skill.js'
+      - 'test/integration/active-work-registry.js'
+      - '.github/workflows/active-work-registry-red-green.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  active-work-registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node test/test-active-work-registry.js
+      - run: node test/test-active-work-registry-skill.js
+      - run: node test/integration/active-work-registry.js
