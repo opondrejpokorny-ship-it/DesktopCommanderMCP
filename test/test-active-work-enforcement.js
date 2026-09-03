@@ -13,6 +13,7 @@ import {
 import {
   registerActiveWork,
   removeActiveWork,
+  resolveActiveWorkRegistryPath,
 } from '../dist/workflow/active-work-registry.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-active-work-gate-'));
@@ -43,6 +44,17 @@ try {
   });
   assert.equal(noEntry.allowed, false);
   assert.match(noEntry.result?.content?.[0]?.text ?? '', /ACTIVE_WORK_REGISTRATION_REQUIRED/);
+  assert.equal(
+    noEntry.result?.structuredContent?.code,
+    'ACTIVE_WORK_REGISTRATION_REQUIRED',
+  );
+
+  const uiOrigin = await applyActiveWorkEnforcementGate('write_file', {
+    path: path.join(repoA, 'src', 'human-ui.txt'),
+    content: 'ui',
+    origin: 'ui',
+  });
+  assert.equal(uiOrigin.allowed, true, 'human UI-origin writes are not agent work');
 
   const registered = await registerActiveWork({
     projectRoot: repoA,
@@ -99,6 +111,32 @@ try {
   );
 
   await removeActiveWork({ projectRoot: repoA, entryId: registered.entry.id });
+
+  const registryPath = resolveActiveWorkRegistryPath();
+  await fs.writeFile(registryPath, '{"version":1,"entries":', 'utf8');
+  const corrupt = await applyActiveWorkEnforcementGate('write_file', {
+    path: path.join(repoA, 'src', 'corrupt-state.txt'),
+    content: 'no',
+  });
+  assert.equal(corrupt.allowed, false);
+  assert.equal(
+    corrupt.result?.structuredContent?.code,
+    'ACTIVE_WORK_REGISTRY_CHECK_FAILED',
+  );
+  assert.match(
+    corrupt.result?.content?.[0]?.text ?? '',
+    /Refusing repository mutation/i,
+  );
+
+  const corruptOutside = await applyActiveWorkEnforcementGate('write_file', {
+    path: path.join(tempDir, 'outside-after-corrupt.txt'),
+    content: 'outside',
+  });
+  assert.equal(
+    corruptOutside.allowed,
+    true,
+    'corrupt registry must not block non-Git filesystem use',
+  );
 
   console.log('✅ Active work enforcement gate tests passed');
 } finally {
