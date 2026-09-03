@@ -2,9 +2,17 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
+import { APPROVAL_FILE } from './approval-store.js';
+import { AUDIT_FILE } from './audit-store.js';
 import { normalizeCommandPrefix as normalizeShellCommandPrefix } from './command-policy.js';
-import { getPolicyProfileRules } from './policy-profiles.js';
-import { evaluateToolRequestPolicy } from './tool-policy.js';
+import {
+    getPolicyProfileRules,
+    getTierBaselineRules,
+} from './policy-profiles.js';
+import {
+    evaluateToolRequestPolicy,
+    normalizeToolActions,
+} from './tool-policy.js';
 import {
     DesktopCommanderTier,
     PolicyAction,
@@ -204,6 +212,69 @@ function parsePolicyConfig(value: unknown): PolicyRuntimeConfig {
  */
 function resolvePolicyPath(policyPath?: string): string {
     return policyPath ?? process.env.DESKTOP_COMMANDER_POLICY_FILE ?? POLICY_FILE;
+}
+
+function resolveApprovalPath(): string {
+    return process.env.DESKTOP_COMMANDER_APPROVAL_FILE ?? APPROVAL_FILE;
+}
+
+function resolveAuditPath(): string {
+    return process.env.DESKTOP_COMMANDER_AUDIT_FILE ?? AUDIT_FILE;
+}
+
+function looksLikeWindowsPolicyPath(value: string): boolean {
+    return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+function normalizedPolicyPathIdentity(value: string): string {
+    if (looksLikeWindowsPolicyPath(value)) {
+        return `win:${path.win32
+            .normalize(value.replace(/\//g, '\\'))
+            .toLowerCase()}`;
+    }
+
+    return `posix:${path.posix.resolve(value)}`;
+}
+
+function protectedControlPlaneEvaluation(
+    tier: DesktopCommanderTier,
+    tool: string,
+    args: unknown,
+    policyPath?: string,
+): Pick<PolicyPreflightResult, 'decision' | 'matchedRuleId' | 'action' | 'resource'> | null {
+    if (tier === 'free') {
+        return null;
+    }
+
+    const protectedPaths = new Set([
+        normalizedPolicyPathIdentity(resolvePolicyPath(policyPath)),
+        normalizedPolicyPathIdentity(resolveApprovalPath()),
+        normalizedPolicyPathIdentity(resolveAuditPath()),
+    ]);
+
+    for (const normalized of normalizeToolActions(tool, args)) {
+        if (
+            normalized.action !== 'filesystem.write' &&
+            normalized.action !== 'filesystem.move' &&
+            normalized.action !== 'filesystem.delete'
+        ) {
+            continue;
+        }
+
+        if (
+            normalized.resource &&
+            protectedPaths.has(normalizedPolicyPathIdentity(normalized.resource))
+        ) {
+            return {
+                decision: 'deny',
+                matchedRuleId: 'system:control-plane-file',
+                action: normalized.action,
+                resource: normalized.resource,
+            };
+        }
+    }
+
+    return null;
 }
 
 export function isDesktopCommanderTier(value: string): value is DesktopCommanderTier {
@@ -567,11 +638,28 @@ export async function preflightToolRequest(
 ): Promise<PolicyPreflightResult> {
     const config = await loadPolicyRuntimeConfig(policyPath);
 
-    // Explicit rules are evaluated before profile defaults so advanced users can
-    // make deliberate exceptions while still starting from a safe preset.
+    const protectedEvaluation = protectedControlPlaneEvaluation(
+        config.tier,
+        tool,
+        args,
+        policyPath,
+    );
+
+    if (protectedEvaluation) {
+        return {
+            ...protectedEvaluation,
+            tier: config.tier,
+            ...(config.profile ? { profile: config.profile } : {}),
+            ...(config.deviceId ? { deviceId: config.deviceId } : {}),
+        };
+    }
+
+    // Explicit rules remain higher priority than profile/tier defaults. This
+    // allows narrow command exceptions while keeping the paid-tier baseline.
     const effectiveRules = [
         ...config.rules,
         ...getPolicyProfileRules(config.profile),
+        ...getTierBaselineRules(config.tier),
     ];
 
     const evaluation = evaluateToolRequestPolicy(tool, args, {
