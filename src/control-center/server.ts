@@ -10,6 +10,7 @@ import {
     setApprovalDecision,
 } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
+import { loadRemoteDeviceIdentity } from '../policy/device-identity.js';
 import {
     isAbsolutePolicyPath,
     isCommandPermission,
@@ -21,6 +22,7 @@ import {
     loadPolicyRuntimeConfig,
     setCommandPermission,
     setFolderPermission,
+    setPolicyDeviceId,
     setPolicyProfile,
     setPolicyTier,
 } from '../policy/policy-runtime.js';
@@ -550,15 +552,18 @@ function renderControlCenterHtml(token: string): string {
 }
 
 async function buildState(): Promise<Record<string, unknown>> {
-    const [policy, approvals, auditEvents] = await Promise.all([
-        loadPolicyRuntimeConfig(),
-        listApprovals(),
-        listAuditEvents(undefined, 100),
-    ]);
+    const [policy, approvals, auditEvents, detectedDeviceIdentity] =
+        await Promise.all([
+            loadPolicyRuntimeConfig(),
+            listApprovals(),
+            listAuditEvents(undefined, 100),
+            loadRemoteDeviceIdentity(),
+        ]);
 
     return {
         generatedAt: new Date().toISOString(),
         policy,
+        detectedDeviceIdentity,
         folderPermissions: listFolderPermissions(policy),
         commandPermissions: listCommandPermissions(policy),
         pendingApprovals: approvals.filter((record) => record.status === 'pending'),
@@ -614,6 +619,44 @@ export async function startControlCenter(
 
             if (request.method === 'GET' && requestUrl.pathname === '/api/state') {
                 writeJson(response, 200, await buildState());
+                return;
+            }
+
+            if (
+                request.method === 'POST' &&
+                requestUrl.pathname === '/api/policy/device'
+            ) {
+                if (!mutationOriginIsLocal(request)) {
+                    writeJson(response, 403, { error: 'Invalid mutation origin.' });
+                    return;
+                }
+
+                let body: unknown;
+                try {
+                    body = await readJsonBody(request);
+                } catch {
+                    writeJson(response, 400, { error: 'Invalid JSON request body.' });
+                    return;
+                }
+
+                const deviceId = body && typeof body === 'object'
+                    ? (body as Record<string, unknown>).deviceId
+                    : undefined;
+
+                if (typeof deviceId !== 'string' || !deviceId.trim()) {
+                    writeJson(response, 400, { error: 'Invalid device ID.' });
+                    return;
+                }
+
+                try {
+                    writeJson(response, 200, await setPolicyDeviceId(deviceId));
+                } catch (error) {
+                    writeJson(response, 400, {
+                        error: error instanceof Error
+                            ? error.message
+                            : 'Invalid device ID.',
+                    });
+                }
                 return;
             }
 
