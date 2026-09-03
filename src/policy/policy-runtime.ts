@@ -1,24 +1,30 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
-import { evaluateToolRequestPolicy } from './tool-policy.js';
+import { getPolicyProfileRules } from './policy-profiles.js';
+import {
+    evaluateToolRequestPolicy,
+    normalizeToolAction,
+} from './tool-policy.js';
 import {
     DesktopCommanderTier,
     PolicyAction,
     PolicyEvaluation,
+    PolicyProfile,
     PolicyRule,
 } from './types.js';
-import { normalizeToolAction } from './tool-policy.js';
 
 export interface PolicyRuntimeConfig {
     version: 1;
     tier: DesktopCommanderTier;
+    profile?: PolicyProfile;
     deviceId?: string;
     rules: PolicyRule[];
 }
 
 export interface PolicyPreflightResult extends PolicyEvaluation {
     tier: DesktopCommanderTier;
+    profile?: PolicyProfile;
     deviceId?: string;
     action?: PolicyAction;
     resource?: string;
@@ -31,6 +37,11 @@ export const POLICY_FILE = path.join(
 );
 
 const VALID_TIERS = new Set<DesktopCommanderTier>(['free', 'pro', 'team']);
+const VALID_PROFILES = new Set<PolicyProfile>([
+    'full_access',
+    'safe_developer',
+    'read_only',
+]);
 const VALID_DECISIONS = new Set(['allow', 'deny', 'require_approval']);
 const VALID_ACTIONS = new Set<PolicyAction>([
     'filesystem.read',
@@ -101,6 +112,14 @@ function parsePolicyConfig(value: unknown): PolicyRuntimeConfig {
         throw new Error('tier must be free, pro, or team');
     }
 
+    if (
+        config.profile !== undefined &&
+        (typeof config.profile !== 'string' ||
+            !VALID_PROFILES.has(config.profile as PolicyProfile))
+    ) {
+        throw new Error('profile must be full_access, safe_developer, or read_only');
+    }
+
     if (!Array.isArray(config.rules)) {
         throw new Error('rules must be an array');
     }
@@ -112,6 +131,9 @@ function parsePolicyConfig(value: unknown): PolicyRuntimeConfig {
     return {
         version: 1,
         tier: config.tier as DesktopCommanderTier,
+        ...(config.profile !== undefined
+            ? { profile: config.profile as PolicyProfile }
+            : {}),
         ...(config.deviceId !== undefined ? { deviceId: config.deviceId } : {}),
         rules: config.rules.map(parsePolicyRule),
     };
@@ -156,15 +178,24 @@ export async function preflightToolRequest(
 ): Promise<PolicyPreflightResult> {
     const config = await loadPolicyRuntimeConfig(policyPath);
     const normalized = normalizeToolAction(tool, args);
+
+    // Explicit rules are evaluated before profile defaults so advanced users can
+    // make deliberate exceptions while still starting from a safe preset.
+    const effectiveRules = [
+        ...config.rules,
+        ...getPolicyProfileRules(config.profile),
+    ];
+
     const evaluation = evaluateToolRequestPolicy(tool, args, {
         tier: config.tier,
         deviceId: config.deviceId,
-        rules: config.rules,
+        rules: effectiveRules,
     });
 
     return {
         ...evaluation,
         tier: config.tier,
+        ...(config.profile ? { profile: config.profile } : {}),
         ...(config.deviceId ? { deviceId: config.deviceId } : {}),
         ...(normalized ? { action: normalized.action } : {}),
         ...(normalized?.resource ? { resource: normalized.resource } : {}),

@@ -1,5 +1,10 @@
 export type DesktopCommanderTier = 'free' | 'pro' | 'team';
 
+export type PolicyProfile =
+    | 'full_access'
+    | 'safe_developer'
+    | 'read_only';
+
 export type PolicyDecision = 'allow' | 'deny' | 'require_approval';
 
 export type PolicyAction =
