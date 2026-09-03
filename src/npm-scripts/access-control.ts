@@ -2,6 +2,7 @@
 
 import { listApprovals, setApprovalDecision } from '../policy/approval-store.js';
 import { listAuditEvents } from '../policy/audit-store.js';
+import { getPrototypeAuditSink } from '../prototype/prototype-audit-sink.js';
 import { loadRemoteDeviceIdentity } from '../policy/device-identity.js';
 import { loadUsageMeter } from '../utils/usageMetering.js';
 import {
@@ -45,7 +46,12 @@ async function main(): Promise<void> {
             }
 
             const decision = command === 'approve' ? 'approved' : 'denied';
-            const record = await setApprovalDecision(value, decision);
+            const record = await setApprovalDecision(
+                value,
+                decision,
+                undefined,
+                await getPrototypeAuditSink(),
+            );
 
             if (!record) {
                 fail(`Approval request not found or not pending: ${value}`);
