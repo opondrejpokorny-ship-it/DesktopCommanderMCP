@@ -61,3 +61,7 @@ test_search.js
 
 # Local release/package proof artifacts
 .artifacts/
+
+# Local Graphify developer tooling
+.tools/
+graphify-out/
