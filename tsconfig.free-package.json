@@ -8,7 +8,8 @@
     "listEmittedFiles": false
   },
   "files": [
-    "src/free-index.ts"
+    "src/free-index.ts",
+    "src/types/caffeinate.d.ts"
   ],
   "include": [],
   "exclude": []
