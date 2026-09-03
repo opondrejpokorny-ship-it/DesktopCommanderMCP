@@ -35,15 +35,17 @@ try {
     'git push prefix should require approval'
   );
 
-  assert.strictEqual(
-    (await preflightToolRequest(
-      'start_process',
-      { command: 'git status', timeout_ms: 5000 },
-      policyFile
-    )).decision,
-    'allow',
-    'Unrelated git command should remain allowed'
+  const unrelatedGit = await preflightToolRequest(
+    'start_process',
+    { command: 'git status', timeout_ms: 5000 },
+    policyFile
   );
+  assert.strictEqual(
+    unrelatedGit.decision,
+    'require_approval',
+    'Unmatched Pro terminal commands should fall back to the paid-tier approval baseline'
+  );
+  assert.strictEqual(unrelatedGit.matchedRuleId, 'tier:paid:terminal');
 
   for (const command of [
     'echo ready && git push origin main',
@@ -83,14 +85,20 @@ try {
     'Managed command should be detected inside command substitution'
   );
 
+  const tokenBoundary = await preflightToolRequest(
+    'start_process',
+    { command: 'git push-notes', timeout_ms: 5000 },
+    policyFile
+  );
   assert.strictEqual(
-    (await preflightToolRequest(
-      'start_process',
-      { command: 'git push-notes', timeout_ms: 5000 },
-      policyFile
-    )).decision,
-    'allow',
-    'Managed command prefixes must stop at token boundaries'
+    tokenBoundary.decision,
+    'require_approval',
+    'Non-matching command prefixes should fall back to the paid-tier baseline'
+  );
+  assert.strictEqual(
+    tokenBoundary.matchedRuleId,
+    'tier:paid:terminal',
+    'git push must not accidentally match git push-notes'
   );
 
   await setCommandPermission('npm publish', 'blocked', policyFile);
@@ -105,14 +113,20 @@ try {
     'Blocked command prefix should deny execution'
   );
 
+  const npmBoundary = await preflightToolRequest(
+    'start_process',
+    { command: 'npm publisher-info', timeout_ms: 5000 },
+    policyFile
+  );
   assert.strictEqual(
-    (await preflightToolRequest(
-      'start_process',
-      { command: 'npm publisher-info', timeout_ms: 5000 },
-      policyFile
-    )).decision,
-    'allow',
-    'Command prefix must stop at a shell token boundary'
+    npmBoundary.decision,
+    'require_approval',
+    'Non-matching npm command should fall back to the paid-tier baseline'
+  );
+  assert.strictEqual(
+    npmBoundary.matchedRuleId,
+    'tier:paid:terminal',
+    'npm publish must not accidentally match npm publisher-info'
   );
 
   await setCommandPermission('git push', 'inherit', policyFile);
