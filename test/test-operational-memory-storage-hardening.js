@@ -1,6 +1,6 @@
 /** M1 RED/GREEN coverage for Operational Memory JSONL durability. */
 import assert from 'node:assert';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -127,6 +127,37 @@ await withFixture('stale-lock', async ({ projectRoot }) => {
     'a stale lock must be recovered and removed after append',
   );
   console.log('PASS stale journal lock is recovered');
+});
+
+function runWriter(projectRoot, stateRoot, count, lessonCode) {
+  const script = path.join(process.cwd(), 'test', 'fixtures', 'operational-memory-writer.js');
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, projectRoot, stateRoot, String(count), lessonCode], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('exit', (code) => code === 0
+      ? resolve()
+      : reject(new Error('writer exited ' + code + ': ' + stderr)));
+  });
+}
+
+await withFixture('two-process-writers', async ({ projectRoot, stateRoot }) => {
+  const memoryPath = resolveWorkflowMemoryPath(projectRoot);
+  await Promise.all([
+    runWriter(projectRoot, stateRoot, 25, 'fetch_required_git_refs'),
+    runWriter(projectRoot, stateRoot, 25, 'shell_quoting_unreliable'),
+  ]);
+  const rawLines = (await fs.readFile(memoryPath, 'utf8')).split(/\r?\n/).filter(Boolean);
+  const parsed = rawLines.map((line) => JSON.parse(line));
+  assert.strictEqual(parsed.length, 50);
+  assert.strictEqual(parsed.filter((event) => event.lessonCode === 'fetch_required_git_refs').length, 25);
+  assert.strictEqual(parsed.filter((event) => event.lessonCode === 'shell_quoting_unreliable').length, 25);
+  assert.strictEqual(await fs.stat(memoryPath + '.lock').then(() => true, () => false), false);
+  console.log('PASS two processes append complete JSONL records without residue');
 });
 
 console.log('✅ Operational Memory M1 storage hardening tests passed');
