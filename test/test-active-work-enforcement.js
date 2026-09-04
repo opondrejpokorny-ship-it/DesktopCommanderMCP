@@ -109,6 +109,23 @@ try {
     /ACTIVE_WORK_REGISTRATION_REQUIRED/,
   );
 
+  if (process.platform !== 'win32') {
+    await fs.mkdir(path.join(repoA, 'SRC'), { recursive: true });
+    const caseMismatch = await applyActiveWorkEnforcementGate('write_file', {
+      path: path.join(repoA, 'SRC', 'case-sensitive.txt'),
+      content: 'must-not-authorize',
+    });
+    assert.equal(
+      caseMismatch.allowed,
+      false,
+      'case-sensitive filesystems must not let affectedAreas src authorize SRC',
+    );
+    assert.equal(
+      caseMismatch.result?.structuredContent?.code,
+      'ACTIVE_WORK_SCOPE_UPDATE_REQUIRED',
+    );
+  }
+
   const outOfScope = await applyActiveWorkEnforcementGate('write_file', {
     path: path.join(repoA, 'docs', 'not-covered.md'),
     content: 'no',
