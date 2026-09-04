@@ -74,9 +74,20 @@ try {
   git('commit', '-m', 'baseline');
   git('remote', 'add', 'upstream', 'https://example.invalid/upstream/repo.git');
 
+  const validProjectProfileText = await fs.readFile(projectProfilePath, 'utf8');
+  await fs.writeFile(projectProfilePath, '{ malformed project profile');
+  const startedWithMalformedGuidance = await startProjectWorkflow({
+    projectRoot,
+    goal: 'Malformed optional guidance must not block workflow'
+  });
+  assert.ok(startedWithMalformedGuidance.projectIdentity);
+  assert.strictEqual(startedWithMalformedGuidance.projectProfile, undefined);
+  await fs.writeFile(projectProfilePath, validProjectProfileText);
+
   const started = await startProjectWorkflow({
     projectRoot,
-    goal: 'Implement a verified feature'
+    goal: 'Implement a verified feature',
+    restart: true
   });
   assert.strictEqual(started.profile.id, 'test-project');
   assert.match(started.projectIdentity.projectId, /^[a-f0-9]{24}$/);
@@ -98,9 +109,49 @@ try {
   assert.ok(started.git.branch.length > 0);
   assert.strictEqual(started.git.remotes.upstream, 'https://example.invalid/upstream/repo.git');
 
+  await fs.writeFile(projectProfilePath, '{ malformed project profile');
+  const statusWithMalformedProjectProfile = await getProjectWorkflowStatus({ projectRoot });
+  assert.strictEqual(
+    statusWithMalformedProjectProfile.projectProfile,
+    undefined,
+    'Malformed optional Project Profile guidance must not block workflow status'
+  );
+  assert.strictEqual(
+    statusWithMalformedProjectProfile.projectIdentity.projectId,
+    started.projectIdentity.projectId
+  );
+  const resumedWithMalformedProjectProfile = await resumeProjectWorkflow({ projectRoot });
+  assert.strictEqual(
+    resumedWithMalformedProjectProfile.projectProfile,
+    undefined,
+    'Malformed optional Project Profile guidance must not block workflow resume'
+  );
+  await fs.writeFile(projectProfilePath, validProjectProfileText);
+
   const expectedStatePath = resolveWorkflowStatePath(projectRoot);
   assert.strictEqual(started.statePath, expectedStatePath);
   assert.ok(expectedStatePath.startsWith(path.resolve(stateRoot)));
+
+  const legacyStateSource = JSON.parse(await fs.readFile(expectedStatePath, 'utf8'));
+  const legacyStateFixture = {
+    version: legacyStateSource.version,
+    workflowId: legacyStateSource.workflowId,
+    projectRoot: legacyStateSource.projectRoot,
+    goal: legacyStateSource.goal,
+    profilePath: legacyStateSource.profilePath,
+    profileFingerprint: legacyStateSource.profileFingerprint,
+    profile: legacyStateSource.profile,
+    startedAt: legacyStateSource.startedAt,
+    updatedAt: legacyStateSource.updatedAt,
+    stages: legacyStateSource.stages,
+    gitBaseline: legacyStateSource.gitBaseline,
+    lastGitCheck: legacyStateSource.lastGitCheck
+  };
+  await fs.writeFile(expectedStatePath, JSON.stringify(legacyStateFixture, null, 2));
+  const resumedLegacyState = await resumeProjectWorkflow({ projectRoot });
+  assert.strictEqual(resumedLegacyState.workflowId, started.workflowId);
+  assert.strictEqual(resumedLegacyState.projectIdentity.projectId, started.projectIdentity.projectId);
+  assert.strictEqual(resumedLegacyState.projectProfile.profile.name, 'Coordinator Project Profile');
 
   const stateGate = await applyPolicyGate(
     'write_file',

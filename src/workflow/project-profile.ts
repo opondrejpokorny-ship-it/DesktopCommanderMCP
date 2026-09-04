@@ -302,10 +302,10 @@ export async function tryResolveProjectProfile(
 ): Promise<ResolvedProjectProfile | undefined> {
     try {
         return await resolveProjectProfile(projectRoot);
-    } catch (error) {
-        if (error instanceof Error && error.message.startsWith('Project Profile not found at ')) {
-            return undefined;
-        }
-        throw error;
+    } catch {
+        // Project Profile is optional, untrusted guidance. Strict validation remains
+        // available through resolveProjectProfile(), but workflow lifecycle calls must
+        // not fail because optional guidance is missing, malformed, or unsafe.
+        return undefined;
     }
 }
