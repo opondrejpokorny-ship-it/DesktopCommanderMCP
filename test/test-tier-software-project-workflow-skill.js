@@ -64,6 +64,12 @@ for (const required of [
   'checkpoint.md',
   'failed attempts',
   'Resume',
+  'waiting_external',
+  'recommendedStage',
+  'readyStages',
+  'opportunisticStages',
+  'Do not invent unrelated busy-work',
+  're-check',
   'A skill is guidance, not authorization',
   'Never store secrets',
 ]) {
@@ -79,4 +85,4 @@ assert.match(
   'Progress guidance must reserve 100% for verified and documented completion'
 );
 
-console.log('✅ Software Project Workflow skill contract passed');
+console.log('Ôťů Software Project Workflow skill contract passed');
