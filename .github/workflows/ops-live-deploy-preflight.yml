@@ -1,0 +1,57 @@
+name: Ops Live Deploy Preflight
+
+on:
+  push:
+    branches:
+      - ops/deploy-f931a1ad-20260904
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Canonical runtime preflight
+        shell: cmd
+        run: |
+          @echo off
+          setlocal EnableExtensions
+          set "REPO=C:\DesktopCommanderTierPrototype"
+          set "EXPECTED=f931a1ad43ac706b5ded14a610b65fb6dac6efd4"
+          echo MACHINE=%COMPUTERNAME%
+          if /I not "%COMPUTERNAME%"=="WIN-A0OFGC4ORFI" exit /b 30
+          if not exist "%REPO%\.git" exit /b 31
+          git -c safe.directory="%REPO%" -C "%REPO%" fetch origin
+          if errorlevel 1 exit /b 32
+          git -c safe.directory="%REPO%" -C "%REPO%" fetch upstream
+          if errorlevel 1 exit /b 33
+          for /f %%B in ('git -c safe.directory^="%REPO%" -C "%REPO%" branch --show-current') do set "BRANCH=%%B"
+          for /f %%H in ('git -c safe.directory^="%REPO%" -C "%REPO%" rev-parse HEAD') do set "HEADSHA=%%H"
+          for /f %%H in ('git -c safe.directory^="%REPO%" -C "%REPO%" rev-parse origin/prototype/free-pro-team') do set "ORIGINSHA=%%H"
+          for /f %%H in ('git -c safe.directory^="%REPO%" -C "%REPO%" rev-parse upstream/main') do set "UPSTREAMSHA=%%H"
+          echo BRANCH=%BRANCH%
+          echo HEAD=%HEADSHA%
+          echo ORIGIN_PROTOTYPE=%ORIGINSHA%
+          echo UPSTREAM_MAIN=%UPSTREAMSHA%
+          if /I not "%BRANCH%"=="prototype/free-pro-team" exit /b 34
+          if /I not "%ORIGINSHA%"=="%EXPECTED%" exit /b 35
+          set "DIRTY="
+          for /f "delims=" %%S in ('git -c safe.directory^="%REPO%" -C "%REPO%" status --porcelain -uall') do set "DIRTY=1"
+          if defined DIRTY (
+            git -c safe.directory="%REPO%" -C "%REPO%" status --short
+            exit /b 36
+          )
+          for /f "tokens=1,2" %%A in ('git -c safe.directory^="%REPO%" -C "%REPO%" rev-list --left-right --count HEAD...origin/prototype/free-pro-team') do (
+            set "AHEAD=%%A"
+            set "BEHIND=%%B"
+          )
+          echo RELATION ahead=%AHEAD% behind=%BEHIND%
+          if not "%AHEAD%"=="0" exit /b 37
+          echo LAUNCHER_BEGIN
+          type "C:\Users\ondre\AppData\Local\DesktopCommanderRemote\start-remote.cmd"
+          echo LAUNCHER_END
+          powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $remote=Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*C:\DesktopCommanderTierPrototype\dist\index.js remote*' }; $watch=Get-CimInstance Win32_Process | Where-Object { $_.Name -ieq 'cmd.exe' -and $_.CommandLine -like '*start-remote.cmd*' }; Write-Host ('REMOTE_COUNT=' + @($remote).Count); $remote | ForEach-Object { Write-Host ('REMOTE_PID=' + $_.ProcessId + ' START=' + $_.CreationDate) }; Write-Host ('WATCHER_COUNT=' + @($watch).Count); $watch | ForEach-Object { Write-Host ('WATCHER_PID=' + $_.ProcessId + ' START=' + $_.CreationDate) }"
+          if errorlevel 1 exit /b 38
+          echo OPS_DEPLOY_PREFLIGHT_OK
