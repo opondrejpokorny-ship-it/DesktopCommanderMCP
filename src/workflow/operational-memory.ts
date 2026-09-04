@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { ServerResult } from '../types.js';
 import {
   isOperationalLessonCode,
@@ -90,6 +91,9 @@ export interface RecordOperationalLessonInput {
 const MAX_MEMORY_TAIL_BYTES = 512 * 1024;
 const MAX_MEMORY_EVENTS = 1000;
 const MAX_RELEVANT_LESSONS = 8;
+const MEMORY_LOCK_RETRY_MS = 25;
+const MEMORY_LOCK_ATTEMPTS = 200;
+const MEMORY_STALE_LOCK_MS = 30_000;
 const memoryWriteChains = new Map<string, Promise<void>>();
 
 function safeToolName(value: string): string {
@@ -362,13 +366,82 @@ async function activeWorkflowForProjectRoot(
   }
 }
 
+async function recoverStaleMemoryLock(lockPath: string): Promise<boolean> {
+  const stat = await fs.stat(lockPath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!stat) return true;
+  if (Date.now() - stat.mtimeMs <= MEMORY_STALE_LOCK_MS) return false;
+
+  const reclaimedPath = lockPath + '.stale-' + process.pid + '-' + crypto.randomUUID();
+  try {
+    await fs.rename(lockPath, reclaimedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+
+  await fs.rm(reclaimedPath, { recursive: true, force: true }).catch(() => undefined);
+  return true;
+}
+
+async function withMemoryLock<T>(memoryPath: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = memoryPath + '.lock';
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  let acquired = false;
+
+  for (let attempt = 0; attempt < MEMORY_LOCK_ATTEMPTS; attempt += 1) {
+    try {
+      await fs.mkdir(lockPath);
+      acquired = true;
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      try {
+        const stat = await fs.stat(lockPath);
+        if (Date.now() - stat.mtimeMs > MEMORY_STALE_LOCK_MS) {
+          if (await recoverStaleMemoryLock(lockPath)) continue;
+        }
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') throw statError;
+      }
+      await delay(MEMORY_LOCK_RETRY_MS);
+    }
+  }
+
+  if (!acquired) throw new Error('Operational memory journal is busy; refusing an unsafe concurrent write');
+  try {
+    return await operation();
+  } finally {
+    await fs.rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): Promise<void> {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
   const prior = memoryWriteChains.get(memoryPath) ?? Promise.resolve();
-  const operation = prior.then(async () => {
+  const operation = prior.then(() => withMemoryLock(memoryPath, async () => {
     await fs.mkdir(path.dirname(memoryPath), { recursive: true });
+    let needsSeparator = false;
+    try {
+      const handle = await fs.open(memoryPath, 'r');
+      try {
+        const stat = await handle.stat();
+        if (stat.size > 0) {
+          const lastByte = Buffer.alloc(1);
+          await handle.read(lastByte, 0, 1, stat.size - 1);
+          needsSeparator = lastByte[0] !== 0x0a;
+        }
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (needsSeparator) await fs.appendFile(memoryPath, '\n', 'utf8');
     await fs.appendFile(memoryPath, JSON.stringify(event) + '\n', 'utf8');
-  });
+  }));
   memoryWriteChains.set(memoryPath, operation.catch(() => undefined));
   await operation;
 }
