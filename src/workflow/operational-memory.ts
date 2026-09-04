@@ -367,26 +367,23 @@ async function activeWorkflowForProjectRoot(
 }
 
 async function recoverStaleMemoryLock(lockPath: string): Promise<boolean> {
-  const recoveryPath = lockPath + '.recovery';
+  const stat = await fs.stat(lockPath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!stat) return true;
+  if (Date.now() - stat.mtimeMs <= MEMORY_STALE_LOCK_MS) return false;
+
+  const reclaimedPath = lockPath + '.stale-' + process.pid + '-' + crypto.randomUUID();
   try {
-    await fs.mkdir(recoveryPath);
+    await fs.rename(lockPath, reclaimedPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw error;
   }
 
-  try {
-    const stat = await fs.stat(lockPath).catch((error) => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
-    });
-    if (!stat) return true;
-    if (Date.now() - stat.mtimeMs <= MEMORY_STALE_LOCK_MS) return false;
-    await fs.rm(lockPath, { recursive: true, force: true });
-    return true;
-  } finally {
-    await fs.rm(recoveryPath, { recursive: true, force: true }).catch(() => undefined);
-  }
+  await fs.rm(reclaimedPath, { recursive: true, force: true }).catch(() => undefined);
+  return true;
 }
 
 async function withMemoryLock<T>(memoryPath: string, operation: () => Promise<T>): Promise<T> {

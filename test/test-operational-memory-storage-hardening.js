@@ -131,7 +131,7 @@ await withFixture('stale-lock', async ({ projectRoot }) => {
   console.log('PASS stale journal lock is recovered');
 });
 
-await withFixture('stale-recovery-guard', async ({ projectRoot }) => {
+await withFixture('orphaned-recovery-guard', async ({ projectRoot }) => {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
   const lockPath = memoryPath + '.lock';
   const recoveryPath = lockPath + '.recovery';
@@ -140,22 +140,14 @@ await withFixture('stale-recovery-guard', async ({ projectRoot }) => {
   const old = new Date(Date.now() - 120_000);
   await fs.utimes(lockPath, old, old);
   await fs.mkdir(recoveryPath);
+  await fs.utimes(recoveryPath, old, old);
 
-  let resolved = false;
-  const pending = recordOperationalLesson({
+  const recorded = await recordOperationalLesson({
     projectRoot,
     lessonCode: 'fetch_required_git_refs',
-  }).then((value) => {
-    resolved = true;
-    return value;
   });
-
-  await delay(120);
-  assert.strictEqual(resolved, false, 'a stale-lock recovery already owned by another process must be respected');
-  assert.strictEqual(await fs.stat(lockPath).then(() => true, () => false), true, 'the stale lock must not be removed while another recovery owns the guard');
-  await fs.rm(recoveryPath, { recursive: true, force: true });
-  assert.strictEqual(await pending, true);
-  console.log('PASS stale recovery guard serializes stale-lock reclamation');
+  assert.strictEqual(recorded, true, 'an orphaned stale recovery guard must not wedge future journal writes');
+  console.log('PASS orphaned stale recovery guard cannot wedge journal writes');
 });
 
 function runWriter(projectRoot, stateRoot, count, lessonCode) {
@@ -174,6 +166,27 @@ function runWriter(projectRoot, stateRoot, count, lessonCode) {
       : reject(new Error('writer exited ' + code + ': ' + stderr)));
   });
 }
+
+await withFixture('two-process-stale-reclaim', async ({ projectRoot, stateRoot }) => {
+  const memoryPath = resolveWorkflowMemoryPath(projectRoot);
+  const lockPath = memoryPath + '.lock';
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  await fs.mkdir(lockPath);
+  const old = new Date(Date.now() - 120_000);
+  await fs.utimes(lockPath, old, old);
+
+  await Promise.all([
+    runWriter(projectRoot, stateRoot, 1, 'fetch_required_git_refs'),
+    runWriter(projectRoot, stateRoot, 1, 'shell_quoting_unreliable'),
+  ]);
+  const parsed = (await fs.readFile(memoryPath, 'utf8'))
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.strictEqual(parsed.length, 2);
+  assert.strictEqual(await fs.stat(lockPath).then(() => true, () => false), false);
+  console.log('PASS two processes safely contend while reclaiming one stale lock');
+});
 
 await withFixture('two-process-writers', async ({ projectRoot, stateRoot }) => {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
