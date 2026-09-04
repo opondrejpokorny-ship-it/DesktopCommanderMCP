@@ -366,6 +366,29 @@ async function activeWorkflowForProjectRoot(
   }
 }
 
+async function recoverStaleMemoryLock(lockPath: string): Promise<boolean> {
+  const recoveryPath = lockPath + '.recovery';
+  try {
+    await fs.mkdir(recoveryPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  }
+
+  try {
+    const stat = await fs.stat(lockPath).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat) return true;
+    if (Date.now() - stat.mtimeMs <= MEMORY_STALE_LOCK_MS) return false;
+    await fs.rm(lockPath, { recursive: true, force: true });
+    return true;
+  } finally {
+    await fs.rm(recoveryPath, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 async function withMemoryLock<T>(memoryPath: string, operation: () => Promise<T>): Promise<T> {
   const lockPath = memoryPath + '.lock';
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
@@ -381,8 +404,7 @@ async function withMemoryLock<T>(memoryPath: string, operation: () => Promise<T>
       try {
         const stat = await fs.stat(lockPath);
         if (Date.now() - stat.mtimeMs > MEMORY_STALE_LOCK_MS) {
-          await fs.rm(lockPath, { recursive: true, force: true });
-          continue;
+          if (await recoverStaleMemoryLock(lockPath)) continue;
         }
       } catch (statError) {
         if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') throw statError;
