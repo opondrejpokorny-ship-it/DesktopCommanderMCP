@@ -22,6 +22,7 @@ const projectRoot = path.join(tempDir, 'repo');
 const stateRoot = path.join(tempDir, 'state');
 const profileDir = path.join(projectRoot, '.desktop-commander');
 const profilePath = path.join(profileDir, 'project-workflow.json');
+const projectProfilePath = path.join(profileDir, 'project-profile.json');
 const approvalPath = path.join(tempDir, 'approvals.json');
 const missingPolicy = path.join(tempDir, 'missing-policy.json');
 
@@ -49,6 +50,22 @@ try {
     ]
   }, null, 2));
 
+  await fs.writeFile(projectProfilePath, JSON.stringify({
+    version: 1,
+    name: 'Coordinator Project Profile',
+    instructions: ['Use the registered project workflow.'],
+    definitionOfDone: 'Verified and integrated.',
+    requiredPreRead: [{ label: 'Roadmap', uri: 'https://docs.example.invalid/roadmap' }],
+    repository: {
+      authoritativeRepository: 'example.invalid/upstream/repo',
+      authoritativeBranch: 'main'
+    },
+    workflowProfile: '.desktop-commander/project-workflow.json',
+    verificationRequirements: ['Run focused tests.'],
+    deploymentRequirements: ['Deploy only with explicit authorization.'],
+    graphify: { wrapper: 'scripts/graphify-local.cmd', mode: 'local_code_only' },
+    documentation: [{ label: 'Playbook', uri: 'https://docs.example.invalid/playbook' }]
+  }, null, 2));
   execFileSync('git', ['init', projectRoot]);
   git('config', 'user.email', 'test@example.invalid');
   git('config', 'user.name', 'Workflow Test');
@@ -62,6 +79,17 @@ try {
     goal: 'Implement a verified feature'
   });
   assert.strictEqual(started.profile.id, 'test-project');
+  assert.match(started.projectIdentity.projectId, /^[a-f0-9]{24}$/);
+  assert.match(started.projectIdentity.repository.repositoryId, /^[a-f0-9]{24}$/);
+  assert.strictEqual(started.projectProfile.profile.name, 'Coordinator Project Profile');
+  assert.strictEqual(
+    started.projectProfile.identity.projectId,
+    started.projectIdentity.projectId
+  );
+  assert.strictEqual(
+    started.projectProfile.identity.repository.repositoryId,
+    started.projectIdentity.repository.repositoryId
+  );
   assert.strictEqual(started.goal, 'Implement a verified feature');
   assert.strictEqual(started.progress.percentComplete, 0);
   assert.strictEqual(started.nextStage?.id, 'drive-pre-read');
@@ -241,6 +269,9 @@ try {
   assert.match(persistedText, /\[REDACTED\]/);
   assert.ok(!persistedText.includes('rawCommand'));
   assert.ok(!persistedText.includes('fileContents'));
+  assert.ok(!persistedText.includes('projectIdentity'));
+  assert.ok(!persistedText.includes('projectProfile'));
+  assert.ok(!persistedText.includes('Coordinator Project Profile'));
 
   console.log('✅ Project workflow coordinator tests passed');
 } finally {

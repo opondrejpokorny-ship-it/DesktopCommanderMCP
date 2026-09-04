@@ -14,6 +14,14 @@ import {
     resolveWorkflowStatePath,
     resolveWorkflowStateRoot,
 } from './workflow-storage.js';
+import {
+    resolveProjectIdentity,
+    type ProjectIdentity,
+} from './scope-identity.js';
+import {
+    tryResolveProjectProfile,
+    type ResolvedProjectProfile,
+} from './project-profile.js';
 
 export {
     recordOperationalLesson,
@@ -115,9 +123,11 @@ export interface WorkflowStageView extends WorkflowStageDefinition, WorkflowStag
 export interface WorkflowStatus {
     workflowId: string;
     projectRoot: string;
+    projectIdentity: ProjectIdentity;
     statePath: string;
     goal: string;
     profile: ProjectWorkflowProfile;
+    projectProfile?: ResolvedProjectProfile;
     profilePath: string;
     profileFingerprint: string;
     profileDrifted: boolean;
@@ -671,6 +681,9 @@ async function toStatus(
     gitSnapshot?: WorkflowGitSnapshot,
 ): Promise<WorkflowStatus> {
     const git = gitSnapshot ?? (await inspectGit(state.projectRoot));
+    const projectProfile = await tryResolveProjectProfile(state.projectRoot);
+    const projectIdentity = projectProfile?.identity ??
+        (await resolveProjectIdentity(state.projectRoot));
     const stages: WorkflowStageView[] = state.profile.stages.map((definition) => {
         const stageState = state.stages[definition.id];
         const evidenceStale =
@@ -721,9 +734,11 @@ async function toStatus(
     return {
         workflowId: state.workflowId,
         projectRoot: state.projectRoot,
+        projectIdentity,
         statePath: resolveWorkflowStatePath(state.projectRoot),
         goal: state.goal,
         profile: state.profile,
+        ...(projectProfile ? { projectProfile } : {}),
         profilePath: state.profilePath,
         profileFingerprint: state.profileFingerprint,
         profileDrifted: await profileDrifted(state),
