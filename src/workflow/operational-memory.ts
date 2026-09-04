@@ -9,11 +9,17 @@ import {
   type OperationalLessonCode,
 } from './operational-memory-contract.js';
 import {
+  resolveWorkflowMemoryIndexPath,
   resolveWorkflowMemoryPath,
   resolveWorkflowStatePath,
   resolveWorkflowStateRoot,
   workflowProjectIdentity,
 } from './workflow-storage.js';
+import { resolveProjectIdentity } from './scope-identity.js';
+import {
+  readOperationalMemoryIndexEvents,
+  updateOperationalMemoryIndexAfterAppend,
+} from './operational-memory-index.js';
 
 export type OperationalMemoryKind = 'error' | 'limit' | 'lesson';
 export type OperationalReasonCode =
@@ -418,8 +424,18 @@ async function withMemoryLock<T>(memoryPath: string, operation: () => Promise<T>
   }
 }
 
+async function memoryScopeCorrelation(projectRoot: string): Promise<{ projectId: string; repositoryId: string } | undefined> {
+  try {
+    const identity = await resolveProjectIdentity(projectRoot);
+    return { projectId: identity.projectId, repositoryId: identity.repository.repositoryId };
+  } catch {
+    return undefined;
+  }
+}
+
 async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): Promise<void> {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
+  const scope = await memoryScopeCorrelation(projectRoot);
   const prior = memoryWriteChains.get(memoryPath) ?? Promise.resolve();
   const operation = prior.then(() => withMemoryLock(memoryPath, async () => {
     await fs.mkdir(path.dirname(memoryPath), { recursive: true });
@@ -441,6 +457,12 @@ async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): 
     }
     if (needsSeparator) await fs.appendFile(memoryPath, '\n', 'utf8');
     await fs.appendFile(memoryPath, JSON.stringify(event) + '\n', 'utf8');
+    await updateOperationalMemoryIndexAfterAppend(
+      memoryPath,
+      resolveWorkflowMemoryIndexPath(projectRoot),
+      parseMemoryLine,
+      scope,
+    ).catch(() => false);
   }));
   memoryWriteChains.set(memoryPath, operation.catch(() => undefined));
   await operation;
@@ -524,7 +546,7 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
   };
 }
 
-async function readRecentEvents(
+async function readRecentEventsFromJournal(
   projectRoot: string,
   workflowId: string,
 ): Promise<OperationalMemoryEvent[]> {
@@ -558,6 +580,38 @@ async function readRecentEvents(
   } finally {
     await handle?.close().catch(() => undefined);
   }
+}
+
+function parseMemoryLine(line: string): OperationalMemoryEvent | null {
+  try {
+    return parseMemoryEvent(JSON.parse(line));
+  } catch {
+    return null;
+  }
+}
+
+async function readRecentEvents(
+  projectRoot: string,
+  workflowId: string,
+): Promise<OperationalMemoryEvent[]> {
+  const scope = await memoryScopeCorrelation(projectRoot);
+  const indexed = await readOperationalMemoryIndexEvents(
+    resolveWorkflowMemoryPath(projectRoot),
+    resolveWorkflowMemoryIndexPath(projectRoot),
+    workflowId,
+    MAX_MEMORY_TAIL_BYTES,
+    MAX_MEMORY_EVENTS,
+    parseMemoryLine,
+    scope,
+  );
+  if (indexed !== null) {
+    return indexed
+      .map((event) => parseMemoryEvent({ version: 1, ...event }))
+      .filter((event): event is OperationalMemoryEvent =>
+        !!event && event.workflowId === workflowId
+      );
+  }
+  return readRecentEventsFromJournal(projectRoot, workflowId);
 }
 
 function familyMatchesStage(family: string, stageId?: string): boolean {
