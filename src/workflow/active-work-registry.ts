@@ -1,9 +1,8 @@
 import crypto from 'node:crypto';
-import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { validatePath } from '../tools/filesystem.js';
+import { resolveRepositoryIdentity } from './scope-identity.js';
 import { resolveWorkflowStateRoot } from './workflow-storage.js';
 
 export type ActiveWorkGuidance =
@@ -214,121 +213,14 @@ function cleanTextList(value: unknown, label: string): string[] {
     return value.map((item, index) => safeText(item, label + '[' + index + ']', 1000));
 }
 
-function git(projectRoot: string, args: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-        execFile(
-            'git',
-            ['-C', projectRoot, ...args],
-            { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 },
-            (error, stdout, stderr) => {
-                if (error) {
-                    const detail = typeof stderr === 'string' && stderr.trim()
-                        ? ': ' + stderr.trim()
-                        : '';
-                    reject(new Error(
-                        'Git inspection failed (' + (args[0] ?? 'command') + ')' + detail,
-                    ));
-                    return;
-                }
-                resolve((stdout ?? '').trim());
-            },
-        );
-    });
-}
-
-async function gitOptional(
-    projectRoot: string,
-    args: string[],
-): Promise<string | undefined> {
-    try {
-        const result = await git(projectRoot, args);
-        return result || undefined;
-    } catch {
-        return undefined;
-    }
-}
-
-async function resolveGitRoot(input: string): Promise<string> {
-    const validated = await validatePath(safeText(input, 'projectRoot', 4000));
-    const root = await git(validated, ['rev-parse', '--show-toplevel']);
-    return validatePath(root);
-}
-
-function normalizeRemote(remote: string): string | undefined {
-    const trimmed = remote.trim();
-    try {
-        const parsed = new URL(trimmed);
-        if (!parsed.hostname) {
-            return undefined;
-        }
-        const repositoryPath = parsed.pathname
-            .replace(/^\/+|\/+$/g, '')
-            .replace(/\.git$/i, '');
-        if (!repositoryPath) {
-            return undefined;
-        }
-        return parsed.hostname.toLowerCase() + '/' + repositoryPath.toLowerCase();
-    } catch {
-        const scp = trimmed.match(/^(?:[^@/\s]+@)?([^:/\s]+):(.+)$/);
-        if (!scp) {
-            return undefined;
-        }
-        const repositoryPath = scp[2]
-            .replace(/^\/+|\/+$/g, '')
-            .replace(/\.git$/i, '');
-        if (!repositoryPath) {
-            return undefined;
-        }
-        return scp[1].toLowerCase() + '/' + repositoryPath.toLowerCase();
-    }
-}
-
-async function localRepositoryIdentity(projectRoot: string): Promise<string> {
-    const commonDir = await git(projectRoot, ['rev-parse', '--git-common-dir']);
-    const absolute = path.resolve(projectRoot, commonDir);
-    let canonical = absolute;
-    try {
-        canonical = await fs.realpath(absolute);
-    } catch {
-        // The normalized shared Git directory is still stable enough for this fallback.
-    }
-    if (process.platform === 'win32') {
-        canonical = canonical.toLowerCase();
-    }
-    return 'local:' + digest(canonical);
-}
-
 async function inspectRepository(input: string): Promise<ActiveWorkRepository> {
-    const projectRoot = await resolveGitRoot(input);
-    const [head, branch, remoteList] = await Promise.all([
-        git(projectRoot, ['rev-parse', 'HEAD']),
-        gitOptional(projectRoot, ['symbolic-ref', '--short', 'HEAD']),
-        gitOptional(projectRoot, ['remote']),
-    ]);
-
-    const remotes = (remoteList ?? '')
-        .split(/\r?\n/)
-        .map((item) => item.trim())
-        .filter(Boolean);
-    const preferred = remotes.includes('origin') ? 'origin' : remotes[0];
-    let display: string | undefined;
-    if (preferred) {
-        const remote = await gitOptional(projectRoot, ['remote', 'get-url', preferred]);
-        if (remote) {
-            display = normalizeRemote(remote);
-        }
-    }
-
-    const identity = display
-        ? 'remote:' + display
-        : await localRepositoryIdentity(projectRoot);
-
+    const repository = await resolveRepositoryIdentity(input);
     return {
-        id: digest(identity).slice(0, 24),
-        display: display ?? 'local-repository',
-        worktreeRoot: projectRoot,
-        branch: branch ?? 'DETACHED',
-        head,
+        id: repository.repositoryId,
+        display: repository.display,
+        worktreeRoot: repository.worktreeRoot,
+        branch: repository.branch,
+        head: repository.head,
     };
 }
 
