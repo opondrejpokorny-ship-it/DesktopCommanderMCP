@@ -4,6 +4,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
@@ -29,7 +30,8 @@ async function withFixture(label, fn) {
         name: `Operational Memory M1 ${label}`,
         stages: [{ id: 'inspect', label: 'Inspect', required: true }],
       }, null, 2),
-    );    execFileSync('git', ['init', projectRoot]);
+    );
+    execFileSync('git', ['init', projectRoot]);
     execFileSync('git', ['-C', projectRoot, 'config', 'user.email', 'test@example.invalid']);
     execFileSync('git', ['-C', projectRoot, 'config', 'user.name', 'Memory M1 Test']);
     await fs.writeFile(path.join(projectRoot, 'README.md'), '# m1 test\n');
@@ -130,7 +132,8 @@ await withFixture('stale-lock', async ({ projectRoot }) => {
 });
 
 function runWriter(projectRoot, stateRoot, count, lessonCode) {
-  const script = path.join(process.cwd(), 'test', 'fixtures', 'operational-memory-writer.js');
+  const testDir = path.dirname(fileURLToPath(import.meta.url));
+  const script = path.join(testDir, 'fixtures', 'operational-memory-writer.js');
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script, projectRoot, stateRoot, String(count), lessonCode], {
       cwd: process.cwd(),
