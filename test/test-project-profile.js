@@ -183,6 +183,28 @@ try {
     () => resolveProjectProfile(escapedRoot),
     /Project Profile.*project root|profile.*within.*project root/i,
   );
+  const escapedWorkflowRoot = path.join(tempDir, 'escaped-workflow-repo');
+  const escapedWorkflowDir = path.join(escapedWorkflowRoot, '.desktop-commander');
+  const externalWorkflowDir = path.join(tempDir, 'external-workflow');
+  await fs.mkdir(escapedWorkflowDir, { recursive: true });
+  await fs.mkdir(externalWorkflowDir, { recursive: true });
+  execFileSync('git', ['init', escapedWorkflowRoot]);
+  git(escapedWorkflowRoot, 'config', 'user.email', 'profile-test@example.invalid');
+  git(escapedWorkflowRoot, 'config', 'user.name', 'Project Profile Test');
+  await fs.writeFile(path.join(escapedWorkflowRoot, 'README.md'), '# Workflow escape test\n');
+  await fs.writeFile(path.join(escapedWorkflowDir, 'project-profile.json'), JSON.stringify(profile, null, 2));
+  await fs.symlink(
+    externalWorkflowDir,
+    path.join(escapedWorkflowDir, 'project-workflow.json'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  git(escapedWorkflowRoot, 'add', '.');
+  git(escapedWorkflowRoot, 'commit', '-m', 'baseline');
+  await assert.rejects(
+    () => resolveProjectProfile(escapedWorkflowRoot),
+    /workflowProfile.*project root/i,
+  );
+
   const missingRoot = path.join(tempDir, 'missing-profile-repo');
   await fs.mkdir(missingRoot, { recursive: true });
   execFileSync('git', ['init', missingRoot]);
