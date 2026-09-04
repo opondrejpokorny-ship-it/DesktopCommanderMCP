@@ -24,6 +24,14 @@ function renderWorkflowSummary(status: WorkflowStatus): string {
         lines.push('Warning: workflow profile changed after this task started.');
     }
 
+    const staleStages = status.stages.filter((stage) => stage.evidenceStale);
+    if (staleStages.length) {
+        lines.push(
+            'Warning: Git-HEAD scoped evidence is stale: ' +
+                staleStages.map((stage) => stage.id).join(', '),
+        );
+    }
+
     if (status.operationalMemory.lessons.length > 0) {
         lines.push('Relevant operational lessons from prior attempts:');
         for (const item of status.operationalMemory.lessons) {
@@ -31,6 +39,27 @@ function renderWorkflowSummary(status: WorkflowStatus): string {
                 '- ' + item.lesson +
                 (item.occurrences > 1 ? ' (seen ' + item.occurrences + ' times)' : ''),
             );
+        }
+    }
+
+    if (status.waitingStages.length) {
+        lines.push(
+            'Waiting on external dependency: ' +
+                status.waitingStages
+                    .map((stage) => stage.id + ' — ' + stage.label)
+                    .join(', '),
+        );
+        if (
+            status.recommendedStage &&
+            status.nextStage &&
+            status.recommendedStage.id !== status.nextStage.id
+        ) {
+            lines.push(
+                'Recommended safe work while waiting: ' +
+                    status.recommendedStage.id + ' — ' + status.recommendedStage.label,
+            );
+        } else {
+            lines.push('Re-check the external dependency before advancing.');
         }
     }
 
