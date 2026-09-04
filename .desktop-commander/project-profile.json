@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "name": "Desktop Commander Free / Pro / Team Prototype",
+  "instructions": [
+    "Read the required project documentation before substantial work.",
+    "Treat origin/prototype/free-pro-team as the authoritative prototype and keep main as a clean upstream mirror.",
+    "Use isolated task worktrees and the Active Work Registry for material parallel work."
+  ],
+  "definitionOfDone": "The requested change is verified, integrated into the authoritative prototype when applicable, documented, and the Active Work Registry is cleaned up; deployment occurs only when explicitly authorized.",
+  "requiredPreRead": [
+    { "label": "Roadmap & Work Log", "uri": "https://docs.google.com/document/d/1quNeCk0GreH1Z_FYffUmhVsoZ_soRcWn6_xFueRN89Q/edit" },
+    { "label": "Active Work Registry", "uri": "https://docs.google.com/document/d/11tjLcGQs961MjVRyZywJ42L84C3igEpTE2IgOupBIsc/edit" },
+    { "label": "Engineering Playbook", "uri": "https://docs.google.com/document/d/1PpxNC-YhODDVCUgeNfH3r2SWJDLrjSHU7XQFJ6cFNvk/edit" },
+    { "label": "Owner Presentation Highlights", "uri": "https://docs.google.com/document/d/19GyNNYCuHXTmWNIpIkYJcBbJUYR0_HRLDAZDA5qpxcI/edit" },
+    { "label": "Main Drive", "uri": "https://drive.google.com/drive/folders/1qfxW_Q95ckMECfwMCfPceFNcu_3Mp2Am" }
+  ],
+  "repository": {
+    "authoritativeRepository": "github.com/opondrejpokorny-ship-it/DesktopCommanderMCP",
+    "authoritativeBranch": "prototype/free-pro-team",
+    "upstreamRepository": "github.com/wonderwhy-er/DesktopCommanderMCP",
+    "upstreamBranch": "main"
+  },
+  "workflowProfile": ".desktop-commander/project-workflow.json",
+  "verificationRequirements": [
+    "Run focused tests and broader relevant regressions.",
+    "Run build/typecheck and git diff --check.",
+    "Require exact-head PR CI and exact merged-SHA post-merge CI for material prototype changes."
+  ],
+  "deploymentRequirements": [
+    "Deploy only with explicit user authorization.",
+    "After an authorized deployment, verify the exact deployed version and relevant allowed and denied behavior."
+  ],
+  "graphify": {
+    "wrapper": "scripts/graphify-local.cmd",
+    "mode": "local_code_only"
+  },
+  "documentation": [
+    { "label": "Roadmap & Work Log", "uri": "https://docs.google.com/document/d/1quNeCk0GreH1Z_FYffUmhVsoZ_soRcWn6_xFueRN89Q/edit" },
+    { "label": "Active Work Registry", "uri": "https://docs.google.com/document/d/11tjLcGQs961MjVRyZywJ42L84C3igEpTE2IgOupBIsc/edit" },
+    { "label": "Engineering Playbook", "uri": "https://docs.google.com/document/d/1PpxNC-YhODDVCUgeNfH3r2SWJDLrjSHU7XQFJ6cFNvk/edit" },
+    { "label": "Owner Presentation Highlights", "uri": "https://docs.google.com/document/d/19GyNNYCuHXTmWNIpIkYJcBbJUYR0_HRLDAZDA5qpxcI/edit" }
+  ]
+}
