@@ -3,6 +3,7 @@ import { commandManager } from '../command-manager.js';
 import { StartProcessArgsSchema, ReadProcessOutputArgsSchema, InteractWithProcessArgsSchema, ForceTerminateArgsSchema, ListSessionsArgsSchema } from './schemas.js';
 import { capture } from "../utils/capture.js";
 import { ServerResult } from '../types.js';
+import { setOperationalObservation } from '../runtime/operational-observation.js';
 import { analyzeProcessState, cleanProcessOutput, formatProcessStateMessage, ProcessState } from '../utils/process-detection.js';
 import * as os from 'os';
 import { configManager } from '../config-manager.js';
@@ -200,12 +201,23 @@ export async function startProcess(args: unknown): Promise<ServerResult> {
     timingMessage = formatTimingInfo(result.timingInfo);
   }
 
-  return {
+  const response: ServerResult = {
     content: [{
       type: "text",
       text: `Process started with PID ${result.pid} (shell: ${shellUsed})\nInitial output:\n${result.output}${statusMessage}${timingMessage}`
     }],
   };
+
+  if (
+    result.waitOutcome === 'process_exit' &&
+    terminalManager.consumeNonzeroExitObservation(result.pid)
+  ) {
+    return setOperationalObservation(response, { reasonCode: 'process_exit_nonzero' });
+  }
+  if (result.waitOutcome === 'timeout') {
+    return setOperationalObservation(response, { reasonCode: 'process_wait_timeout' });
+  }
+  return response;
 }
 
 function formatTimingInfo(timing: any): string {
@@ -373,12 +385,20 @@ export async function readProcessOutput(args: unknown): Promise<ServerResult> {
 
   const responseText = output || '(No output in requested range)';
 
-  return {
+  const response: ServerResult = {
     content: [{
       type: "text",
       text: `${statusMessage}\n\n${responseText}${processStateMessage}${timingMessage}`
     }],
   };
+
+  if (
+    result.isComplete &&
+    terminalManager.consumeNonzeroExitObservation(pid)
+  ) {
+    return setOperationalObservation(response, { reasonCode: 'process_exit_nonzero' });
+  }
+  return response;
 }
 
 /**

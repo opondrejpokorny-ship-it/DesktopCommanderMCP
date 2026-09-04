@@ -43,6 +43,7 @@ interface CompletedSession {
   endTime: Date;
   evictedLines: number;        // Carried over from the active session (see TerminalSession)
   evictedChars: number;
+  nonzeroExitObserved: boolean;
 }
 
 /**
@@ -298,6 +299,7 @@ export class TerminalManager {
         if (resolved) return;
         resolved = true;
         if (periodicCheck) clearInterval(periodicCheck);
+        result.waitOutcome = exitReason;
 
         // Add timing info if requested
         if (collectTiming) {
@@ -428,7 +430,8 @@ export class TerminalManager {
             startTime: session.startTime,
             endTime: new Date(),
             evictedLines: session.evictedLines,
-            evictedChars: session.evictedChars
+            evictedChars: session.evictedChars,
+            nonzeroExitObserved: false,
           });
 
           // Keep only last 100 completed sessions
@@ -443,7 +446,8 @@ export class TerminalManager {
         resolveOnce({
           pid: childProcess.pid!,
           output,
-          isBlocked: false
+          isBlocked: false,
+          exitCode: code,
         });
       });
     });
@@ -712,6 +716,20 @@ export class TerminalManager {
    */
   getSession(pid: number): TerminalSession | undefined {
     return this.sessions.get(pid);
+  }
+
+  consumeNonzeroExitObservation(pid: number): boolean {
+    const completed = this.completedSessions.get(pid);
+    if (
+      !completed ||
+      completed.exitCode === null ||
+      completed.exitCode === 0 ||
+      completed.nonzeroExitObserved
+    ) {
+      return false;
+    }
+    completed.nonzeroExitObserved = true;
+    return true;
   }
 
   forceTerminate(pid: number): boolean {

@@ -24,7 +24,7 @@ const PATH_GUIDANCE = `IMPORTANT: ${getPathGuidance(SYSTEM_INFO)} Relative paths
 
 const CMD_PREFIX_DESCRIPTION = `This command can be referenced as "DC: ..." or "use Desktop Commander to ..." in your instructions.`;
 
-const PROJECT_WORKFLOW_SERVER_INSTRUCTIONS = `Before material software-repository edits, call active_work_registry with action=check. If guidance is safe_parallel, register the work before editing; if it is continue_existing, avoid duplicate implementation and reuse existing work only when clearly intended and safe; if it is wait_or_read_only, do not concurrently mutate the overlapping area. Registry guidance is coordination, never authorization, and cannot bypass policy, approvals, allowed directories, blocked commands, command/path validation, or upstream validation. For non-trivial software project work, also check whether the repository contains .desktop-commander/project-workflow.json. When it does, call project_workflow with action=start before implementation, or action=resume when a workflow is already active. Follow the returned next lifecycle stage and relevant operational lessons, avoid repeating an unchanged failed approach when a lesson applies, record only evidence that actually occurred, and call finish only after required stages are complete. External Drive/GitHub/CI evidence remains an agent/provider attestation unless independently verified. Authorization-required stages cannot be completed from agent-controlled MCP evidence; a trusted host/control-plane signal is required after explicit user authorization.`;
+const PROJECT_WORKFLOW_SERVER_INSTRUCTIONS = `Before material software-repository edits, call active_work_registry with action=check. If guidance is safe_parallel, register the work before editing; if it is continue_existing, avoid duplicate implementation and reuse existing work only when clearly intended and safe; if it is wait_or_read_only, do not concurrently mutate the overlapping area. Registry guidance is coordination, never authorization, and cannot bypass policy, approvals, allowed directories, blocked commands, command/path validation, or upstream validation. For non-trivial software project work, also check whether the repository contains .desktop-commander/project-workflow.json. When it does, call project_workflow with action=start before implementation, or action=resume when a workflow is already active. Follow the returned next lifecycle stage and relevant operational lessons, avoid repeating an unchanged failed approach when a lesson applies, record only evidence that actually occurred, and call finish only after required stages are complete. When a repeatable operational lesson clearly matches one of the fixed lessonCode values exposed by project_workflow, record it with action=learn; never encode free-form instructions, secrets, raw commands, paths, file contents, or tool output as a lesson. External Drive/GitHub/CI evidence remains an agent/provider attestation unless independently verified. Authorization-required stages cannot be completed from agent-controlled MCP evidence; a trusted host/control-plane signal is required after explicit user authorization.`;
 
 import {
     StartProcessArgsSchema,
@@ -81,6 +81,7 @@ import { getPrompts } from './tools/prompts.js';
 import { projectWorkflow } from './tools/project-workflow.js';
 import { activeWorkRegistry } from './tools/active-work-registry.js';
 import { recordOperationalToolFailure } from './workflow/operational-memory.js';
+import { getOperationalObservation } from './runtime/operational-observation.js';
 import { trackToolCall } from './utils/trackTools.js';
 import { usageTracker } from './utils/usageTracker.js';
 import { processDockerPrompt } from './utils/dockerPrompt.js';
@@ -88,7 +89,7 @@ import { toolHistory } from './utils/toolHistory.js';
 import { handleWelcomePageOnboarding, skipWelcomePageOnboarding } from './utils/welcome-onboarding.js';
 
 import { VERSION } from './version.js';
-import { capture, capture_call_tool, runInUiOriginCallContext } from "./utils/capture.js";
+import { capture, capture_call_tool } from "./utils/capture.js";
 import { logToStderr, logger } from './utils/logger.js';
 import {
     buildUiToolMeta,
@@ -400,7 +401,7 @@ ${CMD_PREFIX_DESCRIPTION}`,
                 name: "project_workflow",
                 description: `Coordinate a persistent, verifiable software-project lifecycle.
 Use automatically for non-trivial repository work when .desktop-commander/project-workflow.json exists.
-Actions: start, resume, status, record, finish.
+Actions: start, resume, status, record, learn, finish.
 This supplements policy and upstream guardrails and cannot manufacture deployment authorization.
 ${PATH_GUIDANCE}
 ${CMD_PREFIX_DESCRIPTION}`,
@@ -1330,6 +1331,7 @@ async function recordOperationalFailureBestEffort(
     args: unknown,
     result: ServerResult,
     policyDecision?: 'deny' | 'require_approval',
+    observedReasonCode?: 'process_exit_nonzero' | 'process_wait_timeout',
 ): Promise<void> {
     try {
         await recordOperationalToolFailure({
@@ -1337,6 +1339,7 @@ async function recordOperationalFailureBestEffort(
             args,
             result,
             ...(policyDecision ? { policyDecision } : {}),
+            ...(observedReasonCode ? { observedReasonCode } : {}),
         });
     } catch (error) {
         logToStderr(
@@ -1373,15 +1376,9 @@ async function recordAgentToolUsage(
 }
 
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<ServerResult> => {
-    const args = request.params.arguments;
-    // Calls fired programmatically by the widget UIs (file preview, config
-    // editor) carry origin:'ui'. They are real tool executions but not agent
-    // actions, so they must produce zero telemetry and zero agent usage.
-    const isUiOriginCall = !!(args && typeof args === 'object' && (args as any).origin === 'ui');
-    if (isUiOriginCall) {
-        return runInUiOriginCallContext(() => handleCallToolRequest(request));
-    }
-
+    // origin is a client-controlled tool argument. It may still select
+    // presentation behavior inside a handler, but it is never trusted as
+    // provenance for telemetry, usage metering, policy, or operational memory.
     const result = await handleCallToolRequest(request);
     await recordAgentToolUsage(request, result);
     return result;
@@ -1394,6 +1391,12 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
     // including the open-source Free build.
     const coreSafetyGate = await applyCoreSafetyGate(name, args);
     if (!coreSafetyGate.allowed) {
+        await recordOperationalFailureBestEffort(
+            name,
+            args,
+            coreSafetyGate.result!,
+            'deny',
+        );
         return coreSafetyGate.result!;
     }
 
@@ -1412,7 +1415,7 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         );
     } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        return {
+        const failureResult: ServerResult = {
             content: [{
                 type: 'text',
                 text:
@@ -1421,6 +1424,8 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             }],
             isError: true,
         };
+        await recordOperationalFailureBestEffort(name, args, failureResult, 'deny');
+        return failureResult;
     }
 
     if (!policyGate.allowed) {
@@ -1749,7 +1754,16 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
                 };
         }
 
-        if (result.isError) {
+        const operationalObservation = getOperationalObservation(result);
+        if (operationalObservation) {
+            await recordOperationalFailureBestEffort(
+                name,
+                args,
+                result,
+                undefined,
+                operationalObservation.reasonCode,
+            );
+        } else if (result.isError) {
             await recordOperationalFailureBestEffort(name, args, result);
         }
 
@@ -1901,9 +1915,8 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         // timing. In a finally so it still fires on the hard-crash path (the catch
         // above). Only missed if a tool never returns or throws (a true hang).
         // Not emitted for track_ui_event (it is just the transport for
-        // mcp_ui_event) — and UI-origin calls are dropped wholesale by the
-        // capture layer, so server_call_tool reflects only genuine
-        // agent-driven tool calls.
+        // mcp_ui_event). Client-controlled origin fields are not trusted as
+        // provenance and therefore cannot suppress this observability path.
         const durationMs = Date.now() - startTime;
 
         if (runtimePolicyHook.recordExecution) {

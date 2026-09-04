@@ -173,13 +173,16 @@ Lifecycle guidance:
 Runtime:
 
 - versioned per-project `.desktop-commander/project-workflow.json` profile
-- `project_workflow` MCP tool with `start / status / resume / record / finish`
+- `project_workflow` MCP tool with `start / status / resume / record / learn / finish`
 - local Git preflight and refreshed Git evidence
 - whole-lifecycle progress and next-stage reporting
 - persistent task state outside the repository
 - append-only privacy-safe operational failure/limit events outside the repository
 - deduplicated, relevance-ranked lessons returned by `status` / `resume`
-- automatic capture of policy denials/approval requirements and failed tool calls when they can be associated with the active project path
+- automatic capture of policy denials/approval requirements, failed tool calls, privacy-safe non-zero process completion, and process wait timeouts when they can be associated with the active project
+- stale workflow states whose project roots no longer exist are ignored for pathless association
+- reusable engineering findings can be recorded only through fixed whitelisted `lessonCode` templates; free-form lesson injection is not accepted
+- client-controlled `origin` metadata cannot suppress operational-memory capture or usage/observability accounting
 - profile fingerprint/drift protection before completion
 - required-stage completion checks
 - provider/agent evidence references with bounded summaries and credential redaction

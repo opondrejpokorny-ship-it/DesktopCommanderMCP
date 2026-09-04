@@ -1,6 +1,6 @@
 ---
 name: software-project-workflow
-version: 0.1.1
+version: 0.1.2
 audience: agent
 description: >-
   Run software work as a repeatable lifecycle with operational memory. Use when
@@ -27,14 +27,15 @@ authoritative current-task lifecycle state:
 1. Call `project_workflow` with `action: "start"` before material implementation.
 2. If an active task already exists, use `action: "resume"` instead of overwriting it.
 3. Follow the returned `nextStage`, whole-lifecycle progress, and any relevant `operationalMemory.lessons`. When a lesson applies, use it to avoid repeating the same failed approach unchanged.
-4. Failed/denied tool calls associated with the active project may be captured automatically as privacy-safe runtime lessons. Do not copy raw tool arguments, raw command text, file contents, credentials, or full tool output into manual operational memory.
-5. After a meaningful milestone, use `action: "record"` with evidence that actually occurred.
-6. Use `provider_reference` only for a provider result the agent actually checked; it remains
+4. Failed/denied tool calls associated with the active project may be captured automatically as privacy-safe runtime lessons. Non-zero terminal completion and a wait timeout may also be captured without changing the public tool result into an MCP error; a wait timeout means only that the process remained active at the end of the wait.
+5. When a clearly reusable finding matches a fixed `lessonCode` exposed by `project_workflow`, use `action: "learn"`. The code is a whitelist selector for built-in text, not a free-form memory field. Never encode raw tool arguments, raw command text, paths, file contents, credentials, or tool output in a lesson.
+6. After a meaningful milestone, use `action: "record"` with evidence that actually occurred.
+7. Use `provider_reference` only for a provider result the agent actually checked; it remains
    an attestation unless independently verified by Desktop Commander.
-7. Agent-controlled MCP evidence cannot complete an `authorizationRequired` stage. Do not send
+8. Agent-controlled MCP evidence cannot complete an `authorizationRequired` stage. Do not send
    `user_authorization` as agent evidence; deployment or other approval-gated stages require explicit
    user authorization plus a trusted host/control-plane signal.
-8. Call `action: "finish"` only after required stages are complete and optional stages are
+9. Call `action: "finish"` only after required stages are complete and optional stages are
    either completed or explicitly skipped.
 
 The coordinator supplements existing Desktop Commander policy and upstream guardrails.

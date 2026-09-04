@@ -6,6 +6,7 @@ import { validatePath } from '../tools/filesystem.js';
 import {
     getOperationalMemorySummary,
     OperationalMemorySummary,
+    recordOperationalLesson,
     recordOperationalToolFailure,
 } from './operational-memory.js';
 import {
@@ -15,6 +16,7 @@ import {
 } from './workflow-storage.js';
 
 export {
+    recordOperationalLesson,
     recordOperationalToolFailure,
     resolveWorkflowMemoryPath,
     resolveWorkflowStatePath,

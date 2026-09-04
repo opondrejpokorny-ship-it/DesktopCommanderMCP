@@ -30,6 +30,8 @@ export interface CommandExecutionResult {
   pid: number;
   output: string;
   isBlocked: boolean;
+  waitOutcome?: TimingInfo['exitReason'];
+  exitCode?: number | null;
   timingInfo?: TimingInfo;
 }
 
