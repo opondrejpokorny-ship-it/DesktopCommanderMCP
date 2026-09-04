@@ -167,6 +167,27 @@ function runWriter(projectRoot, stateRoot, count, lessonCode) {
   });
 }
 
+await withFixture('two-process-stale-reclaim', async ({ projectRoot, stateRoot }) => {
+  const memoryPath = resolveWorkflowMemoryPath(projectRoot);
+  const lockPath = memoryPath + '.lock';
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  await fs.mkdir(lockPath);
+  const old = new Date(Date.now() - 120_000);
+  await fs.utimes(lockPath, old, old);
+
+  await Promise.all([
+    runWriter(projectRoot, stateRoot, 1, 'fetch_required_git_refs'),
+    runWriter(projectRoot, stateRoot, 1, 'shell_quoting_unreliable'),
+  ]);
+  const parsed = (await fs.readFile(memoryPath, 'utf8'))
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.strictEqual(parsed.length, 2);
+  assert.strictEqual(await fs.stat(lockPath).then(() => true, () => false), false);
+  console.log('PASS two processes safely contend while reclaiming one stale lock');
+});
+
 await withFixture('two-process-writers', async ({ projectRoot, stateRoot }) => {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
   await Promise.all([
