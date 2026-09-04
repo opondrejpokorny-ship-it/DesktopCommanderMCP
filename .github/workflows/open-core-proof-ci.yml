@@ -5,6 +5,10 @@ on:
     branches:
       - prototype/free-pro-team
       - feat/free-commercial-composition-proof
+      - feat/open-core-extraction-readiness
+  pull_request:
+    branches:
+      - prototype/free-pro-team
 
 permissions:
   contents: read
@@ -37,6 +41,9 @@ jobs:
 
       - name: Pro approval without Team audit storage
         run: node test/test-open-core-boundaries.js
+
+      - name: Enforce public/commercial source boundary
+        run: node test/test-open-core-extraction-boundary.js
 
       - name: Build, inspect, install and smoke Free package
         run: node test/test-free-package-artifact.js
