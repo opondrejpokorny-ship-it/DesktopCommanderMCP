@@ -5,11 +5,11 @@ Status: CHARACTERIZATION ONLY — no production behavior change
 Device: `WIN-A0OFGC4ORFI`
 OS/runtime: Windows x64, Node `v24.19.0`
 Package: `@wonderwhy-er/desktop-commander@0.2.48`
-Task worktree: `C:\DesktopCommanderOperationalMemoryScaleM0`
+Task worktree: `C:\\DesktopCommanderOperationalMemoryScaleM0`
 Task branch: `feat/operational-memory-scale-m0`
 Starting authoritative prototype: `f931a1ad43ac706b5ded14a610b65fb6dac6efd4`
-Starting origin prototype: `f931a1ad43ac706b5ded14a610b65fb6dac6efd4`
-Starting upstream main: `ea8e9a47440ccffefede7060e0ddb490540f414d`
+Final characterized authoritative prototype after Active Work Enforcement integration: `6170fa2f32a442be8194586b02209f7c417af3d3`
+Upstream main during M0: `ea8e9a47440ccffefede7060e0ddb490540f414d`
 
 ## Current contract characterized
 
@@ -21,10 +21,10 @@ Starting upstream main: `ea8e9a47440ccffefede7060e0ddb490540f414d`
 - Events are grouped by fingerprint for returned lessons.
 - Model-facing status/resume returns at most `8` lessons.
 - Persisted events remain privacy-safe and exclude raw MCP arguments, terminal commands/output, file contents, credentials and approval payloads.
+
 ## Passing characterization
 
 `test/test-operational-memory-scale-characterization.js` passed against the unmodified production implementation and proved:
-
 - a journal with more than 1000 valid current-workflow events returns exactly 1000 events;
 - an otherwise valid event with a different `workflowId` is excluded;
 - an old whitelisted semantic lesson can disappear after it falls outside the 512 KiB hot tail;
@@ -36,7 +36,7 @@ Command:
 npm run build && node test\test-operational-memory-scale-characterization.js
 ```
 
-Observed result: exit `0` with all four characterization assertions passing.
+Observed post-sync result: exit `0` with all four characterization assertions passing on `6170fa2f32a442be8194586b02209f7c417af3d3`.
 
 ## Expected RED for future architecture
 
@@ -45,22 +45,24 @@ Observed result: exit `0` with all four characterization assertions passing.
 1. a safe same-project lesson should remain available after a new/restarted workflow receives a new workflow ID;
 2. an old high-value lesson should remain retrievable even after it falls outside the bounded JSONL tail.
 
+Both REDs were reconfirmed after syncing the task branch to authoritative `6170fa2f32a442be8194586b02209f7c417af3d3`.
+
 These are expected M0 REDs for later Scope B7 / Operational Memory M2–M3 work, not regressions in the current prototype.
-## Single-run scale benchmark
+
+## Post-sync scale benchmark
 
 Synthetic events clone only sanitized server-generated event fields. Journals are streamed in 10,000-line chunks; the benchmark does not place one million lines in one in-memory string.
-
 | Events | Journal bytes | Generation ms | Status ms | Append ms | RSS delta bytes | Returned events | Unique lessons | Returned lessons |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 10,000 | 2,208,890 | 307.393 | 3,580.298 | 71.795 | 1,011,712 | 1,000 | 1 | 1 |
-| 100,000 | 22,288,890 | 1,331.035 | 1,788.671 | 185.015 | 1,204,224 | 1,000 | 1 | 1 |
-| 1,000,000 | 224,888,890 | 53,624.517 | 737.599 | 4.603 | 659,456 | 1,000 | 1 | 1 |
+| 10,000 | 2,208,890 | 33.296 | 805.114 | 6.285 | 1,548,288 | 1,000 | 1 | 1 |
+| 100,000 | 22,288,890 | 365.070 | 692.553 | 4.750 | 1,126,400 | 1,000 | 1 | 1 |
+| 1,000,000 | 224,888,890 | 3,404.668 | 536.329 | 2.936 | 1,069,056 | 1,000 | 1 | 1 |
 
 Exact RSS before/after:
 
-- 10k: `164012032` → `165023744` bytes;
-- 100k: `201367552` → `202571776` bytes;
-- 1M: `204537856` → `205197312` bytes.
+- 10k: `164642816` → `166191104` bytes;
+- 100k: `203526144` → `204652544` bytes;
+- 1M: `266326016` → `267395072` bytes.
 
 Benchmark process exit: `0`.
 
