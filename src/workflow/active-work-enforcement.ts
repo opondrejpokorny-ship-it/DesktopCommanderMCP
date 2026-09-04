@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { normalizeToolActions } from '../policy/tool-policy.js';
 import type { ServerResult } from '../types.js';
 import { validatePath } from '../tools/filesystem.js';
 import {
@@ -14,11 +13,29 @@ export interface ActiveWorkEnforcementGateResult {
     result?: ServerResult;
 }
 
-const MUTATING_FILESYSTEM_ACTIONS = new Set([
-    'filesystem.write',
-    'filesystem.move',
-    'filesystem.delete',
-]);
+function getStringArg(args: unknown, key: string): string | undefined {
+    if (!args || typeof args !== 'object') return undefined;
+    const value = (args as Record<string, unknown>)[key];
+    return typeof value === 'string' ? value : undefined;
+}
+
+function mutatingFilesystemResources(tool: string, args: unknown): string[] {
+    let resources: Array<string | undefined>;
+    switch (tool) {
+        case 'write_file':
+        case 'create_directory':
+        case 'delete_file': resources = [getStringArg(args, 'path')]; break;
+        case 'edit_block': resources = [getStringArg(args, 'file_path')]; break;
+        case 'move_file': resources = [getStringArg(args, 'source'), getStringArg(args, 'destination')]; break;
+        case 'write_pdf': {
+            const inputPath = getStringArg(args, 'path');
+            resources = [getStringArg(args, 'outputPath') ?? inputPath];
+            break;
+        }
+        default: resources = [];
+    }
+    return resources.filter((resource): resource is string => !!resource);
+}
 
 function normalizeComparablePath(value: string): string {
     let normalized = path.resolve(value);
@@ -176,10 +193,7 @@ export async function applyActiveWorkEnforcementGate(
     tool: string,
     args: unknown,
 ): Promise<ActiveWorkEnforcementGateResult> {
-    const resources = normalizeToolActions(tool, args)
-        .filter((item) => MUTATING_FILESYSTEM_ACTIONS.has(item.action))
-        .map((item) => item.resource)
-        .filter((resource): resource is string => !!resource);
+    const resources = mutatingFilesystemResources(tool, args);
 
     if (resources.length === 0) {
         return { allowed: true };
