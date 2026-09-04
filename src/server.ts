@@ -67,6 +67,7 @@ import { getConfig, setConfigValue } from './tools/config.js';
 import { getUsageStats } from './tools/usage.js';
 import { buildProgressReport } from './progress/progress-reporter.js';
 import { applyCoreSafetyGate } from './runtime/core-safety.js';
+import { applyActiveWorkEnforcementGate } from './workflow/active-work-enforcement.js';
 import {
     getRuntimeServices,
     resolveRuntimeAccess,
@@ -1398,6 +1399,20 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             'deny',
         );
         return coreSafetyGate.result!;
+    }
+
+    // Repository-work registration must be enforced before commercial policy.
+    // Policy preflight may consume an exact one-time approval, so a missing,
+    // corrupt, or out-of-scope registry entry must block first.
+    const activeWorkGate = await applyActiveWorkEnforcementGate(name, args);
+    if (!activeWorkGate.allowed) {
+        await recordOperationalFailureBestEffort(
+            name,
+            args,
+            activeWorkGate.result!,
+            'deny',
+        );
+        return activeWorkGate.result!;
     }
 
     // Commercial policy is injected through runtime services. The shared server
