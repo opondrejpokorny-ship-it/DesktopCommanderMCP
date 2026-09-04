@@ -96,32 +96,69 @@
       "id": "verify-prototype-sha",
       "label": "Verify prototype SHA",
       "required": true,
-      "description": "Verify the exact authoritative prototype SHA and intended change."
+      "description": "Verify the exact authoritative prototype SHA and intended change.",
+      "dependsOn": [
+        "prototype-integration"
+      ],
+      "evidenceScope": "git_head",
+      "workMode": "read_only"
+    },
+    {
+      "id": "post-merge-ci",
+      "label": "Post-merge CI",
+      "required": true,
+      "dependsOn": [
+        "verify-prototype-sha"
+      ],
+      "workMode": "read_only",
+      "evidenceScope": "git_head",
+      "description": "Verify intended CI/workflows on the exact integrated prototype SHA; while CI is running record waiting_external and re-check before advancing."
     },
     {
       "id": "docs-sync",
       "label": "Documentation / Work Log sync",
       "required": true,
-      "description": "Update durable docs and Work Log with implementation, verification, limitations and next state."
+      "description": "Update durable docs and Work Log with implementation, verification, limitations and next state.",
+      "dependsOn": [
+        "post-merge-ci"
+      ]
+    },
+    {
+      "id": "registry-cleanup",
+      "label": "Active Work Registry cleanup",
+      "required": true,
+      "dependsOn": [
+        "docs-sync"
+      ],
+      "description": "Remove the completed active-work entry only after authoritative integration, intended verification, and durable Work Log/docs are complete."
     },
     {
       "id": "deploy",
       "label": "Deploy",
       "required": false,
       "authorizationRequired": true,
-      "description": "Deploy only when explicitly authorized by the user."
+      "description": "Deploy only when explicitly authorized by the user.",
+      "dependsOn": [
+        "registry-cleanup"
+      ]
     },
     {
       "id": "live-verify",
       "label": "Live verification",
       "required": false,
-      "description": "After an authorized deploy, verify actual live behavior; otherwise skip explicitly."
+      "description": "After an authorized deploy, verify actual live behavior; otherwise skip explicitly.",
+      "dependsOn": [
+        "deploy"
+      ]
     },
     {
       "id": "final-report",
       "label": "Final report",
       "required": true,
-      "description": "Report task/root cause, docs read, repo state, RED→GREEN, changes, verification, commit/PR/CI, prototype SHA, deploy status and blockers."
+      "description": "Report task/root cause, docs read, repo state, RED→GREEN, changes, verification, commit/PR/CI, prototype SHA, deploy status and blockers.",
+      "dependsOn": [
+        "live-verify"
+      ]
     }
   ]
 }

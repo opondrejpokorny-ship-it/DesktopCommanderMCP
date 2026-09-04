@@ -23,7 +23,14 @@ export {
     resolveWorkflowStateRoot,
 };
 
-export type WorkflowStageStatus = 'pending' | 'completed' | 'blocked' | 'skipped';
+export type WorkflowStageStatus =
+    | 'pending'
+    | 'completed'
+    | 'blocked'
+    | 'waiting_external'
+    | 'skipped';
+export type WorkflowWorkMode = 'read_only' | 'side_effecting';
+export type WorkflowEvidenceScope = 'workflow' | 'git_head';
 export type WorkflowEvidenceKind =
     | 'agent_attestation'
     | 'provider_reference'
@@ -35,6 +42,9 @@ export interface WorkflowStageDefinition {
     description?: string;
     required: boolean;
     authorizationRequired?: boolean;
+    dependsOn?: string[];
+    workMode?: WorkflowWorkMode;
+    evidenceScope?: WorkflowEvidenceScope;
 }
 
 export interface ProjectWorkflowProfile {
@@ -63,6 +73,7 @@ interface WorkflowEvidence {
     reference?: string;
     recordedAt: string;
     trust: 'attested' | 'trusted_host';
+    gitHead?: string;
 }
 
 interface WorkflowStageState {
@@ -97,6 +108,10 @@ export interface WorkflowProgress {
     percentRemaining: number;
 }
 
+export interface WorkflowStageView extends WorkflowStageDefinition, WorkflowStageState {
+    evidenceStale: boolean;
+}
+
 export interface WorkflowStatus {
     workflowId: string;
     projectRoot: string;
@@ -110,9 +125,13 @@ export interface WorkflowStatus {
     updatedAt: string;
     completedAt?: string;
     completed: boolean;
-    stages: Array<WorkflowStageDefinition & WorkflowStageState>;
+    stages: WorkflowStageView[];
     progress: WorkflowProgress;
-    nextStage: (WorkflowStageDefinition & WorkflowStageState) | null;
+    nextStage: WorkflowStageView | null;
+    readyStages: WorkflowStageView[];
+    opportunisticStages: WorkflowStageView[];
+    waitingStages: WorkflowStageView[];
+    recommendedStage: WorkflowStageView | null;
     operationalMemory: OperationalMemorySummary;
     git: WorkflowGitSnapshot;
     gitBaseline: WorkflowGitSnapshot;
@@ -168,7 +187,7 @@ function safeText(value: unknown, label: string, max = MAX_TEXT): string {
             '$1[REDACTED]',
         );
     if (text.length > max) {
-        text = text.slice(0, max) + '…';
+        text = text.slice(0, max) + 'ÔÇŽ';
     }
     return text;
 }
@@ -193,6 +212,32 @@ function parseStage(value: unknown, index: number): WorkflowStageDefinition {
             'stages[' + index + '].authorizationRequired must be a boolean',
         );
     }
+    let dependsOn: string[] | undefined;
+    if (raw.dependsOn !== undefined) {
+        if (!Array.isArray(raw.dependsOn)) {
+            throw new Error('stages[' + index + '].dependsOn must be an array');
+        }
+        dependsOn = raw.dependsOn.map((item, depIndex) =>
+            safeText(item, 'stages[' + index + '].dependsOn[' + depIndex + ']', 120),
+        );
+        if (new Set(dependsOn).size !== dependsOn.length) {
+            throw new Error('stages[' + index + '].dependsOn contains duplicates');
+        }
+    }
+    if (
+        raw.workMode !== undefined &&
+        raw.workMode !== 'read_only' &&
+        raw.workMode !== 'side_effecting'
+    ) {
+        throw new Error('stages[' + index + '].workMode is invalid');
+    }
+    if (
+        raw.evidenceScope !== undefined &&
+        raw.evidenceScope !== 'workflow' &&
+        raw.evidenceScope !== 'git_head'
+    ) {
+        throw new Error('stages[' + index + '].evidenceScope is invalid');
+    }
     return {
         id,
         label: safeText(raw.label, 'stages[' + index + '].label', 200),
@@ -202,6 +247,13 @@ function parseStage(value: unknown, index: number): WorkflowStageDefinition {
         required: raw.required,
         ...(raw.authorizationRequired === true
             ? { authorizationRequired: true }
+            : {}),
+        ...(dependsOn !== undefined ? { dependsOn } : {}),
+        ...(raw.workMode !== undefined
+            ? { workMode: raw.workMode as WorkflowWorkMode }
+            : {}),
+        ...(raw.evidenceScope !== undefined
+            ? { evidenceScope: raw.evidenceScope as WorkflowEvidenceScope }
             : {}),
     };
 }
@@ -219,9 +271,21 @@ export function parseProjectWorkflowProfile(value: unknown): ProjectWorkflowProf
     }
     const stages = raw.stages.map(parseStage);
     const ids = new Set<string>();
-    for (const stage of stages) {
+    for (let index = 0; index < stages.length; index += 1) {
+        const stage = stages[index];
         if (ids.has(stage.id)) {
             throw new Error('duplicate project workflow stage id: ' + stage.id);
+        }
+        if (stage.dependsOn !== undefined) {
+            for (const dependency of stage.dependsOn) {
+                if (!ids.has(dependency)) {
+                    throw new Error(
+                        'Stage ' + stage.id +
+                            ' dependsOn dependency ' + dependency +
+                            ' which must reference an earlier stage',
+                    );
+                }
+            }
         }
         ids.add(stage.id);
     }
@@ -468,7 +532,7 @@ function parseState(value: unknown): WorkflowState {
     const stageStates = raw.stages as Record<string, WorkflowStageState>;
     for (const stage of profile.stages) {
         const state = stageStates[stage.id];
-        if (!state || !['pending', 'completed', 'blocked', 'skipped'].includes(state.status)) {
+        if (!state || !['pending', 'completed', 'blocked', 'waiting_external', 'skipped'].includes(state.status)) {
             throw new Error('project workflow stage state is invalid: ' + stage.id);
         }
     }
@@ -535,17 +599,19 @@ async function mutateState(
     return result;
 }
 
-function progress(state: WorkflowState): WorkflowProgress {
-    const totalStages = state.profile.stages.length;
-    const requiredStages = state.profile.stages.filter((stage) => stage.required).length;
+function progress(stages: WorkflowStageView[]): WorkflowProgress {
+    const totalStages = stages.length;
+    const requiredStages = stages.filter((stage) => stage.required).length;
     let completedStages = 0;
     let requiredCompletedStages = 0;
-    for (const stage of state.profile.stages) {
-        const status = state.stages[stage.id].status;
-        if (status === 'completed' || status === 'skipped') {
+    for (const stage of stages) {
+        const satisfied =
+            stage.status === 'skipped' ||
+            (stage.status === 'completed' && !stage.evidenceStale);
+        if (satisfied) {
             completedStages += 1;
         }
-        if (stage.required && status === 'completed') {
+        if (stage.required && stage.status === 'completed' && !stage.evidenceStale) {
             requiredCompletedStages += 1;
         }
     }
@@ -558,6 +624,37 @@ function progress(state: WorkflowState): WorkflowProgress {
         percentComplete,
         percentRemaining: Math.max(0, 100 - percentComplete),
     };
+}
+
+function dependenciesForStage(
+    profile: ProjectWorkflowProfile,
+    index: number,
+): string[] {
+    const stage = profile.stages[index];
+    if (stage.dependsOn !== undefined) {
+        return stage.dependsOn;
+    }
+    return index === 0 ? [] : [profile.stages[index - 1].id];
+}
+
+function isSatisfied(stage: WorkflowStageView): boolean {
+    return (
+        stage.status === 'skipped' ||
+        (stage.status === 'completed' && !stage.evidenceStale)
+    );
+}
+function stateStageSatisfied(
+    definition: WorkflowStageDefinition,
+    state: WorkflowStageState,
+    gitHead: string,
+): boolean {
+    if (state.status === 'skipped') {
+        return true;
+    }
+    if (state.status !== 'completed') {
+        return false;
+    }
+    return definition.evidenceScope !== 'git_head' || state.evidence?.gitHead === gitHead;
 }
 
 async function profileDrifted(state: WorkflowState): Promise<boolean> {
@@ -573,17 +670,53 @@ async function toStatus(
     state: WorkflowState,
     gitSnapshot?: WorkflowGitSnapshot,
 ): Promise<WorkflowStatus> {
-    const stages = state.profile.stages.map((definition) => ({
-        ...definition,
-        ...state.stages[definition.id],
-    }));
+    const git = gitSnapshot ?? (await inspectGit(state.projectRoot));
+    const stages: WorkflowStageView[] = state.profile.stages.map((definition) => {
+        const stageState = state.stages[definition.id];
+        const evidenceStale =
+            definition.evidenceScope === 'git_head' &&
+            stageState.status === 'completed' &&
+            stageState.evidence?.gitHead !== git.head;
+        return {
+            ...definition,
+            ...stageState,
+            evidenceStale,
+        };
+    });
+    const byId = new Map(stages.map((stage) => [stage.id, stage]));
+    const readyStages = stages.filter((stage, index) => {
+        if (stage.status !== 'pending' && !stage.evidenceStale) {
+            return false;
+        }
+        return dependenciesForStage(state.profile, index).every((dependency) => {
+            const dependencyStage = byId.get(dependency);
+            return dependencyStage ? isSatisfied(dependencyStage) : false;
+        });
+    });
+    const opportunisticStages = readyStages.filter(
+        (stage) => stage.workMode === 'read_only',
+    );
+    const waitingStages = stages.filter(
+        (stage) => stage.status === 'waiting_external',
+    );
     const nextStage =
-        stages.find((stage) => stage.status === 'pending' || stage.status === 'blocked') ??
-        null;
+        stages.find(
+            (stage) =>
+                stage.evidenceStale ||
+                stage.status === 'pending' ||
+                stage.status === 'blocked' ||
+                stage.status === 'waiting_external',
+        ) ?? null;
+    const recommendedStage =
+        nextStage?.status === 'blocked'
+            ? nextStage
+            : nextStage?.status === 'waiting_external'
+                ? (opportunisticStages[0] ?? nextStage)
+                : (readyStages[0] ?? nextStage);
     const operationalMemory = await getOperationalMemorySummary(
         state.projectRoot,
         state.workflowId,
-        nextStage?.id,
+        recommendedStage?.id ?? nextStage?.id,
     );
     return {
         workflowId: state.workflowId,
@@ -599,10 +732,14 @@ async function toStatus(
         ...(state.completedAt ? { completedAt: state.completedAt } : {}),
         completed: !!state.completedAt,
         stages,
-        progress: progress(state),
+        progress: progress(stages),
         nextStage,
+        readyStages,
+        opportunisticStages,
+        waitingStages,
+        recommendedStage,
         operationalMemory,
-        git: gitSnapshot ?? (await inspectGit(state.projectRoot)),
+        git,
         gitBaseline: state.gitBaseline,
     };
 }
@@ -671,6 +808,7 @@ export async function resumeProjectWorkflow(input: ProjectRootInput): Promise<Wo
 
 function evidenceFromInput(
     value: RecordWorkflowStageInput['evidence'],
+    gitHead?: string,
 ): WorkflowEvidence {
     if (!value) {
         throw new Error('Completed stages require evidence');
@@ -686,6 +824,7 @@ function evidenceFromInput(
             : {}),
         recordedAt: now(),
         trust: 'attested',
+        ...(gitHead ? { gitHead } : {}),
     };
 }
 
@@ -694,6 +833,7 @@ export async function recordProjectWorkflowStage(
     options: RecordWorkflowStageOptions = {},
 ): Promise<WorkflowStatus> {
     const projectRoot = await resolveGitRoot(input.projectRoot);
+    const gitSnapshot = await inspectGit(projectRoot);
     const state = await mutateState(projectRoot, (current) => {
         if (current.completedAt) {
             throw new Error('Project workflow is already complete');
@@ -706,19 +846,40 @@ export async function recordProjectWorkflowStage(
             throw new Error('Required stage ' + stage.id + ' cannot be skipped');
         }
 
-        let stageState: WorkflowStageState;
-        const updatedAt = now();
+        let completedEvidence: WorkflowEvidence | undefined;
         if (input.status === 'completed') {
-            const evidence = evidenceFromInput(input.evidence);
+            completedEvidence = evidenceFromInput(
+                input.evidence,
+                stage.evidenceScope === 'git_head' ? gitSnapshot.head : undefined,
+            );
             if (
                 stage.authorizationRequired &&
-                (evidence.kind !== 'user_authorization' || !options.trustedUserAuthorization)
+                (completedEvidence.kind !== 'user_authorization' || !options.trustedUserAuthorization)
             ) {
                 throw new Error(
                     'Stage ' + stage.id +
                         ' requires trusted user authorization; an agent cannot self-attest it',
                 );
             }
+        }
+
+        const stageIndex = current.profile.stages.findIndex((item) => item.id === stage.id);
+        const unsatisfiedDependencies = dependenciesForStage(current.profile, stageIndex).filter((dependencyId) => {
+            const dependencyIndex = current.profile.stages.findIndex((item) => item.id === dependencyId);
+            const dependency = current.profile.stages[dependencyIndex];
+            return !dependency || !stateStageSatisfied(dependency, current.stages[dependencyId], gitSnapshot.head);
+        });
+        if (unsatisfiedDependencies.length) {
+            throw new Error(
+                'Stage ' + stage.id + ' cannot advance before dependencies are satisfied: ' +
+                    unsatisfiedDependencies.join(', '),
+            );
+        }
+
+        let stageState: WorkflowStageState;
+        const updatedAt = now();
+        if (input.status === 'completed') {
+            const evidence = completedEvidence!;
             stageState = {
                 status: 'completed',
                 updatedAt,
@@ -743,11 +904,12 @@ export async function recordProjectWorkflowStage(
             stages: { ...current.stages, [stage.id]: stageState },
         };
     });
-    return toStatus(state);
+    return toStatus(state, gitSnapshot);
 }
 
 export async function finishProjectWorkflow(input: ProjectRootInput): Promise<WorkflowStatus> {
     const projectRoot = await resolveGitRoot(input.projectRoot);
+    const gitSnapshot = await inspectGit(projectRoot);
     const state = await mutateState(projectRoot, async (current) => {
         if (current.completedAt) {
             return current;
@@ -755,6 +917,20 @@ export async function finishProjectWorkflow(input: ProjectRootInput): Promise<Wo
         if (await profileDrifted(current)) {
             throw new Error(
                 'Project workflow profile changed after start (profile drift/fingerprint mismatch).',
+            );
+        }
+        const staleEvidence = current.profile.stages
+            .filter(
+                (stage) =>
+                    stage.evidenceScope === 'git_head' &&
+                    current.stages[stage.id].status === 'completed' &&
+                    current.stages[stage.id].evidence?.gitHead !== gitSnapshot.head,
+            )
+            .map((stage) => stage.id);
+        if (staleEvidence.length) {
+            throw new Error(
+                'Cannot finish: git-head scoped evidence is stale: ' +
+                    staleEvidence.join(', '),
             );
         }
         const missingRequired = current.profile.stages
@@ -768,7 +944,11 @@ export async function finishProjectWorkflow(input: ProjectRootInput): Promise<Wo
         const unresolved = current.profile.stages
             .filter((stage) => {
                 const status = current.stages[stage.id].status;
-                return status === 'pending' || status === 'blocked';
+                return (
+                    status === 'pending' ||
+                    status === 'blocked' ||
+                    status === 'waiting_external'
+                );
             })
             .map((stage) => stage.id);
         if (unresolved.length) {
@@ -780,5 +960,5 @@ export async function finishProjectWorkflow(input: ProjectRootInput): Promise<Wo
         const completedAt = now();
         return { ...current, updatedAt: completedAt, completedAt };
     });
-    return toStatus(state);
+    return toStatus(state, gitSnapshot);
 }
