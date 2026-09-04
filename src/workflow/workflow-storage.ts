@@ -34,3 +34,10 @@ export function resolveWorkflowMemoryPath(projectRoot: string): string {
     workflowProjectDigest(projectRoot) + '.memory.jsonl',
   );
 }
+
+export function resolveWorkflowMemoryIndexPath(projectRoot: string): string {
+  return path.join(
+    resolveWorkflowStateRoot(),
+    workflowProjectDigest(projectRoot) + '.memory.sqlite',
+  );
+}

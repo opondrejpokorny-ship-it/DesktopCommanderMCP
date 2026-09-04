@@ -9,11 +9,16 @@ import {
   type OperationalLessonCode,
 } from './operational-memory-contract.js';
 import {
+  resolveWorkflowMemoryIndexPath,
   resolveWorkflowMemoryPath,
   resolveWorkflowStatePath,
   resolveWorkflowStateRoot,
   workflowProjectIdentity,
 } from './workflow-storage.js';
+import {
+  readOperationalMemoryIndexEvents,
+  updateOperationalMemoryIndexAfterAppend,
+} from './operational-memory-index.js';
 
 export type OperationalMemoryKind = 'error' | 'limit' | 'lesson';
 export type OperationalReasonCode =
@@ -441,6 +446,11 @@ async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): 
     }
     if (needsSeparator) await fs.appendFile(memoryPath, '\n', 'utf8');
     await fs.appendFile(memoryPath, JSON.stringify(event) + '\n', 'utf8');
+    await updateOperationalMemoryIndexAfterAppend(
+      memoryPath,
+      resolveWorkflowMemoryIndexPath(projectRoot),
+      parseMemoryLine,
+    ).catch(() => false);
   }));
   memoryWriteChains.set(memoryPath, operation.catch(() => undefined));
   await operation;
@@ -524,7 +534,7 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
   };
 }
 
-async function readRecentEvents(
+async function readRecentEventsFromJournal(
   projectRoot: string,
   workflowId: string,
 ): Promise<OperationalMemoryEvent[]> {
@@ -558,6 +568,36 @@ async function readRecentEvents(
   } finally {
     await handle?.close().catch(() => undefined);
   }
+}
+
+function parseMemoryLine(line: string): OperationalMemoryEvent | null {
+  try {
+    return parseMemoryEvent(JSON.parse(line));
+  } catch {
+    return null;
+  }
+}
+
+async function readRecentEvents(
+  projectRoot: string,
+  workflowId: string,
+): Promise<OperationalMemoryEvent[]> {
+  const indexed = await readOperationalMemoryIndexEvents(
+    resolveWorkflowMemoryPath(projectRoot),
+    resolveWorkflowMemoryIndexPath(projectRoot),
+    workflowId,
+    MAX_MEMORY_TAIL_BYTES,
+    MAX_MEMORY_EVENTS,
+    parseMemoryLine,
+  );
+  if (indexed !== null) {
+    return indexed
+      .map((event) => parseMemoryEvent({ version: 1, ...event }))
+      .filter((event): event is OperationalMemoryEvent =>
+        !!event && event.workflowId === workflowId
+      );
+  }
+  return readRecentEventsFromJournal(projectRoot, workflowId);
 }
 
 function familyMatchesStage(family: string, stageId?: string): boolean {
