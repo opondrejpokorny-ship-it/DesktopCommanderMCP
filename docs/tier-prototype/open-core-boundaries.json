@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Source ownership contract for the future public Free plus private Pro/Team extraction",
+  "defaultOwner": "public",
+  "allowedDependencies": {
+    "public": ["public"],
+    "pro": ["public", "pro"],
+    "team": ["public", "pro", "team"],
+    "demo": ["public", "pro", "team", "demo"]
+  },
+  "ownershipRules": [
+    { "kind": "file", "path": "src/index.ts", "owner": "demo" },
+    { "kind": "directory", "path": "src/prototype", "owner": "demo" },
+    { "kind": "directory", "path": "src/policy", "owner": "pro" },
+    { "kind": "file", "path": "src/policy/audit-store.ts", "owner": "team" },
+    { "kind": "file", "path": "src/policy/device-identity.ts", "owner": "team" },
+    { "kind": "file", "path": "src/policy/policy-runtime.ts", "owner": "demo" },
+    { "kind": "file", "path": "src/policy/policy-gate.ts", "owner": "demo" },
+    { "kind": "directory", "path": "src/control-center", "owner": "demo" },
+    { "kind": "file", "path": "src/npm-scripts/access-control.ts", "owner": "demo" },
+    { "kind": "file", "path": "src/npm-scripts/control-center.ts", "owner": "demo" }
+  ],
+  "requiredPublicContracts": [
+    "src/entitlements/capabilities.ts",
+    "src/entitlements/free-provider.ts",
+    "src/runtime/policy-hook.ts",
+    "src/runtime/runtime-services.ts",
+    "src/free-index.ts",
+    "src/run-server.ts"
+  ]
+}
