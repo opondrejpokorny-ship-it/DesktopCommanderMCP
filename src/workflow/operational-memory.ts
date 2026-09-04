@@ -3,12 +3,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ServerResult } from '../types.js';
 import {
+  isOperationalLessonCode,
+  OPERATIONAL_LESSON_TEMPLATES,
+  type OperationalLessonCode,
+} from './operational-memory-contract.js';
+import {
   resolveWorkflowMemoryPath,
+  resolveWorkflowStatePath,
   resolveWorkflowStateRoot,
   workflowProjectIdentity,
 } from './workflow-storage.js';
 
-export type OperationalMemoryKind = 'error' | 'limit';
+export type OperationalMemoryKind = 'error' | 'limit' | 'lesson';
 export type OperationalReasonCode =
   | 'approval_required'
   | 'policy_denied'
@@ -17,6 +23,9 @@ export type OperationalReasonCode =
   | 'timeout'
   | 'unsupported'
   | 'validation_error'
+  | 'process_exit_nonzero'
+  | 'process_wait_timeout'
+  | 'learned_pattern'
   | 'tool_error';
 
 export interface OperationalMemoryEvent {
@@ -28,6 +37,7 @@ export interface OperationalMemoryEvent {
   sourceTool: string;
   family: string;
   stageId?: string;
+  lessonCode?: OperationalLessonCode;
   summary: string;
   lesson: string;
   fingerprint: string;
@@ -41,6 +51,7 @@ export interface OperationalMemoryLesson {
   sourceTool: string;
   family: string;
   stageId?: string;
+  lessonCode?: OperationalLessonCode;
   summary: string;
   lesson: string;
   occurrences: number;
@@ -68,6 +79,12 @@ export interface RecordOperationalToolFailureInput {
   args?: unknown;
   result: ServerResult;
   policyDecision?: 'deny' | 'require_approval';
+  observedReasonCode?: 'process_exit_nonzero' | 'process_wait_timeout';
+}
+
+export interface RecordOperationalLessonInput {
+  projectRoot: string;
+  lessonCode: OperationalLessonCode;
 }
 
 const MAX_MEMORY_TAIL_BYTES = 512 * 1024;
@@ -93,6 +110,7 @@ function familyForTool(tool: string): string {
   if (/^(kill_process|force_terminate|list_processes|list_sessions)$/.test(tool)) {
     return 'process';
   }
+  if (tool === 'project_workflow') return 'workflow';
   if (/search/.test(tool)) return 'search';
   if (/config/.test(tool)) return 'config';
   return 'other';
@@ -108,7 +126,14 @@ function resultText(result: ServerResult): string {
 function classifyFailure(
   result: ServerResult,
   policyDecision?: 'deny' | 'require_approval',
+  observedReasonCode?: 'process_exit_nonzero' | 'process_wait_timeout',
 ): { kind: OperationalMemoryKind; reasonCode: OperationalReasonCode } {
+  if (observedReasonCode === 'process_exit_nonzero') {
+    return { kind: 'error', reasonCode: 'process_exit_nonzero' };
+  }
+  if (observedReasonCode === 'process_wait_timeout') {
+    return { kind: 'limit', reasonCode: 'process_wait_timeout' };
+  }
   if (policyDecision === 'require_approval') {
     return { kind: 'limit', reasonCode: 'approval_required' };
   }
@@ -137,7 +162,14 @@ function classifyFailure(
   return { kind: 'error', reasonCode: 'tool_error' };
 }
 
-function summaryFor(tool: string, code: OperationalReasonCode): string {
+function summaryFor(
+  tool: string,
+  code: OperationalReasonCode,
+  lessonCode?: OperationalLessonCode,
+): string {
+  if (code === 'learned_pattern' && lessonCode) {
+    return OPERATIONAL_LESSON_TEMPLATES[lessonCode].summary;
+  }
   const prefix = safeToolName(tool);
   switch (code) {
     case 'approval_required':
@@ -154,12 +186,22 @@ function summaryFor(tool: string, code: OperationalReasonCode): string {
       return prefix + ' failed because the operation is unsupported.';
     case 'validation_error':
       return prefix + ' failed because its arguments were rejected.';
+    case 'process_exit_nonzero':
+      return prefix + ' observed a process that completed with a non-zero exit code.';
+    case 'process_wait_timeout':
+      return prefix + ' reached its wait timeout while the process remained active.';
     default:
       return prefix + ' failed during the previous attempt.';
   }
 }
 
-function lessonFor(code: OperationalReasonCode): string {
+function lessonFor(
+  code: OperationalReasonCode,
+  lessonCode?: OperationalLessonCode,
+): string {
+  if (code === 'learned_pattern' && lessonCode) {
+    return OPERATIONAL_LESSON_TEMPLATES[lessonCode].lesson;
+  }
   switch (code) {
     case 'approval_required':
       return 'Do not retry the same protected action until a matching human approval exists.';
@@ -175,6 +217,10 @@ function lessonFor(code: OperationalReasonCode): string {
       return 'Use a supported alternative instead of repeating the unsupported operation.';
     case 'validation_error':
       return 'Correct the rejected arguments before retrying the operation.';
+    case 'process_exit_nonzero':
+      return 'Inspect the completed process exit evidence before retrying or changing the command.';
+    case 'process_wait_timeout':
+      return 'A tool wait timeout does not prove the process or test failed; inspect process completion and exit evidence.';
     default:
       return 'Inspect current state and avoid repeating the identical failed call unchanged.';
   }
@@ -185,10 +231,11 @@ function fingerprintFor(
   tool: string,
   reasonCode: OperationalReasonCode,
   family: string,
+  lessonCode?: OperationalLessonCode,
 ): string {
   return crypto
     .createHash('sha256')
-    .update([kind, safeToolName(tool), reasonCode, family].join('|'))
+    .update([kind, safeToolName(tool), reasonCode, family, lessonCode ?? ''].join('|'))
     .digest('hex')
     .slice(0, 24);
 }
@@ -274,7 +321,12 @@ async function activeWorkflowForPaths(pathsToMatch: string[]): Promise<Persisted
       const parsed = parseWorkflowState(JSON.parse(
         await fs.readFile(path.join(resolveWorkflowStateRoot(), name), 'utf8'),
       ));
-      if (parsed && !parsed.completedAt) active.push(parsed);
+      if (parsed && !parsed.completedAt) {
+        const stat = await fs.stat(parsed.projectRoot).catch(() => null);
+        if (stat?.isDirectory()) {
+          active.push(parsed);
+        }
+      }
     } catch {
       // Corrupt/stale workflow state must not break the underlying tool call.
     }
@@ -289,6 +341,25 @@ async function activeWorkflowForPaths(pathsToMatch: string[]): Promise<Persisted
       pathsToMatch.some((candidate) => isWithin(candidate, state.projectRoot))
     )
     .sort((a, b) => b.projectRoot.length - a.projectRoot.length)[0] ?? null;
+}
+
+async function activeWorkflowForProjectRoot(
+  projectRoot: string,
+): Promise<PersistedWorkflowState | null> {
+  try {
+    const parsed = parseWorkflowState(JSON.parse(
+      await fs.readFile(resolveWorkflowStatePath(projectRoot), 'utf8'),
+    ));
+    if (!parsed || parsed.completedAt) return null;
+    const stat = await fs.stat(parsed.projectRoot).catch(() => null);
+    if (!stat?.isDirectory()) return null;
+    if (workflowProjectIdentity(parsed.projectRoot) !== workflowProjectIdentity(projectRoot)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): Promise<void> {
@@ -323,20 +394,38 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
     'timeout',
     'unsupported',
     'validation_error',
+    'process_exit_nonzero',
+    'process_wait_timeout',
+    'learned_pattern',
     'tool_error',
   ];
   if (!reasonCodes.includes(raw.reasonCode as OperationalReasonCode)) return null;
 
   const reasonCode = raw.reasonCode as OperationalReasonCode;
+  const lessonCode =
+    reasonCode === 'learned_pattern' && isOperationalLessonCode(raw.lessonCode)
+      ? raw.lessonCode
+      : undefined;
+  if (reasonCode === 'learned_pattern' && !lessonCode) return null;
+
   const kind: OperationalMemoryKind =
-    reasonCode === 'not_found' ||
-    reasonCode === 'validation_error' ||
-    reasonCode === 'tool_error'
-      ? 'error'
-      : 'limit';
+    reasonCode === 'learned_pattern'
+      ? 'lesson'
+      : reasonCode === 'not_found' ||
+        reasonCode === 'validation_error' ||
+        reasonCode === 'process_exit_nonzero' ||
+        reasonCode === 'tool_error'
+        ? 'error'
+        : 'limit';
   const sourceTool = safeToolName(raw.sourceTool);
   const family = familyForTool(sourceTool);
-  const expectedFingerprint = fingerprintFor(kind, sourceTool, reasonCode, family);
+  const expectedFingerprint = fingerprintFor(
+    kind,
+    sourceTool,
+    reasonCode,
+    family,
+    lessonCode,
+  );
   if (raw.fingerprint !== expectedFingerprint) return null;
   if (Number.isNaN(Date.parse(raw.occurredAt))) return null;
 
@@ -354,8 +443,9 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
     sourceTool,
     family,
     ...(stageId ? { stageId } : {}),
-    summary: summaryFor(sourceTool, reasonCode),
-    lesson: lessonFor(reasonCode),
+    ...(lessonCode ? { lessonCode } : {}),
+    summary: summaryFor(sourceTool, reasonCode, lessonCode),
+    lesson: lessonFor(reasonCode, lessonCode),
     fingerprint: expectedFingerprint,
     occurredAt: raw.occurredAt,
   };
@@ -435,6 +525,7 @@ function aggregateLessons(
       sourceTool: latest.sourceTool,
       family: latest.family,
       ...(latest.stageId ? { stageId: latest.stageId } : {}),
+      ...(latest.lessonCode ? { lessonCode: latest.lessonCode } : {}),
       summary: latest.summary,
       lesson: latest.lesson,
       occurrences: group.length,
@@ -467,14 +558,10 @@ export async function getOperationalMemorySummary(
 export async function recordOperationalToolFailure(
   input: RecordOperationalToolFailureInput,
 ): Promise<boolean> {
-  if (!input.result.isError && !input.policyDecision) return false;
+  if (!input.result.isError && !input.policyDecision && !input.observedReasonCode) {
+    return false;
+  }
   if (input.tool === 'project_workflow') return false;
-  if (
-    input.args &&
-    typeof input.args === 'object' &&
-    !Array.isArray(input.args) &&
-    (input.args as Record<string, unknown>).origin === 'ui'
-  ) return false;
 
   const pathsToMatch = candidatePaths(input.args);
   const state = await activeWorkflowForPaths(pathsToMatch);
@@ -482,7 +569,11 @@ export async function recordOperationalToolFailure(
 
   const tool = safeToolName(input.tool);
   const family = familyForTool(tool);
-  const classified = classifyFailure(input.result, input.policyDecision);
+  const classified = classifyFailure(
+    input.result,
+    input.policyDecision,
+    input.observedReasonCode,
+  );
   const stageId = nextStageId(state);
   const event: OperationalMemoryEvent = {
     version: 1,
@@ -500,6 +591,44 @@ export async function recordOperationalToolFailure(
       tool,
       classified.reasonCode,
       family,
+    ),
+    occurredAt: new Date().toISOString(),
+  };
+
+  await appendEvent(state.projectRoot, event);
+  return true;
+}
+
+export async function recordOperationalLesson(
+  input: RecordOperationalLessonInput,
+): Promise<boolean> {
+  if (!isOperationalLessonCode(input.lessonCode)) return false;
+  const state = await activeWorkflowForProjectRoot(input.projectRoot);
+  if (!state) return false;
+
+  const tool = 'project_workflow';
+  const family = familyForTool(tool);
+  const reasonCode: OperationalReasonCode = 'learned_pattern';
+  const kind: OperationalMemoryKind = 'lesson';
+  const stageId = nextStageId(state);
+  const event: OperationalMemoryEvent = {
+    version: 1,
+    id: crypto.randomUUID(),
+    workflowId: state.workflowId,
+    kind,
+    reasonCode,
+    lessonCode: input.lessonCode,
+    sourceTool: tool,
+    family,
+    ...(stageId ? { stageId } : {}),
+    summary: summaryFor(tool, reasonCode, input.lessonCode),
+    lesson: lessonFor(reasonCode, input.lessonCode),
+    fingerprint: fingerprintFor(
+      kind,
+      tool,
+      reasonCode,
+      family,
+      input.lessonCode,
     ),
     occurredAt: new Date().toISOString(),
   };

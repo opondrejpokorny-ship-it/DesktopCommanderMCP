@@ -97,6 +97,7 @@ try {
   for (const [tool, args] of [
     ['project_workflow', { action: 'start', projectRoot: '/projects/app', goal: 'test' }],
     ['project_workflow', { action: 'resume', projectRoot: '/projects/app' }],
+    ['project_workflow', { action: 'learn', projectRoot: '/projects/app', lessonCode: 'fetch_required_git_refs' }],
     ['stop_search', { sessionId: 'search-1' }],
     ['give_feedback_to_desktop_commander', {}],
   ]) {

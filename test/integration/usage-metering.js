@@ -94,14 +94,20 @@ try {
       await secondClient.close();
     }
 
-    const beforeUi = { ...usage };
+    const beforeUiWritten = usage.writtenBytes;
     const uiResult = await client.callTool({
       name: 'read_file',
       arguments: { path: testFile, offset: 0, length: 1, origin: 'ui' },
     });
     assert.ok(!uiResult.isError);
+    expectedReturned += resultBytes(uiResult);
     usage = await readUsage();
-    assert.deepStrictEqual(usage, beforeUi, 'UI-origin calls must not count as agent usage');
+    assert.strictEqual(
+      usage.returnedBytes,
+      expectedReturned,
+      'Client-controlled origin must not bypass usage metering',
+    );
+    assert.strictEqual(usage.writtenBytes, beforeUiWritten);
 
     const content = 'written € payload';
     const writeResult = await client.callTool({

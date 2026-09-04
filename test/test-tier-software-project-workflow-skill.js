@@ -56,6 +56,8 @@ for (const required of [
   'Document',
   'estimated progress',
   'project_workflow',
+  'action: "learn"',
+  'lessonCode',
   'provider_reference',
   'user_authorization',
   'work-log.md',

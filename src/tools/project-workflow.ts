@@ -3,6 +3,7 @@ import { ProjectWorkflowArgsSchema } from './schemas.js';
 import {
     finishProjectWorkflow,
     getProjectWorkflowStatus,
+    recordOperationalLesson,
     recordProjectWorkflowStage,
     resumeProjectWorkflow,
     startProjectWorkflow,
@@ -76,6 +77,17 @@ export async function projectWorkflow(args: unknown): Promise<ServerResult> {
                     status: parsed.status,
                     evidence: parsed.evidence,
                     reason: parsed.reason,
+                });
+                break;
+            case 'learn':
+                if (!await recordOperationalLesson({
+                    projectRoot: parsed.projectRoot,
+                    lessonCode: parsed.lessonCode,
+                })) {
+                    throw new Error('No active workflow matched the requested project root.');
+                }
+                status = await getProjectWorkflowStatus({
+                    projectRoot: parsed.projectRoot,
                 });
                 break;
             case 'finish':

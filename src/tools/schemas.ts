@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OPERATIONAL_LESSON_CODES } from '../workflow/operational-memory-contract.js';
 
 // Config tools schemas
 export const GetConfigArgsSchema = z.object({
@@ -249,7 +250,7 @@ const ProjectWorkflowEvidenceSchema = z.object({
 });
 
 export const ProjectWorkflowToolArgsSchema = z.object({
-  action: z.enum(['start', 'status', 'resume', 'record', 'finish']),
+  action: z.enum(['start', 'status', 'resume', 'record', 'learn', 'finish']),
   projectRoot: z.string().min(1),
   goal: z.string().min(1).max(2000).optional(),
   restart: z.boolean().optional().default(false),
@@ -257,6 +258,7 @@ export const ProjectWorkflowToolArgsSchema = z.object({
   status: z.enum(['completed', 'blocked', 'skipped']).optional(),
   evidence: ProjectWorkflowEvidenceSchema.optional(),
   reason: z.string().min(1).max(2000).optional(),
+  lessonCode: z.enum(OPERATIONAL_LESSON_CODES).optional(),
 });
 export const ProjectWorkflowArgsSchema = z.discriminatedUnion('action', [
   z.object({
@@ -280,6 +282,11 @@ export const ProjectWorkflowArgsSchema = z.discriminatedUnion('action', [
     status: z.enum(['completed', 'blocked', 'skipped']),
     evidence: ProjectWorkflowEvidenceSchema.optional(),
     reason: z.string().min(1).max(2000).optional(),
+  }),
+  z.object({
+    action: z.literal('learn'),
+    projectRoot: z.string().min(1),
+    lessonCode: z.enum(OPERATIONAL_LESSON_CODES),
   }),
   z.object({
     action: z.literal('finish'),
