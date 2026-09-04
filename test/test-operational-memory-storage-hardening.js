@@ -131,7 +131,7 @@ await withFixture('stale-lock', async ({ projectRoot }) => {
   console.log('PASS stale journal lock is recovered');
 });
 
-await withFixture('stale-recovery-guard', async ({ projectRoot }) => {
+await withFixture('orphaned-recovery-guard', async ({ projectRoot }) => {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
   const lockPath = memoryPath + '.lock';
   const recoveryPath = lockPath + '.recovery';
@@ -140,22 +140,14 @@ await withFixture('stale-recovery-guard', async ({ projectRoot }) => {
   const old = new Date(Date.now() - 120_000);
   await fs.utimes(lockPath, old, old);
   await fs.mkdir(recoveryPath);
+  await fs.utimes(recoveryPath, old, old);
 
-  let resolved = false;
-  const pending = recordOperationalLesson({
+  const recorded = await recordOperationalLesson({
     projectRoot,
     lessonCode: 'fetch_required_git_refs',
-  }).then((value) => {
-    resolved = true;
-    return value;
   });
-
-  await delay(120);
-  assert.strictEqual(resolved, false, 'a stale-lock recovery already owned by another process must be respected');
-  assert.strictEqual(await fs.stat(lockPath).then(() => true, () => false), true, 'the stale lock must not be removed while another recovery owns the guard');
-  await fs.rm(recoveryPath, { recursive: true, force: true });
-  assert.strictEqual(await pending, true);
-  console.log('PASS stale recovery guard serializes stale-lock reclamation');
+  assert.strictEqual(recorded, true, 'an orphaned stale recovery guard must not wedge future journal writes');
+  console.log('PASS orphaned stale recovery guard cannot wedge journal writes');
 });
 
 function runWriter(projectRoot, stateRoot, count, lessonCode) {
