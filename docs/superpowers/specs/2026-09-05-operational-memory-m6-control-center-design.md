@@ -1,7 +1,7 @@
 # Operational Memory M6 — Control Center Human Navigation Design
 
 Date: 2026-09-05
-Status: approved architecture; written specification pending user review
+Status: written specification approved by user; implementation planning
 Baseline: `prototype/free-pro-team` @ `98707d670b64bd8fed0eb3e673f6a648a498af64`
 
 ## Goal
@@ -167,7 +167,9 @@ Unknown enum values, malformed dates, invalid occurrence counts, invalid cursor 
 
 Results use deterministic keyset pagination, not unbounded result sets and not full in-memory sorting of the complete database. The preferred order is:
 
-`lastSeenAt DESC, projectId ASC, fingerprint ASC, scope ASC`
+`lastSeenAt DESC, projectSortKey ASC, fingerprint ASC, scope ASC`
+
+`projectSortKey` is the stable `projectId` for workflow/project rows and the empty string for cross-project Global rows. It exists only for deterministic ordering; it is not returned as a synthetic ProjectId.
 
 The cursor is opaque to the client and encodes only the bounded sort position needed for the next page. It is not an authority token.
 
@@ -175,7 +177,7 @@ Representative sanitized item:
 
 ```ts
 interface MemoryGroupItem {
-  projectId: string;
+  projectId?: string;
   repositoryId?: string;
   projectDisplayName?: string;
   scope: 'workflow' | 'project' | 'global';
@@ -190,6 +192,7 @@ interface MemoryGroupItem {
   lesson: string;
   occurrences: number;
   distinctWorkflows?: number;
+  distinctProjects?: number;
   firstSeenAt: string;
   lastSeenAt: string;
   relevanceExplanation: string;
@@ -198,9 +201,11 @@ interface MemoryGroupItem {
 
 `title`, `lesson` and `relevanceExplanation` are server-controlled text. The relevance explanation for human browsing need not pretend to have the current model workflow context. It may use controlled explanations such as “repeated across N workflows”, “latest lesson in this project”, or “server-whitelisted Global lesson”.
 
+Workflow/project items include their stable `projectId`. A Global item is a cross-project aggregate, so it omits `projectId`, may report `distinctProjects`, and is labeled `Global` by the UI. M6 must not invent a synthetic ProjectId for Global results.
+
 ### `GET /api/memory/groups/:fingerprint/events`
 
-Returns a sanitized event timeline for one group. Required disambiguation such as `projectId` and `scope` is supplied as validated query parameters because the same fingerprint may occur in multiple projects/scopes.
+Returns a sanitized event timeline for one group. Workflow/project drill-down supplies validated `projectId` and `scope` because the same fingerprint may occur in multiple projects/scopes. Global drill-down uses `scope=global` without a synthetic ProjectId and the server revalidates the fingerprint against the integrated M3B safe-Global eligibility rules before returning cross-project events.
 
 Filters may additionally narrow by date. Use the same bounded `limit`/opaque cursor pattern, with a default of 50 and maximum of 200.
 
