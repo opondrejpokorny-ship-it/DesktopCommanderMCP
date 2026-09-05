@@ -19,6 +19,7 @@
     { "kind": "directory", "path": "src/control-center", "owner": "demo" },
     { "kind": "file", "path": "src/control-center/contract.ts", "owner": "public" },
     { "kind": "file", "path": "src/control-center/host.ts", "owner": "public" },
+    { "kind": "file", "path": "src/control-center/pro-extension.ts", "owner": "pro" },
     { "kind": "file", "path": "src/npm-scripts/access-control.ts", "owner": "demo" },
     { "kind": "file", "path": "src/npm-scripts/control-center.ts", "owner": "demo" }
   ],
