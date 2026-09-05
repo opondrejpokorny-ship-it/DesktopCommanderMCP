@@ -121,7 +121,7 @@ Memory remains non-authoritative. Returned scope/relevance metadata cannot satis
 
 M3B introduces a separate local, disposable, rebuildable global read model under the protected workflow-state root. It is not added to every per-project database and is not an authority source.
 
-The global store contains only fixed-whitelist semantic `OperationalLessonCode` aggregates. Eligible source events must pass the existing server parser and be structurally consistent with the whitelisted learning path: `kind=lesson`, `reasonCode=learned_pattern`, valid `lessonCode`, and server-controlled template reconstruction.
+The global store contains only fixed-whitelist semantic `OperationalLessonCode` aggregates. Eligible source events must pass the existing server parser and be structurally consistent with the whitelisted learning path: `kind=lesson`, `reasonCode=learned_pattern`, `sourceTool=project_workflow`, derived `family=workflow`, valid `lessonCode`, server-recomputed fingerprint, and server-controlled template reconstruction.
 
 Ordinary tool failures, policy denials, approval-required events, arbitrary fingerprints, client prose, and unknown lesson codes are never globally promoted.
 
@@ -170,7 +170,7 @@ Focused tests must prove:
 
 - a whitelisted semantic lesson learned in project A can appear as global context in project B;
 - a normal tool failure from project A never appears globally in project B;
-- unknown/spoofed lesson codes and arbitrary prose cannot enter the global store;
+- unknown/spoofed lesson codes, arbitrary prose, and a valid lesson code presented through a non-`project_workflow` source tool cannot enter the global store;
 - project-specific lessons remain isolated even when global retrieval is enabled;
 - global corruption/unavailability only removes global candidates and cannot break workflow/project memory;
 - rebuild reproduces global aggregates from authoritative journals;
