@@ -102,6 +102,10 @@ try {
   const invalidExpiryZeroCap = await request({ port: zeroCapHost.port, path: '/api/zero/run', method: 'POST', token: 'c3-zero-cap-token', origin: `http://127.0.0.1:${zeroCapHost.port}` });
   assert.strictEqual(invalidExpiryZeroCap.status, 404);
   assert.strictEqual(zeroCapCalls, 1, 'Malformed expiry must fail closed before a zero-capability handler executes');
+  zeroCapSnapshot = { source: 'prototype', tier: 'free', capabilities: [], expiresAt: '' };
+  const emptyExpiryZeroCap = await request({ port: zeroCapHost.port, path: '/api/zero/run', method: 'POST', token: 'c3-zero-cap-token', origin: `http://127.0.0.1:${zeroCapHost.port}` });
+  assert.strictEqual(emptyExpiryZeroCap.status, 404);
+  assert.strictEqual(zeroCapCalls, 1, 'Explicit empty expiry must fail closed before a zero-capability handler executes');
 } finally { await zeroCapHost.close(); }
 
 let calls = 0;

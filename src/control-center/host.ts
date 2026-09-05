@@ -212,7 +212,7 @@ function validateExtensions(extensions: readonly ControlCenterExtensionV1[]): Co
 }
 
 function entitlementExpired(snapshot: EntitlementSnapshot): boolean {
-    if (!snapshot.expiresAt) return false;
+    if (snapshot.expiresAt === undefined) return false;
     const expiry = Date.parse(snapshot.expiresAt);
     return !Number.isFinite(expiry) || expiry <= Date.now();
 }
