@@ -31,7 +31,7 @@ The machine-readable authority for this readiness slice is `open-core-boundaries
 | `src/runtime/runtime-services.ts` | PUBLIC/shared | Shared runtime composition surface |
 | `src/free-index.ts`, `src/run-server.ts`, `src/server.ts` | PUBLIC/shared | Free/shared execution composition |
 | `src/workflow/*`, `src/progress/*` | PUBLIC/shared | General workflow/memory/progress infrastructure; paid presentation can gate individual capabilities |
-| `src/policy/*` | Pro/commercial by default | Commercial governance implementation; current policy runtime/gate are explicit demo exceptions |
+| `src/policy/*` | Pro/commercial by default | Commercial governance implementation; Team-only audit/device storage remains separately classified |
 | `src/policy/audit-store.ts` | Team | Team/local audit storage candidate |
 | `src/policy/device-identity.ts` | Team | Device-scoped governance candidate |
 | `src/prototype/*` | demo-only | Prototype entitlement/policy/audit composition |
@@ -53,7 +53,7 @@ Commercial and demo code may depend on public contracts. Pro must not depend on 
 
 ## Current finding: Control Center is demo composition
 
-The guard initially exposed two extraction blockers. First, `src/control-center/server.ts` and the access-control CLI import `prototype-audit-sink`. Second, `src/policy/policy-runtime.ts` imports the Team `audit-store` for its default audit-file path, and `policy-gate.ts` composes through that runtime. Those runtime/gate files are therefore classified as demo composition today rather than silently permitting Pro -> Team coupling.
+C2 removed the Pro -> Team storage dependency from `src/policy/policy-runtime.ts`: Pro now protects its policy/approval resources plus any explicitly environment-declared audit resource, while composition can inject additional protected commercial resources. The demo Team composition injects its audit path when `audit.local` is present, preserving audit-file tamper protection without making Pro runtime depend on Team storage. `policy-runtime.ts` and `policy-gate.ts` are therefore classified as Pro. The remaining extraction blocker in this area is the demo Control Center/access-control wiring through `prototype-audit-sink`.
 
 The later extraction should provide commercial wiring that depends on commercial services/contracts rather than a `Prototype*` provider. This readiness slice deliberately records that requirement instead of changing the runtime while Scope/Memory foundation work is active.
 

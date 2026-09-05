@@ -13,6 +13,7 @@ export interface PolicyGateOptions {
     allowDeviceScope?: boolean;
     auditEnabled?: boolean;
     auditSink?: AuditSink;
+    protectedControlPlanePaths?: readonly string[];
 }
 
 export interface PolicyGateResult {
@@ -119,7 +120,10 @@ export async function applyPolicyGate(
             tool,
             args,
             policyPath,
-            { allowDeviceScope: options.allowDeviceScope },
+            {
+                allowDeviceScope: options.allowDeviceScope,
+                protectedControlPlanePaths: options.protectedControlPlanePaths,
+            },
         );
         const auditRequestId =
             auditEnabled && evaluation.tier === 'team' && evaluation.action

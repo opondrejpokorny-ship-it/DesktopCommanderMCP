@@ -14,8 +14,8 @@
     { "kind": "directory", "path": "src/policy", "owner": "pro" },
     { "kind": "file", "path": "src/policy/audit-store.ts", "owner": "team" },
     { "kind": "file", "path": "src/policy/device-identity.ts", "owner": "team" },
-    { "kind": "file", "path": "src/policy/policy-runtime.ts", "owner": "demo" },
-    { "kind": "file", "path": "src/policy/policy-gate.ts", "owner": "demo" },
+    { "kind": "file", "path": "src/policy/policy-runtime.ts", "owner": "pro" },
+    { "kind": "file", "path": "src/policy/policy-gate.ts", "owner": "pro" },
     { "kind": "directory", "path": "src/control-center", "owner": "demo" },
     { "kind": "file", "path": "src/npm-scripts/access-control.ts", "owner": "demo" },
     { "kind": "file", "path": "src/npm-scripts/control-center.ts", "owner": "demo" }
