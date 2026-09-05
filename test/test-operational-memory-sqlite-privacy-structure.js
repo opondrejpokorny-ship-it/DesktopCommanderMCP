@@ -61,6 +61,13 @@ try {
     const leakedWorkflow = db.prepare('SELECT COUNT(*) AS count FROM events WHERE workflow_id = ?')
       .get('PRIVATE_WORKFLOW_PROSE_MARKER');
     assert.equal(Number(leakedWorkflow.count), 0, 'non-UUID workflow prose must not be indexed');
+    const projectColumns = db.prepare('PRAGMA table_info(project_groups)').all().map((row) => row.name);
+    for (const forbidden of ['summary', 'lesson', 'raw_args', 'command', 'content', 'output', 'path']) {
+      assert.ok(!projectColumns.includes(forbidden), 'project_groups must remain structural: ' + forbidden);
+    }
+    const projectRows = db.prepare('SELECT fingerprint, source_tool, family, stage_id FROM project_groups').all();
+    assert.ok(projectRows.length > 0, 'project_groups should contain sanitized aggregate metadata');
+    assert.equal(JSON.stringify(projectRows).includes('PRIVATE_EVENT_ID_PROSE_MARKER'), false);
   } finally {
     db.close();
   }

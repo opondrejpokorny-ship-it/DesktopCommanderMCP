@@ -85,7 +85,7 @@ try {
 
   assert.equal(Number(eventCount), 2);
   assert.equal(Number(group.occurrences), 2);
-  assert.equal(Number(indexState.schema_version), 3);
+  assert.equal(Number(indexState.schema_version), 5);
   assert.ok(Number(indexState.indexed_through_offset) > 0);
   assert.equal(Number(indexState.authority_size_bytes), (await fs.stat(memoryPath)).size);
   for (const forbidden of ['summary', 'lesson', 'event_id', 'raw_args', 'raw_command', 'file_contents']) {

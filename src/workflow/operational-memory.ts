@@ -17,7 +17,11 @@ import {
 } from './workflow-storage.js';
 import { resolveProjectIdentity } from './scope-identity.js';
 import {
+  readOperationalMemoryIndexCorrelation,
   readOperationalMemoryIndexEvents,
+  readOperationalMemoryProjectGroups,
+  type IndexedOperationalMemoryProjectGroup,
+  type OperationalMemoryScopeCorrelation,
   updateOperationalMemoryIndexAfterAppend,
 } from './operational-memory-index.js';
 
@@ -39,6 +43,8 @@ export interface OperationalMemoryEvent {
   version: 1;
   id: string;
   workflowId: string;
+  taskId?: string;
+  runId?: string;
   kind: OperationalMemoryKind;
   reasonCode: OperationalReasonCode;
   sourceTool: string;
@@ -50,6 +56,17 @@ export interface OperationalMemoryEvent {
   fingerprint: string;
   occurredAt: string;
 }
+
+export type OperationalMemoryScope = 'workflow' | 'project' | 'global';
+export type OperationalMemoryRelevanceReason =
+  | 'current_run_exact_stage'
+  | 'current_run_family_match'
+  | 'current_run_recent'
+  | 'current_task_history'
+  | 'project_exact_stage'
+  | 'project_family_match'
+  | 'project_repeated'
+  | 'project_recent';
 
 export interface OperationalMemoryLesson {
   fingerprint: string;
@@ -65,6 +82,13 @@ export interface OperationalMemoryLesson {
   firstSeenAt: string;
   lastSeenAt: string;
   relevanceScore: number;
+  scope: OperationalMemoryScope;
+  relevanceReason: OperationalMemoryRelevanceReason;
+}
+
+export interface OperationalMemoryScopeContext {
+  taskId: string;
+  runId?: string;
 }
 
 export interface OperationalMemorySummary {
@@ -75,6 +99,8 @@ export interface OperationalMemorySummary {
 interface PersistedWorkflowState {
   version: 1 | 2;
   workflowId: string;
+  taskId?: string;
+  runId?: string;
   projectRoot: string;
   completedAt?: string;
   profile: { stages: Array<{ id: string }> };
@@ -310,6 +336,7 @@ function parseWorkflowState(value: unknown): PersistedWorkflowState | null {
   return {
     version: raw.version,
     workflowId: raw.workflowId,
+    ...(raw.version === 2 ? { taskId: String(raw.taskId), runId: String(raw.runId) } : {}),
     projectRoot: raw.projectRoot,
     ...(typeof raw.completedAt === 'string' ? { completedAt: raw.completedAt } : {}),
     profile: { stages },
@@ -539,6 +566,12 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
   if (raw.fingerprint !== expectedFingerprint) return null;
   if (Number.isNaN(Date.parse(raw.occurredAt))) return null;
 
+  const taskId = typeof raw.taskId === 'string' && isWorkflowId(raw.taskId) && raw.taskId === raw.workflowId
+    ? raw.taskId : undefined;
+  const runId = taskId && typeof raw.runId === 'string' && isWorkflowId(raw.runId)
+    ? raw.runId : undefined;
+  if ((raw.taskId !== undefined || raw.runId !== undefined) && (!taskId || !runId)) return null;
+
   const stageId =
     typeof raw.stageId === 'string' && /^[a-z0-9][a-z0-9._-]{0,119}$/i.test(raw.stageId)
       ? raw.stageId
@@ -548,6 +581,8 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
     version: 1,
     id: raw.id.slice(0, 120),
     workflowId: raw.workflowId.slice(0, 200),
+    ...(taskId ? { taskId } : {}),
+    ...(runId ? { runId } : {}),
     kind,
     reasonCode,
     sourceTool,
@@ -641,6 +676,7 @@ function familyMatchesStage(family: string, stageId?: string): boolean {
 function aggregateLessons(
   events: OperationalMemoryEvent[],
   currentStageId?: string,
+  context?: OperationalMemoryScopeContext,
 ): OperationalMemoryLesson[] {
   const groups = new Map<string, OperationalMemoryEvent[]>();
   for (const event of events) {
@@ -652,28 +688,47 @@ function aggregateLessons(
   const lessons = [...groups.entries()].map(([fingerprint, group]) => {
     const first = group[0];
     const latest = group[group.length - 1];
-    const latestIndex = events.lastIndexOf(latest);
+    const currentRunEvents = context?.runId
+      ? group.filter((event) => event.runId === context.runId)
+      : [];
+    const rankedLatest = currentRunEvents[currentRunEvents.length - 1] ?? latest;
+    const latestIndex = events.lastIndexOf(rankedLatest);
     const recency = Math.max(0, 20 - (events.length - 1 - latestIndex));
-    const relevanceScore =
-      (latest.stageId && latest.stageId === currentStageId ? 100 : 0) +
-      (familyMatchesStage(latest.family, currentStageId) ? 30 : 0) +
-      Math.min(group.length * 5, 25) +
-      recency;
+    let relevanceReason: OperationalMemoryRelevanceReason;
+    let band: number;
+    if (currentRunEvents.length > 0) {
+      if (rankedLatest.stageId && rankedLatest.stageId === currentStageId) {
+        relevanceReason = 'current_run_exact_stage';
+        band = 500;
+      } else if (familyMatchesStage(rankedLatest.family, currentStageId)) {
+        relevanceReason = 'current_run_family_match';
+        band = 470;
+      } else {
+        relevanceReason = 'current_run_recent';
+        band = 450;
+      }
+    } else {
+      relevanceReason = 'current_task_history';
+      band = 400;
+    }
+    const relevanceScore = band + Math.min(group.length * 3, 18) + Math.min(recency, 18);
 
     return {
       fingerprint,
-      kind: latest.kind,
-      reasonCode: latest.reasonCode,
-      sourceTool: latest.sourceTool,
-      family: latest.family,
-      ...(latest.stageId ? { stageId: latest.stageId } : {}),
-      ...(latest.lessonCode ? { lessonCode: latest.lessonCode } : {}),
-      summary: latest.summary,
-      lesson: latest.lesson,
+      kind: rankedLatest.kind,
+      reasonCode: rankedLatest.reasonCode,
+      sourceTool: rankedLatest.sourceTool,
+      family: rankedLatest.family,
+      ...(rankedLatest.stageId ? { stageId: rankedLatest.stageId } : {}),
+      ...(rankedLatest.lessonCode ? { lessonCode: rankedLatest.lessonCode } : {}),
+      summary: rankedLatest.summary,
+      lesson: rankedLatest.lesson,
       occurrences: group.length,
       firstSeenAt: first.occurredAt,
-      lastSeenAt: latest.occurredAt,
+      lastSeenAt: rankedLatest.occurredAt,
       relevanceScore,
+      scope: 'workflow' as const,
+      relevanceReason,
     } satisfies OperationalMemoryLesson;
   });
 
@@ -682,19 +737,74 @@ function aggregateLessons(
     b.lastSeenAt.localeCompare(a.lastSeenAt)
   );
 }
+function sameMemoryScope(
+  expected: OperationalMemoryScopeCorrelation, candidate: OperationalMemoryScopeCorrelation | null,
+): boolean {
+  if (!expected.projectId || candidate?.projectId !== expected.projectId) return false;
+  if (expected.repositoryId && candidate.repositoryId !== expected.repositoryId) return false;
+  return true;
+}
+
+async function readProjectHistoryRows(
+  projectRoot: string, scope: OperationalMemoryScopeCorrelation,
+): Promise<IndexedOperationalMemoryProjectGroup[]> {
+  const currentIndex = resolveWorkflowMemoryIndexPath(projectRoot);
+  const current = await readOperationalMemoryProjectGroups(
+    resolveWorkflowMemoryPath(projectRoot), currentIndex, parseMemoryLine, scope,
+  ) ?? [];
+  const rows = [...current];
+  let entries: string[];
+  try { entries = await fs.readdir(resolveWorkflowStateRoot()); } catch { return rows; }
+  for (const name of entries) {
+    if (!name.endsWith('.memory.sqlite')) continue;
+    const candidateIndex = path.join(resolveWorkflowStateRoot(), name);
+    if (path.resolve(candidateIndex) === path.resolve(currentIndex)) continue;
+    const candidateScope = await readOperationalMemoryIndexCorrelation(candidateIndex);
+    if (!sameMemoryScope(scope, candidateScope)) continue;
+    const candidateMemory = candidateIndex.slice(0, -'.memory.sqlite'.length) + '.memory.jsonl';
+    const memoryStat = await fs.stat(candidateMemory).catch(() => null);
+    if (!memoryStat?.isFile()) continue;
+    const candidateRows = await readOperationalMemoryProjectGroups(
+      candidateMemory, candidateIndex, parseMemoryLine, scope,
+    );
+    if (candidateRows) rows.push(...candidateRows);
+  }
+  return rows;
+}
 
 export async function getOperationalMemorySummary(
   projectRoot: string,
   workflowId: string,
   currentStageId?: string,
+  context?: OperationalMemoryScopeContext,
 ): Promise<OperationalMemorySummary> {
   const events = await readRecentEvents(projectRoot, workflowId);
-  const lessons = aggregateLessons(events, currentStageId);
-  return {
-    totalEvents: events.length,
-    uniqueLessons: lessons.length,
-    lessons: lessons.slice(0, MAX_RELEVANT_LESSONS),
-  };
+  const workflowLessons = aggregateLessons(events, currentStageId, context);
+  const scope = await memoryScopeCorrelation(projectRoot);
+  const projectRows = scope ? await readProjectHistoryRows(projectRoot, scope) : [];
+  const projectLessons: OperationalMemoryLesson[] = [];
+  for (const row of projectRows) {
+    const parsed = parseMemoryEvent({ version: 1, id: 'project-group', workflowId: row.latestWorkflowId,
+      kind: row.kind, reasonCode: row.reasonCode, lessonCode: row.lessonCode, sourceTool: row.sourceTool,
+      family: row.family, stageId: row.stageId, fingerprint: row.fingerprint, occurredAt: row.lastSeenAt });
+    if (!parsed) continue;
+    let relevanceReason: OperationalMemoryRelevanceReason;
+    let band: number;
+    if (parsed.stageId && parsed.stageId === currentStageId) { relevanceReason = 'project_exact_stage'; band = 300; }
+    else if (familyMatchesStage(parsed.family, currentStageId)) { relevanceReason = 'project_family_match'; band = 270; }
+    else if (row.distinctWorkflows > 1 || row.occurrences > 1) { relevanceReason = 'project_repeated'; band = 240; }
+    else { relevanceReason = 'project_recent'; band = 220; }
+    projectLessons.push({ fingerprint: parsed.fingerprint, kind: parsed.kind, reasonCode: parsed.reasonCode,
+      sourceTool: parsed.sourceTool, family: parsed.family, ...(parsed.stageId ? { stageId: parsed.stageId } : {}),
+      ...(parsed.lessonCode ? { lessonCode: parsed.lessonCode } : {}), summary: parsed.summary, lesson: parsed.lesson,
+      occurrences: row.occurrences, firstSeenAt: row.firstSeenAt, lastSeenAt: row.lastSeenAt,
+      relevanceScore: band + Math.min(row.distinctWorkflows * 4, 16) + Math.min(row.occurrences * 2, 12),
+      scope: 'project', relevanceReason });
+  }
+  const deduped = new Map<string, OperationalMemoryLesson>();
+  for (const lesson of [...workflowLessons, ...projectLessons]) if (!deduped.has(lesson.fingerprint)) deduped.set(lesson.fingerprint, lesson);
+  const lessons = [...deduped.values()].sort((a, b) => b.relevanceScore - a.relevanceScore || b.lastSeenAt.localeCompare(a.lastSeenAt));
+  return { totalEvents: events.length, uniqueLessons: lessons.length, lessons: lessons.slice(0, MAX_RELEVANT_LESSONS) };
 }
 
 export async function recordOperationalToolFailure(
@@ -721,6 +831,8 @@ export async function recordOperationalToolFailure(
     version: 1,
     id: crypto.randomUUID(),
     workflowId: state.workflowId,
+    ...(state.taskId ? { taskId: state.taskId } : {}),
+    ...(state.runId ? { runId: state.runId } : {}),
     kind: classified.kind,
     reasonCode: classified.reasonCode,
     sourceTool: tool,
@@ -757,6 +869,8 @@ export async function recordOperationalLesson(
     version: 1,
     id: crypto.randomUUID(),
     workflowId: state.workflowId,
+    ...(state.taskId ? { taskId: state.taskId } : {}),
+    ...(state.runId ? { runId: state.runId } : {}),
     kind,
     reasonCode,
     lessonCode: input.lessonCode,
