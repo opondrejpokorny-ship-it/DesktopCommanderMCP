@@ -29,10 +29,23 @@ assert.ok(Array.isArray(manifest.files) && manifest.files.length > 0);
 const normalizedFiles = manifest.files.map((entry) =>
   String(entry.path ?? entry).replaceAll('\\', '/').toLowerCase()
 );
+for (const required of [
+  'dist/control-center-contract.js',
+  'dist/control-center-contract.d.ts',
+  'dist/control-center/contract.js',
+  'dist/control-center/contract.d.ts',
+  'dist/control-center/host.js',
+  'dist/control-center/host.d.ts',
+]) {
+  assert.ok(normalizedFiles.includes(required), 'Free artifact must ship public Control Center path: ' + required);
+}
 for (const forbidden of [
   'dist/policy/',
   'dist/prototype/',
-  'dist/control-center/',
+  'dist/control-center/pro-extension.js',
+  'dist/control-center/team-extension.js',
+  'dist/control-center/demo-extension.js',
+  'dist/control-center/server.js',
   'dist/npm-scripts/access-control.js',
 ]) {
   assert.ok(
@@ -64,6 +77,38 @@ try {
     '@wonderwhy-er',
     'desktop-commander-free-prototype',
   );
+  const installedPackage = JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  assert.deepStrictEqual(installedPackage.exports['./control-center-contract'], {
+    types: './dist/control-center-contract.d.ts',
+    import: './dist/control-center-contract.js',
+  });
+  const controlCenterSmoke = path.join(consumerDir, 'control-center-smoke.mjs');
+  await fs.writeFile(controlCenterSmoke, `
+import { startControlCenterHost } from '@wonderwhy-er/desktop-commander-free-prototype/control-center-contract';
+const running = await startControlCenterHost({ host: '127.0.0.1', port: 0, token: 'free-control-token', quiet: true });
+try {
+  const home = await fetch(running.url);
+  if (home.status !== 200) throw new Error('Free Control Center home failed');
+  const response = await fetch(new URL('/api/state', running.url), { headers: { 'X-DC-Control-Token': running.token } });
+  const state = await response.json();
+  if (response.status !== 200 || state.entitlement?.tier !== 'free' || state.activeExtensions?.length !== 0) {
+    throw new Error('Free Control Center state mismatch: ' + JSON.stringify(state));
+  }
+  for (const subpath of ['control-center/pro-extension', 'control-center/team-extension', 'control-center/demo-extension', 'control-center/server']) {
+    try {
+      await import('@wonderwhy-er/desktop-commander-free-prototype/' + subpath);
+      throw new Error('Commercial subpath unexpectedly imported: ' + subpath);
+    } catch (error) {
+      if (!['ERR_PACKAGE_PATH_NOT_EXPORTED', 'ERR_MODULE_NOT_FOUND'].includes(error?.code)) throw error;
+    }
+  }
+  console.log('FREE_CONTROL_CENTER_HOST_OK');
+} finally {
+  await running.close();
+}
+`, 'utf8');
+  execFileSync(process.execPath, [controlCenterSmoke], { cwd: consumerDir, stdio: 'inherit' });
+
   const entry = path.join(packageRoot, 'dist/index.js');
   assert.ok(await fs.stat(entry).then(() => true, () => false));
   assert.ok(

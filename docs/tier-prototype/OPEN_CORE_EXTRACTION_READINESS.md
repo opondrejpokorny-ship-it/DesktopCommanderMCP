@@ -1,7 +1,7 @@
 # Open-Core Physical Extraction Readiness
 
 Status: readiness contract; no physical repository split yet.
-Baseline: `prototype/free-pro-team` @ `6aa1eb7ceff2ff4b12c8bc2e4ddc51c2cf0cc295`.
+Baseline: `prototype/free-pro-team` @ `f3b44e4734300a0f2482a6189bacb6c84f254a55` (C3 starting authority).
 
 ## Decision
 Use two product repositories, not three forks:
@@ -19,7 +19,7 @@ PRIVATE DesktopCommanderCommercial
 A separate Team service is justified only when central fleet/account functionality actually needs a hosted authority.
 
 ## Non-goals of this slice
-No commercial code is moved. No policy, approval, entitlement, workflow, Operational Memory, Scope Architecture or runtime behavior changes. No signed licensing, billing, private distribution, deployment or prototype→main merge is introduced here.
+No commercial code is physically moved to a private repository. C3 does not change MCP execution policy/approval semantics, entitlement signing, billing, DRM, Scope Architecture, Operational Memory persistence/retrieval, or deployment. It refactors the local Control Center composition and Free packaging proof only.
 ## Current ownership inventory
 
 The machine-readable authority for this readiness slice is `open-core-boundaries.json`. Every `src/**/*.ts` file is classified: the default is `public`, with explicit non-public overrides.
@@ -36,7 +36,10 @@ The machine-readable authority for this readiness slice is `open-core-boundaries
 | `src/policy/device-identity.ts` | Team | Device-scoped governance candidate |
 | `src/prototype/*` | demo-only | Prototype entitlement/policy/audit composition |
 | `src/index.ts` | demo-only | Current prototype/commercial entrypoint |
-| `src/control-center/*` | demo-only today | Current UI is coupled to prototype composition; not production commercial authority |
+| `src/control-center/contract.ts`, `host.ts`, `src/control-center-contract.ts` | PUBLIC/shared | Versioned Control Center Contract v1 plus loopback host/security envelope |
+| `src/control-center/pro-extension.ts` | Pro | Policy/profile/folder/command controls and local approval UI/mutation |
+| `src/control-center/team-extension.ts` | Team | Remote Device selection and privacy-bounded audit UI/API |
+| `src/control-center/demo-extension.ts`, `server.ts` | demo-only | Local tier switch plus prototype composition of PUBLIC + Pro + Team extensions |
 | `src/npm-scripts/access-control.ts` | demo-only today | Uses prototype audit composition |
 | `src/npm-scripts/control-center.ts` | demo-only today | Starts current prototype Control Center |
 
@@ -51,11 +54,13 @@ This complements, rather than replaces, the existing Free package proof. The pac
 
 Commercial and demo code may depend on public contracts. Pro must not depend on Team-only implementation; Team may build on Pro. The current demo composition may depend on all layers.
 
-## Current finding: Control Center is demo composition
+## Current finding: Control Center boundary is split for extraction
 
-C2 removed the Pro -> Team storage dependency from `src/policy/policy-runtime.ts`: Pro now protects its policy/approval resources plus any explicitly environment-declared audit resource, while composition can inject additional protected commercial resources. The demo Team composition injects its audit path when `audit.local` is present, preserving audit-file tamper protection without making Pro runtime depend on Team storage. `policy-runtime.ts` and `policy-gate.ts` are therefore classified as Pro. The remaining extraction blocker in this area is the demo Control Center/access-control wiring through `prototype-audit-sink`.
+C2 removed the Pro -> Team storage dependency from policy runtime. C3 now separates the Control Center itself: the PUBLIC/shared host owns loopback binding, Host/token/origin checks, namespace registration, capability/expiry gating, request parsing, neutral state and trusted UI composition; Pro owns policy/approval controls; Team owns device/audit controls; demo-only code owns local tier mutation and prototype composition.
 
-The later extraction should provide commercial wiring that depends on commercial services/contracts rather than a `Prototype*` provider. This readiness slice deliberately records that requirement instead of changing the runtime while Scope/Memory foundation work is active.
+The PUBLIC host fails closed before extension handlers when capabilities are absent, expired or incomplete. Human approval mutation remains outside the ordinary model MCP surface, and existing policy/approval/upstream safeguards are unchanged. Pro does not import Team audit/device implementation. The Free package roots and exports the PUBLIC Control Center contract/host while physically omitting Pro, Team, demo and prototype/policy implementation.
+
+This removes the Control Center monolith as a physical-extraction blocker, but it does not create the final private `DesktopCommanderCommercial` repository or a production entitlement authority. Future commercial composition must consume only versioned public package contracts rather than deep-importing public `src/*`.
 
 ## Public cross-repo contract
 
@@ -65,8 +70,11 @@ The future commercial repository should consume only versioned public attachment
 - `FreeEntitlementProvider` as the public default;
 - `RuntimePolicyHook` / no-op policy boundary;
 - runtime service composition;
-- shared server startup and Free entrypoint.
-Before a physical split, these contracts should get an explicit package/export surface and compatibility version. Commercial code must not reach back into arbitrary public-core internals by relative path.
+- shared server startup and Free entrypoint;
+- `@wonderwhy-er/desktop-commander/commercial-contract` remains the separately frozen C1 v1 commercial attachment contract;
+- `@wonderwhy-er/desktop-commander/control-center-contract` is the separately versioned C3 v1 public Control Center host/extension attachment contract.
+
+C1 and C3 therefore have explicit package/export surfaces. Future commercial code must consume those versioned package contracts rather than reaching back into arbitrary public-core `src/*` internals.
 
 ## Commercial build/version contract
 
@@ -117,3 +125,5 @@ Repository ownership is not execution authorization. Public/project/scope metada
 ## Scope Architecture and Operational Memory
 
 Scope primitives, Project/Repository/Task infrastructure and the Operational Memory engine remain PUBLIC/shared architecture by default. Their data must still respect project/device scope and privacy. A future paid capability may expose richer UI/administration, but the core data-scope mechanism should not become entangled with commercial policy enforcement merely because Pro/Team consume it.
+
+M6 remains a future PUBLIC read-only Control Center extension target. It may use this host/extension contract later, but it must not become authorization or move Operational Memory authority into commercial code.
