@@ -296,8 +296,8 @@ function parseWorkflowState(value: unknown): PersistedWorkflowState | null {
 
   if (raw.version === 1 && (raw.taskId !== undefined || raw.runId !== undefined)) return null;
   if (raw.version === 2 && (
-    typeof raw.taskId !== 'string' || !raw.taskId.trim() ||
-    typeof raw.runId !== 'string' || !raw.runId.trim() ||
+    typeof raw.taskId !== 'string' || !isWorkflowId(raw.taskId) ||
+    typeof raw.runId !== 'string' || !isWorkflowId(raw.runId) ||
     raw.taskId !== raw.workflowId
   )) return null;
 

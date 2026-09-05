@@ -545,6 +545,10 @@ async function inspectGit(projectRoot: string): Promise<WorkflowGitSnapshot> {
     };
 }
 
+function isScopeUuid(value: unknown): value is string {
+    return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function taskIdForState(state: WorkflowState): TaskId {
     return state.version === 2 ? state.taskId : state.workflowId;
 }
@@ -569,8 +573,7 @@ function parseState(value: unknown): WorkflowState {
             throw new Error('project workflow state v1 must not contain taskId/runId');
         }
     } else {
-        if (typeof raw.taskId !== 'string' || !raw.taskId.trim() ||
-            typeof raw.runId !== 'string' || !raw.runId.trim()) {
+        if (!isScopeUuid(raw.taskId) || !isScopeUuid(raw.runId)) {
             throw new Error('project workflow state v2 taskId/runId is invalid');
         }
         if (raw.taskId !== raw.workflowId) {

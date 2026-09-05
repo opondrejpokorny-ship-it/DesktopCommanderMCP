@@ -123,10 +123,34 @@ try {
     /workflow.*task|task.*workflow|invalid/i
   );
 
-  await fs.writeFile(statePath, JSON.stringify({
+  const restored = {
     ...mismatched,
     workflowId: mismatched.taskId
-  }, null, 2));
+  };
+  await fs.writeFile(statePath, JSON.stringify(restored, null, 2));
+
+  const malformedTask = {
+    ...restored,
+    workflowId: 'not-a-uuid',
+    taskId: 'not-a-uuid'
+  };
+  await fs.writeFile(statePath, JSON.stringify(malformedTask, null, 2));
+  await assert.rejects(
+    () => getProjectWorkflowStatus({ projectRoot }),
+    /task.*invalid|uuid|scope.*id/i
+  );
+
+  const malformedRun = {
+    ...restored,
+    runId: 'not-a-uuid'
+  };
+  await fs.writeFile(statePath, JSON.stringify(malformedRun, null, 2));
+  await assert.rejects(
+    () => getProjectWorkflowStatus({ projectRoot }),
+    /run.*invalid|uuid|scope.*id/i
+  );
+
+  await fs.writeFile(statePath, JSON.stringify(restored, null, 2));
 
   const workerRoot = path.join(tempDir, 'worker');
   git(projectRoot, 'worktree', 'add', '-b', 'b4-worker', workerRoot);
