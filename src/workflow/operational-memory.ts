@@ -9,11 +9,17 @@ import {
   type OperationalLessonCode,
 } from './operational-memory-contract.js';
 import {
+  resolveWorkflowMemoryIndexPath,
   resolveWorkflowMemoryPath,
   resolveWorkflowStatePath,
   resolveWorkflowStateRoot,
   workflowProjectIdentity,
 } from './workflow-storage.js';
+import { resolveProjectIdentity } from './scope-identity.js';
+import {
+  readOperationalMemoryIndexEvents,
+  updateOperationalMemoryIndexAfterAppend,
+} from './operational-memory-index.js';
 
 export type OperationalMemoryKind = 'error' | 'limit' | 'lesson';
 export type OperationalReasonCode =
@@ -418,16 +424,28 @@ async function withMemoryLock<T>(memoryPath: string, operation: () => Promise<T>
   }
 }
 
+async function memoryScopeCorrelation(projectRoot: string): Promise<{ projectId: string; repositoryId: string } | undefined> {
+  try {
+    const identity = await resolveProjectIdentity(projectRoot);
+    return { projectId: identity.projectId, repositoryId: identity.repository.repositoryId };
+  } catch {
+    return undefined;
+  }
+}
+
 async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): Promise<void> {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
+  const scope = await memoryScopeCorrelation(projectRoot);
   const prior = memoryWriteChains.get(memoryPath) ?? Promise.resolve();
   const operation = prior.then(() => withMemoryLock(memoryPath, async () => {
     await fs.mkdir(path.dirname(memoryPath), { recursive: true });
     let needsSeparator = false;
+    let authorityBeforeAppend = { size: 0, mtimeMs: 0, ctimeMs: 0 };
     try {
       const handle = await fs.open(memoryPath, 'r');
       try {
         const stat = await handle.stat();
+        authorityBeforeAppend = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
         if (stat.size > 0) {
           const lastByte = Buffer.alloc(1);
           await handle.read(lastByte, 0, 1, stat.size - 1);
@@ -441,9 +459,20 @@ async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): 
     }
     if (needsSeparator) await fs.appendFile(memoryPath, '\n', 'utf8');
     await fs.appendFile(memoryPath, JSON.stringify(event) + '\n', 'utf8');
+    await updateOperationalMemoryIndexAfterAppend(
+      memoryPath,
+      resolveWorkflowMemoryIndexPath(projectRoot),
+      parseMemoryLine,
+      scope,
+      authorityBeforeAppend,
+    ).catch(() => false);
   }));
   memoryWriteChains.set(memoryPath, operation.catch(() => undefined));
   await operation;
+}
+
+function isWorkflowId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
@@ -453,6 +482,7 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
     raw.version !== 1 ||
     typeof raw.id !== 'string' ||
     typeof raw.workflowId !== 'string' ||
+    !isWorkflowId(raw.workflowId) ||
     typeof raw.sourceTool !== 'string' ||
     typeof raw.reasonCode !== 'string' ||
     typeof raw.fingerprint !== 'string' ||
@@ -524,7 +554,7 @@ function parseMemoryEvent(value: unknown): OperationalMemoryEvent | null {
   };
 }
 
-async function readRecentEvents(
+async function readRecentEventsFromJournal(
   projectRoot: string,
   workflowId: string,
 ): Promise<OperationalMemoryEvent[]> {
@@ -558,6 +588,38 @@ async function readRecentEvents(
   } finally {
     await handle?.close().catch(() => undefined);
   }
+}
+
+function parseMemoryLine(line: string): OperationalMemoryEvent | null {
+  try {
+    return parseMemoryEvent(JSON.parse(line));
+  } catch {
+    return null;
+  }
+}
+
+async function readRecentEvents(
+  projectRoot: string,
+  workflowId: string,
+): Promise<OperationalMemoryEvent[]> {
+  const scope = await memoryScopeCorrelation(projectRoot);
+  const indexed = await readOperationalMemoryIndexEvents(
+    resolveWorkflowMemoryPath(projectRoot),
+    resolveWorkflowMemoryIndexPath(projectRoot),
+    workflowId,
+    MAX_MEMORY_TAIL_BYTES,
+    MAX_MEMORY_EVENTS,
+    parseMemoryLine,
+    scope,
+  );
+  if (indexed !== null) {
+    return indexed
+      .map((event) => parseMemoryEvent({ version: 1, ...event }))
+      .filter((event): event is OperationalMemoryEvent =>
+        !!event && event.workflowId === workflowId
+      );
+  }
+  return readRecentEventsFromJournal(projectRoot, workflowId);
 }
 
 function familyMatchesStage(family: string, stageId?: string): boolean {
