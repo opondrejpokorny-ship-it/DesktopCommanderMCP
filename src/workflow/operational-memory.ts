@@ -24,6 +24,10 @@ import {
   type OperationalMemoryScopeCorrelation,
   updateOperationalMemoryIndexAfterAppend,
 } from './operational-memory-index.js';
+import {
+  readOperationalMemoryGlobalGroups,
+  updateOperationalMemoryGlobalIndexAfterAppend,
+} from './operational-memory-global-index.js';
 
 export type OperationalMemoryKind = 'error' | 'limit' | 'lesson';
 export type OperationalReasonCode =
@@ -66,7 +70,9 @@ export type OperationalMemoryRelevanceReason =
   | 'project_exact_stage'
   | 'project_family_match'
   | 'project_repeated'
-  | 'project_recent';
+  | 'project_recent'
+  | 'global_repeated'
+  | 'global_recent';
 
 export interface OperationalMemoryLesson {
   fingerprint: string;
@@ -500,6 +506,12 @@ async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): 
       scope,
       authorityBeforeAppend,
     ).catch(() => false);
+    await updateOperationalMemoryGlobalIndexAfterAppend(
+      memoryPath,
+      event,
+      scope,
+      authorityBeforeAppend,
+    ).catch(() => false);
   }));
   memoryWriteChains.set(memoryPath, operation.catch(() => undefined));
   await operation;
@@ -798,6 +810,7 @@ export async function getOperationalMemorySummary(
   const workflowLessons = aggregateLessons(events, currentStageId, context);
   const scope = await memoryScopeCorrelation(projectRoot);
   const projectRows = scope ? await readProjectHistoryRows(projectRoot, scope) : [];
+  const globalRows = scope ? await readOperationalMemoryGlobalGroups(scope, parseMemoryLine) : [];
   const projectLessons: OperationalMemoryLesson[] = [];
   for (const row of projectRows) {
     const parsed = parseMemoryEvent({ version: 1, id: 'project-group', workflowId: row.latestWorkflowId,
@@ -817,8 +830,43 @@ export async function getOperationalMemorySummary(
       relevanceScore: band + Math.min(row.distinctWorkflows * 4, 16) + Math.min(row.occurrences * 2, 12),
       scope: 'project', relevanceReason });
   }
+  const globalLessons: OperationalMemoryLesson[] = [];
+  for (const row of globalRows) {
+    const parsed = parseMemoryEvent({
+      version: 1,
+      id: 'global-group',
+      workflowId: '00000000-0000-4000-8000-000000000000',
+      kind: 'lesson',
+      reasonCode: 'learned_pattern',
+      lessonCode: row.lessonCode,
+      sourceTool: 'project_workflow',
+      family: 'workflow',
+      fingerprint: row.fingerprint,
+      occurredAt: row.lastSeenAt,
+    });
+    if (!parsed) continue;
+    const relevanceReason: OperationalMemoryRelevanceReason =
+      row.distinctProjects > 1 ? 'global_repeated' : 'global_recent';
+    const band = row.distinctProjects > 1 ? 160 : 140;
+    globalLessons.push({
+      fingerprint: parsed.fingerprint,
+      kind: parsed.kind,
+      reasonCode: parsed.reasonCode,
+      sourceTool: parsed.sourceTool,
+      family: parsed.family,
+      ...(parsed.lessonCode ? { lessonCode: parsed.lessonCode } : {}),
+      summary: parsed.summary,
+      lesson: parsed.lesson,
+      occurrences: row.occurrences,
+      firstSeenAt: row.firstSeenAt,
+      lastSeenAt: row.lastSeenAt,
+      relevanceScore: band + Math.min(row.distinctProjects * 4, 12) + Math.min(row.occurrences * 2, 12),
+      scope: 'global',
+      relevanceReason,
+    });
+  }
   const deduped = new Map<string, OperationalMemoryLesson>();
-  for (const lesson of [...workflowLessons, ...projectLessons]) if (!deduped.has(lesson.fingerprint)) deduped.set(lesson.fingerprint, lesson);
+  for (const lesson of [...workflowLessons, ...projectLessons, ...globalLessons]) if (!deduped.has(lesson.fingerprint)) deduped.set(lesson.fingerprint, lesson);
   const lessons = [...deduped.values()].sort((a, b) => b.relevanceScore - a.relevanceScore || b.lastSeenAt.localeCompare(a.lastSeenAt));
   return { totalEvents: events.length, uniqueLessons: lessons.length, lessons: lessons.slice(0, MAX_RELEVANT_LESSONS) };
 }
