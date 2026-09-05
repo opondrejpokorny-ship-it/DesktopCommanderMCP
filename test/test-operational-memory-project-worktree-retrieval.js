@@ -71,10 +71,14 @@ try {
   assert.equal(inheritedAcrossIndexes.length, 1, 'same fingerprint across project indexes must dedupe');
   assert.equal(inheritedAcrossIndexes[0].occurrences, 2, 'project occurrences must aggregate across linked-worktree indexes');
   assert.equal(inheritedAcrossIndexes[0].scope, 'project');
+  const crossProjectSafe = linkedStart.operationalMemory.lessons.find(
+    (lesson) => lesson.lessonCode === 'shell_quoting_unreliable',
+  );
+  assert.ok(crossProjectSafe, 'safe whitelisted semantic lessons may cross project boundaries');
   assert.equal(
-    linkedStart.operationalMemory.lessons.some((lesson) => lesson.lessonCode === 'shell_quoting_unreliable'),
-    false,
-    'different project history must not leak',
+    crossProjectSafe.scope,
+    'global',
+    'different-project history must never leak as project scope',
   );
 
   const corruptAfter = await fs.readFile(corruptIndex);
