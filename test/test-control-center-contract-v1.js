@@ -31,8 +31,8 @@ const contract = await import('@wonderwhy-er/desktop-commander/control-center-co
 assert.strictEqual(contract.CONTROL_CENTER_CONTRACT_VERSION, 1);
 assert.deepStrictEqual(
   Object.keys(contract).sort(),
-  ['CONTROL_CENTER_CONTRACT_VERSION'],
-  'Task 1 runtime export surface must stay version-only until the public host exists',
+  ['CONTROL_CENTER_CONTRACT_VERSION', 'startControlCenterHost'].sort(),
+  'Control Center Contract v1 runtime exports must stay on the final approved whitelist',
 );
 
 const declarations = await fs.readFile(

@@ -1,3 +1,5 @@
+export { startControlCenterHost } from './control-center/host.js';
+
 export const CONTROL_CENTER_CONTRACT_VERSION = 1 as const;
 
 export type {
