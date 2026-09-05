@@ -1,5 +1,5 @@
 import type { Capability, CapabilityRegistry } from '../entitlements/capabilities.js';
-import { FileAuditSink } from '../policy/audit-store.js';
+import { AUDIT_FILE, FileAuditSink } from '../policy/audit-store.js';
 import {
     applyPolicyGate,
     recordPolicyExecutionResult,
@@ -61,6 +61,9 @@ export class PrototypePolicyHook implements RuntimePolicyHook {
         const auditSink = capabilities.has('audit.local')
             ? new FileAuditSink()
             : undefined;
+        const auditPath = auditSink
+            ? process.env.DESKTOP_COMMANDER_AUDIT_FILE ?? AUDIT_FILE
+            : undefined;
         const gate = await applyPolicyGate(
             tool,
             args,
@@ -71,6 +74,7 @@ export class PrototypePolicyHook implements RuntimePolicyHook {
                 allowDeviceScope: capabilities.has('team.device_policy'),
                 auditEnabled: !!auditSink,
                 auditSink,
+                protectedControlPlanePaths: auditPath ? [auditPath] : [],
             },
         );
         return asRuntimeGate(gate);

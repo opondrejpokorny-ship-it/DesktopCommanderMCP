@@ -3,7 +3,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { USER_HOME } from '../config.js';
 import { APPROVAL_FILE } from './approval-store.js';
-import { AUDIT_FILE } from './audit-store.js';
 import { normalizeCommandPrefix as normalizeShellCommandPrefix } from './command-policy.js';
 import {
     getPolicyProfileRules,
@@ -222,10 +221,6 @@ function resolveApprovalPath(): string {
     return process.env.DESKTOP_COMMANDER_APPROVAL_FILE ?? APPROVAL_FILE;
 }
 
-function resolveAuditPath(): string {
-    return process.env.DESKTOP_COMMANDER_AUDIT_FILE ?? AUDIT_FILE;
-}
-
 function looksLikeWindowsPolicyPath(value: string): boolean {
     return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }
@@ -336,6 +331,7 @@ async function protectedControlPlaneEvaluation(
     tier: DesktopCommanderTier,
     normalizedActions: readonly NormalizedToolAction[],
     policyPath?: string,
+    protectedControlPlanePaths: readonly string[] = [],
 ): Promise<Pick<PolicyPreflightResult, 'decision' | 'matchedRuleId' | 'action' | 'resource'> | null> {
 
     for (const normalized of normalizedActions) {
@@ -364,11 +360,15 @@ async function protectedControlPlaneEvaluation(
         return null;
     }
 
+    const environmentProtectedPaths = process.env.DESKTOP_COMMANDER_AUDIT_FILE
+        ? [process.env.DESKTOP_COMMANDER_AUDIT_FILE]
+        : [];
     const protectedPaths = new Set(
         await Promise.all([
             resolvePolicyPath(policyPath),
             resolveApprovalPath(),
-            resolveAuditPath(),
+            ...environmentProtectedPaths,
+            ...protectedControlPlanePaths,
         ].map(async (protectedPath) => normalizedPolicyPathIdentity(
             await canonicalizePolicyFilesystemPath(protectedPath),
         ))),
@@ -755,6 +755,7 @@ export async function loadPolicyRuntimeConfig(
 
 export interface PolicyPreflightOptions {
     allowDeviceScope?: boolean;
+    protectedControlPlanePaths?: readonly string[];
 }
 
 export async function preflightToolRequest(
@@ -778,6 +779,7 @@ export async function preflightToolRequest(
         config.tier,
         normalizedActions,
         policyPath,
+        options.protectedControlPlanePaths,
     );
 
     if (protectedEvaluation) {
