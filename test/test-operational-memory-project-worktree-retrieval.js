@@ -9,6 +9,7 @@ import * as storage from '../dist/workflow/workflow-storage.js';
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-memory-m3a-worktree-'));
 const primary = path.join(tempDir, 'repo');
 const linked = path.join(tempDir, 'linked');
+const linked2 = path.join(tempDir, 'linked-2');
 const other = path.join(tempDir, 'other');
 const stateRoot = path.join(tempDir, 'state');
 const previousStateRoot = process.env.DESKTOP_COMMANDER_WORKFLOW_STATE_DIR;
@@ -32,6 +33,7 @@ async function initRepo(root, origin, profileId) {
 try {
   await initRepo(primary, 'https://github.com/example/m3a-primary.git', 'm3a-primary');
   git(primary, 'worktree', 'add', '--detach', linked, 'HEAD');
+  git(primary, 'worktree', 'add', '--detach', linked2, 'HEAD');
   await initRepo(other, 'https://github.com/example/m3a-other.git', 'm3a-other');
 
   await workflow.startProjectWorkflow({ projectRoot: primary, goal: 'Primary task' });
@@ -58,6 +60,17 @@ try {
   );
   assert.equal(inherited.length, 1, 'linked worktree must inherit same-project history');
   assert.equal(inherited[0].scope, 'project');
+  assert.equal(await workflow.recordOperationalLesson({
+    projectRoot: linked, lessonCode: 'fetch_required_git_refs',
+  }), true);
+  await workflow.getProjectWorkflowStatus({ projectRoot: linked });
+  const linked2Start = await workflow.startProjectWorkflow({ projectRoot: linked2, goal: 'Second linked task' });
+  const inheritedAcrossIndexes = linked2Start.operationalMemory.lessons.filter(
+    (lesson) => lesson.lessonCode === 'fetch_required_git_refs',
+  );
+  assert.equal(inheritedAcrossIndexes.length, 1, 'same fingerprint across project indexes must dedupe');
+  assert.equal(inheritedAcrossIndexes[0].occurrences, 2, 'project occurrences must aggregate across linked-worktree indexes');
+  assert.equal(inheritedAcrossIndexes[0].scope, 'project');
   assert.equal(
     linkedStart.operationalMemory.lessons.some((lesson) => lesson.lessonCode === 'shell_quoting_unreliable'),
     false,

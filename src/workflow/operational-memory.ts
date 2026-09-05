@@ -769,7 +769,23 @@ async function readProjectHistoryRows(
     );
     if (candidateRows) rows.push(...candidateRows);
   }
-  return rows;
+  const merged = new Map<string, IndexedOperationalMemoryProjectGroup>();
+  for (const row of rows) {
+    const existing = merged.get(row.fingerprint);
+    if (!existing) {
+      merged.set(row.fingerprint, { ...row });
+      continue;
+    }
+    const latest = row.lastSeenAt > existing.lastSeenAt ? row : existing;
+    merged.set(row.fingerprint, {
+      ...latest,
+      firstSeenAt: row.firstSeenAt < existing.firstSeenAt ? row.firstSeenAt : existing.firstSeenAt,
+      lastSeenAt: row.lastSeenAt > existing.lastSeenAt ? row.lastSeenAt : existing.lastSeenAt,
+      occurrences: existing.occurrences + row.occurrences,
+      distinctWorkflows: existing.distinctWorkflows + row.distinctWorkflows,
+    });
+  }
+  return [...merged.values()];
 }
 
 export async function getOperationalMemorySummary(
