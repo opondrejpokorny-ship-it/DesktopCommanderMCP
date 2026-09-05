@@ -1,7 +1,7 @@
 # Operational Memory M3 — Project + Safe Global Retrieval Design
 
 **Date:** 2026-09-05
-**Status:** Design approved in principle; written spec awaiting owner review
+**Status:** Owner-approved design; runtime implementation gated until B4 integration
 **Baseline:** `prototype/free-pro-team` @ `5c5107467ad15db4cc2e8bd683790bcac7406183`
 **Target:** `prototype/free-pro-team` via isolated PRs; never `main`
 
