@@ -134,7 +134,7 @@ try {
 
   const legacyStateSource = JSON.parse(await fs.readFile(expectedStatePath, 'utf8'));
   const legacyStateFixture = {
-    version: legacyStateSource.version,
+    version: 1,
     workflowId: legacyStateSource.workflowId,
     projectRoot: legacyStateSource.projectRoot,
     goal: legacyStateSource.goal,

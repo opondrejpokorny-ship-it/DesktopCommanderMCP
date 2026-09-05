@@ -73,7 +73,7 @@ export interface OperationalMemorySummary {
   lessons: OperationalMemoryLesson[];
 }
 interface PersistedWorkflowState {
-  version: 1;
+  version: 1 | 2;
   workflowId: string;
   projectRoot: string;
   completedAt?: string;
@@ -285,7 +285,7 @@ function parseWorkflowState(value: unknown): PersistedWorkflowState | null {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Record<string, unknown>;
   if (
-    raw.version !== 1 ||
+    (raw.version !== 1 && raw.version !== 2) ||
     typeof raw.workflowId !== 'string' ||
     typeof raw.projectRoot !== 'string' ||
     !raw.profile ||
@@ -294,6 +294,13 @@ function parseWorkflowState(value: unknown): PersistedWorkflowState | null {
     typeof raw.stages !== 'object'
   ) return null;
 
+  if (raw.version === 1 && (raw.taskId !== undefined || raw.runId !== undefined)) return null;
+  if (raw.version === 2 && (
+    typeof raw.taskId !== 'string' || !raw.taskId.trim() ||
+    typeof raw.runId !== 'string' || !raw.runId.trim() ||
+    raw.taskId !== raw.workflowId
+  )) return null;
+
   const profile = raw.profile as Record<string, unknown>;
   if (!Array.isArray(profile.stages)) return null;
   const stages = profile.stages
@@ -301,7 +308,7 @@ function parseWorkflowState(value: unknown): PersistedWorkflowState | null {
     .map((item) => ({ id: String((item as any).id) }));
 
   return {
-    version: 1,
+    version: raw.version,
     workflowId: raw.workflowId,
     projectRoot: raw.projectRoot,
     ...(typeof raw.completedAt === 'string' ? { completedAt: raw.completedAt } : {}),
