@@ -286,7 +286,7 @@ function parseWorkflowState(value: unknown): PersistedWorkflowState | null {
   const raw = value as Record<string, unknown>;
   if (
     (raw.version !== 1 && raw.version !== 2) ||
-    typeof raw.workflowId !== 'string' ||
+    typeof raw.workflowId !== 'string' || !isWorkflowId(raw.workflowId) ||
     typeof raw.projectRoot !== 'string' ||
     !raw.profile ||
     typeof raw.profile !== 'object' ||

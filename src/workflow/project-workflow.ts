@@ -565,7 +565,7 @@ function parseState(value: unknown): WorkflowState {
     if ((raw.version !== 1 && raw.version !== 2) || !raw.profile || !raw.stages || !raw.gitBaseline) {
         throw new Error('project workflow state is invalid or incomplete');
     }
-    if (typeof raw.workflowId !== 'string' || !raw.workflowId.trim()) {
+    if (!isScopeUuid(raw.workflowId)) {
         throw new Error('project workflow state workflowId is invalid');
     }
     if (raw.version === 1) {

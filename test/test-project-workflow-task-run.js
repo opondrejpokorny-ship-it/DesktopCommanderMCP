@@ -72,6 +72,17 @@ try {
   delete legacy.runId;
   await fs.writeFile(statePath, JSON.stringify(legacy, null, 2));
   const beforeLegacyStatus = await fs.readFile(statePath, 'utf8');
+
+  const malformedLegacy = { ...legacy, workflowId: 'not-a-uuid' };
+  await fs.writeFile(statePath, JSON.stringify(malformedLegacy, null, 2));
+  const malformedLegacyText = await fs.readFile(statePath, 'utf8');
+  await assert.rejects(
+    () => resumeProjectWorkflow({ projectRoot }),
+    /workflow.*invalid|task.*invalid|uuid|scope.*id/i
+  );
+  assert.strictEqual(await fs.readFile(statePath, 'utf8'), malformedLegacyText);
+  await fs.writeFile(statePath, beforeLegacyStatus);
+
   const legacyStatus = await getProjectWorkflowStatus({ projectRoot });
   assert.strictEqual(legacyStatus.taskId, legacy.workflowId);
   assert.strictEqual(legacyStatus.runId, undefined);
@@ -137,7 +148,7 @@ try {
   await fs.writeFile(statePath, JSON.stringify(malformedTask, null, 2));
   await assert.rejects(
     () => getProjectWorkflowStatus({ projectRoot }),
-    /task.*invalid|uuid|scope.*id/i
+    /workflow.*invalid|task.*invalid|uuid|scope.*id/i
   );
 
   const malformedRun = {
