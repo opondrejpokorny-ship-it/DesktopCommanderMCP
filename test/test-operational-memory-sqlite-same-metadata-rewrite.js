@@ -59,6 +59,8 @@ try {
   assert.equal(rewrittenStat.size, beforeStat.size);
   assert.equal(rewrittenStat.mtimeMs, beforeStat.mtimeMs,
     'fixture must restore the exact mtime used by the SQLite fast path');
+  assert.notEqual(rewrittenStat.ctimeMs, beforeStat.ctimeMs,
+    'fixture must prove content overwrite changes filesystem ctime even when mtime is restored');
 
   const expectedLastSeenAt = JSON.parse(rewrittenLines[1]).occurredAt;
   assert.notEqual(expectedLastSeenAt, beforeStatus.operationalMemory.lessons[0].lastSeenAt);
