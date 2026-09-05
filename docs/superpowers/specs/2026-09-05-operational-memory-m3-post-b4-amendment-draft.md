@@ -95,3 +95,12 @@ Read-only review of B4 head `060576726e457391023e90680ffea9140894073f` plus its 
 - Task/Run do not enter the semantic fingerprint: the same operational lesson should deduplicate across Runs/Tasks while scope/correlation determines precedence.
 
 This evidence does not release the B4 gate. Re-check the exact merged B4 source and tests before converting this draft into the approved post-B4 amendment.
+
+## 11. Trusted scope context handoff
+
+Repository-wide call-site review found one production caller of `getOperationalMemorySummary`: `project-workflow.ts::toStatus`.
+After B4, `toStatus` already holds the strictly parsed server-owned WorkflowState and returns its TaskId/RunId in WorkflowStatus.
+M3A should therefore extend `getOperationalMemorySummary` with an additive optional final scope-context argument carrying validated `taskId` and optional `runId`, supplied directly by `toStatus`.
+This avoids rereading/reparsing workflow state inside retrieval and keeps Task/Run provenance server-owned.
+The argument remains internal correlation/relevance context only; it is not a public MCP input and cannot grant authorization.
+Because the production call-site blast radius is one, `src/workflow/project-workflow.ts` should be included explicitly in the M3A implementation scope alongside Operational Memory and its index.
