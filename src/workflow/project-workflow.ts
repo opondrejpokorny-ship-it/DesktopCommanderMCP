@@ -17,6 +17,8 @@ import {
 import {
     resolveProjectIdentity,
     type ProjectIdentity,
+    type RunId,
+    type TaskId,
 } from './scope-identity.js';
 import {
     tryResolveProjectProfile,
@@ -91,8 +93,7 @@ interface WorkflowStageState {
     reason?: string;
 }
 
-interface WorkflowState {
-    version: 1;
+interface WorkflowStateBase {
     workflowId: string;
     projectRoot: string;
     goal: string;
@@ -106,6 +107,18 @@ interface WorkflowState {
     gitBaseline: WorkflowGitSnapshot;
     lastGitCheck?: WorkflowGitSnapshot;
 }
+
+interface WorkflowStateV1 extends WorkflowStateBase {
+    version: 1;
+}
+
+interface WorkflowStateV2 extends WorkflowStateBase {
+    version: 2;
+    taskId: TaskId;
+    runId: RunId;
+}
+
+type WorkflowState = WorkflowStateV1 | WorkflowStateV2;
 
 export interface WorkflowProgress {
     totalStages: number;
@@ -122,6 +135,8 @@ export interface WorkflowStageView extends WorkflowStageDefinition, WorkflowStag
 
 export interface WorkflowStatus {
     workflowId: string;
+    taskId: TaskId;
+    runId?: RunId;
     projectRoot: string;
     projectIdentity: ProjectIdentity;
     statePath: string;
@@ -530,13 +545,40 @@ async function inspectGit(projectRoot: string): Promise<WorkflowGitSnapshot> {
     };
 }
 
+function isScopeUuid(value: unknown): value is string {
+    return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function taskIdForState(state: WorkflowState): TaskId {
+    return state.version === 2 ? state.taskId : state.workflowId;
+}
+
+function runIdForState(state: WorkflowState): RunId | undefined {
+    return state.version === 2 ? state.runId : undefined;
+}
+
 function parseState(value: unknown): WorkflowState {
     if (!value || typeof value !== 'object') {
         throw new Error('project workflow state root must be an object');
     }
     const raw = value as Record<string, unknown>;
-    if (raw.version !== 1 || !raw.profile || !raw.stages || !raw.gitBaseline) {
+    if ((raw.version !== 1 && raw.version !== 2) || !raw.profile || !raw.stages || !raw.gitBaseline) {
         throw new Error('project workflow state is invalid or incomplete');
+    }
+    if (!isScopeUuid(raw.workflowId)) {
+        throw new Error('project workflow state workflowId is invalid');
+    }
+    if (raw.version === 1) {
+        if (raw.taskId !== undefined || raw.runId !== undefined) {
+            throw new Error('project workflow state v1 must not contain taskId/runId');
+        }
+    } else {
+        if (!isScopeUuid(raw.taskId) || !isScopeUuid(raw.runId)) {
+            throw new Error('project workflow state v2 taskId/runId is invalid');
+        }
+        if (raw.taskId !== raw.workflowId) {
+            throw new Error('project workflow state v2 workflowId/taskId mismatch');
+        }
     }
     const profile = parseProjectWorkflowProfile(raw.profile);
     const stageStates = raw.stages as Record<string, WorkflowStageState>;
@@ -733,6 +775,8 @@ async function toStatus(
     );
     return {
         workflowId: state.workflowId,
+        taskId: taskIdForState(state),
+        ...(runIdForState(state) ? { runId: runIdForState(state) } : {}),
         projectRoot: state.projectRoot,
         projectIdentity,
         statePath: resolveWorkflowStatePath(state.projectRoot),
@@ -787,9 +831,13 @@ export async function startProjectWorkflow(input: StartWorkflowInput): Promise<W
             { status: 'pending' as const, updatedAt: startedAt },
         ]),
     );
+    const taskId = crypto.randomUUID();
+    const runId = crypto.randomUUID();
     const state: WorkflowState = {
-        version: 1,
-        workflowId: crypto.randomUUID(),
+        version: 2,
+        workflowId: taskId,
+        taskId,
+        runId,
         projectRoot,
         goal,
         profilePath: loaded.profilePath,
@@ -813,11 +861,18 @@ export async function getProjectWorkflowStatus(input: ProjectRootInput): Promise
 export async function resumeProjectWorkflow(input: ProjectRootInput): Promise<WorkflowStatus> {
     const projectRoot = await resolveGitRoot(input.projectRoot);
     const gitSnapshot = await inspectGit(projectRoot);
-    const state = await mutateState(projectRoot, (current) => ({
-        ...current,
-        updatedAt: now(),
-        lastGitCheck: gitSnapshot,
-    }));
+    const state = await mutateState(projectRoot, (current) => {
+        const taskId = taskIdForState(current);
+        return {
+            ...current,
+            version: 2,
+            workflowId: taskId,
+            taskId,
+            runId: crypto.randomUUID(),
+            updatedAt: now(),
+            lastGitCheck: gitSnapshot,
+        };
+    });
     return toStatus(state, gitSnapshot);
 }
 
