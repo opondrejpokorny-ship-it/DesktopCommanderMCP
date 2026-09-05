@@ -81,3 +81,17 @@ This amendment is intentionally a draft while B4 is still uncommitted and active
 After B4 is authoritatively integrated, re-read its exact merged source/tests and update this draft only if the final contract differs.
 Then obtain explicit owner approval of this amendment before writing M3A RED tests or runtime code.
 The original approved M3 design remains the current approved design until that happens.
+
+## 10. Live B4 compatibility evidence (pending final merge)
+
+Read-only review of B4 head `060576726e457391023e90680ffea9140894073f` plus its current local hardening confirms the intended trust boundary:
+- v2 `workflowId`, `taskId`, and `runId` are server-state UUIDs and `taskId == workflowId`;
+- current uncommitted B4 hardening also requires legacy/v2 `workflowId` itself to be a valid UUID before status/resume or Operational Memory association;
+- `operational-memory.ts` validates v2 Task/Run fields today but intentionally drops them from its reduced `PersistedWorkflowState`, because B4 keeps Operational Memory behavior unchanged;
+- M3A must preserve those already-validated fields in that internal reduced state before using them for correlation;
+- the two Operational Memory event construction paths (`recordOperationalToolFailure` and `recordOperationalLesson`) both derive workflow state internally, so Task/Run metadata need not become client-trusted input;
+- the current v1 JSONL parser reconstructs a sanitized event and ignores unknown extra fields; therefore M3A must explicitly validate and return optional Task/Run fields or they would disappear during SQLite rebuild/reload;
+- the M3 SQLite schema bump should carry optional Task/Run columns alongside `project_groups`, with legacy rows leaving RunId absent;
+- Task/Run do not enter the semantic fingerprint: the same operational lesson should deduplicate across Runs/Tasks while scope/correlation determines precedence.
+
+This evidence does not release the B4 gate. Re-check the exact merged B4 source and tests before converting this draft into the approved post-B4 amendment.
