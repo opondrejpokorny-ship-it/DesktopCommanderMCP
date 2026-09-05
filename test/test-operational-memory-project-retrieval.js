@@ -83,6 +83,9 @@ try {
   assert.strictEqual(fetchLessons.length, 1, 'same fingerprint must be model-facing once');
   assert.strictEqual(fetchLessons[0].scope, 'workflow');
   assert.strictEqual(fetchLessons[0].relevanceReason, 'current_run_exact_stage');
+  for (let repeat = 0; repeat < 30; repeat += 1) {
+    assert.strictEqual(await recordOperationalLesson({ projectRoot, lessonCode: 'shell_quoting_unreliable' }), true);
+  }
 
   const second = await startProjectWorkflow({
     projectRoot,
@@ -97,6 +100,20 @@ try {
   assert.strictEqual(fetchLessons.length, 1, 'new Task must inherit same-project history');
   assert.strictEqual(fetchLessons[0].scope, 'project');
   assert.strictEqual(fetchLessons[0].relevanceReason, 'project_exact_stage');
+
+  assert.strictEqual(await recordOperationalLesson({ projectRoot, lessonCode: 'tooling_availability_check' }), true);
+  status = await getProjectWorkflowStatus({ projectRoot });
+  const currentExactIndex = status.operationalMemory.lessons.findIndex(
+    (lesson) => lesson.lessonCode === 'tooling_availability_check',
+  );
+  const noisyProjectIndex = status.operationalMemory.lessons.findIndex(
+    (lesson) => lesson.lessonCode === 'shell_quoting_unreliable',
+  );
+  assert.ok(currentExactIndex >= 0 && noisyProjectIndex >= 0);
+  assert.strictEqual(status.operationalMemory.lessons[currentExactIndex].scope, 'workflow');
+  assert.strictEqual(status.operationalMemory.lessons[noisyProjectIndex].scope, 'project');
+  assert.ok(currentExactIndex < noisyProjectIndex, 'repetition must not outrank an exact current-run/stage lesson');
+
   const lessonCodes = [
     'enforcement_before_consuming_preflight',
     'client_provenance_untrusted',

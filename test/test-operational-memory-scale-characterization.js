@@ -87,7 +87,8 @@ await withFixture('event-cap', async ({ projectRoot }) => {
   const [seed] = await readEvents(memoryPath);
   const clones = [];
   for (let index = 1; index < 1100; index += 1) {
-    clones.push(cloneEvent(seed, index));
+    // Keep this fixture below the byte-tail cap so it isolates the 1000-record cap.
+    clones.push(cloneEvent(seed, index, { taskId: undefined, runId: undefined }));
   }
   await appendEvents(memoryPath, clones);
 
@@ -135,11 +136,11 @@ await withFixture('tail-cap', async ({ projectRoot }) => {
   const status = await getProjectWorkflowStatus({ projectRoot });
   assert.ok(status.operationalMemory.totalEvents > 0);
   assert.ok(status.operationalMemory.totalEvents < 302);
-  assert.ok(
-    !status.operationalMemory.lessons.some((lesson) => lesson.lessonCode === 'fetch_required_git_refs'),
-    'current bounded-tail retrieval should omit the old semantic lesson',
-  );
-  console.log('PASS current retrieval reads only the recent 512 KiB journal tail');
+  const inherited = status.operationalMemory.lessons.find((lesson) => lesson.lessonCode === 'fetch_required_git_refs');
+  assert.ok(inherited, 'project aggregate should recover a semantic lesson outside the workflow tail');
+  assert.strictEqual(inherited.scope, 'project');
+  assert.strictEqual(inherited.relevanceReason, 'project_exact_stage');
+  console.log('PASS workflow events stay tail-bounded while project retrieval recovers older lessons');
 });
 await withFixture('lesson-cap', async ({ projectRoot }) => {
   const tools = [
