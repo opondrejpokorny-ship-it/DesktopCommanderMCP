@@ -102,3 +102,6 @@ for (const required of contract.requiredPublicContracts) {
 console.log(
   `✅ Open-core extraction boundary passed (${files.length} TypeScript files classified)`,
 );
+
+// Keep the versioned public attachment contract under the existing Open Core CI gate.
+await import('./test-commercial-contract-v1.js');

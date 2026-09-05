@@ -25,6 +25,7 @@
     "src/entitlements/free-provider.ts",
     "src/runtime/policy-hook.ts",
     "src/runtime/runtime-services.ts",
+    "src/commercial-contract.ts",
     "src/free-index.ts",
     "src/run-server.ts"
   ]
