@@ -71,6 +71,39 @@ await expectStartupFailure([
   ext('wrong-prefix', ['/api/owned'], [route('/api/other', '/run', async () => ({ status: 200, body: {} }))]),
 ], /prefix|owned|route/i);
 
+let overlapServer;
+let overlapStartupError;
+try {
+  overlapServer = await startControlCenterHost({
+    port: 0, quiet: true,
+    extensions: [ext('shadow', ['/api/shadow'], [
+      route('/api/shadow', '/:id', async () => ({ status: 200, body: { route: 'generic' } })),
+      route('/api/shadow', '/admin', async () => ({ status: 200, body: { route: 'admin' } }), ['approvals.local']),
+    ])],
+  });
+} catch (error) { overlapStartupError = error; }
+try {
+  assert.ok(overlapStartupError, 'Ambiguous route patterns must fail closed at startup');
+  assert.match(String(overlapStartupError), /ambiguous|overlap|collision|route/i);
+} finally { if (overlapServer) await overlapServer.close(); }
+
+let zeroCapCalls = 0;
+let zeroCapSnapshot = { source: 'prototype', tier: 'free', capabilities: [] };
+const zeroCapHost = await startControlCenterHost({
+  port: 0, token: 'c3-zero-cap-token', quiet: true,
+  entitlementProvider: { async getEntitlement() { return { ...zeroCapSnapshot, capabilities: [] }; } },
+  extensions: [ext('zero-cap', ['/api/zero'], [route('/api/zero', '/run', async () => { zeroCapCalls += 1; return { status: 200, body: { ok: true } }; })])],
+});
+try {
+  const validZeroCap = await request({ port: zeroCapHost.port, path: '/api/zero/run', method: 'POST', token: 'c3-zero-cap-token', origin: `http://127.0.0.1:${zeroCapHost.port}` });
+  assert.strictEqual(validZeroCap.status, 200);
+  assert.strictEqual(zeroCapCalls, 1);
+  zeroCapSnapshot = { source: 'prototype', tier: 'free', capabilities: [], expiresAt: 'not-a-date' };
+  const invalidExpiryZeroCap = await request({ port: zeroCapHost.port, path: '/api/zero/run', method: 'POST', token: 'c3-zero-cap-token', origin: `http://127.0.0.1:${zeroCapHost.port}` });
+  assert.strictEqual(invalidExpiryZeroCap.status, 404);
+  assert.strictEqual(zeroCapCalls, 1, 'Malformed expiry must fail closed before a zero-capability handler executes');
+} finally { await zeroCapHost.close(); }
+
 let calls = 0;
 let bodyCalls = 0;
 let routeCapabilityCalls = 0;

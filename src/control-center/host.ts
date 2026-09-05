@@ -144,6 +144,17 @@ function compileRoute(route: ControlCenterRouteV1): { matcher: RegExp; paramName
     };
 }
 
+function routePatternsOverlap(left: ControlCenterRouteV1, right: ControlCenterRouteV1): boolean {
+    if (left.method !== right.method || left.apiPrefix !== right.apiPrefix) return false;
+    const leftSegments = left.path === '/' ? [] : left.path.slice(1).split('/');
+    const rightSegments = right.path === '/' ? [] : right.path.slice(1).split('/');
+    if (leftSegments.length !== rightSegments.length) return false;
+    return leftSegments.every((segment, index) => {
+        const other = rightSegments[index];
+        return segment.startsWith(':') || other.startsWith(':') || segment === other;
+    });
+}
+
 function validateExtensions(extensions: readonly ControlCenterExtensionV1[]): CompiledRoute[] {
     const ids = new Set<string>();
     const prefixes: string[] = [];
@@ -190,6 +201,9 @@ function validateExtensions(extensions: readonly ControlCenterExtensionV1[]): Co
             }
             routeKeys.add(key);
             const compiledRoute = compileRoute(route);
+            if (compiled.some((existing) => routePatternsOverlap(existing.route, route))) {
+                throw new Error(`Ambiguous Control Center route overlap: ${key}`);
+            }
             compiled.push({ extension, route, ...compiledRoute });
         }
     }
@@ -207,8 +221,8 @@ function hasCapabilities(
     snapshot: EntitlementSnapshot,
     required: readonly Capability[],
 ): boolean {
-    if (required.length === 0) return true;
     if (entitlementExpired(snapshot)) return false;
+    if (required.length === 0) return true;
     const available = new Set(snapshot.capabilities);
     return required.every((capability) => available.has(capability));
 }
