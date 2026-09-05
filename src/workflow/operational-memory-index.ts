@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const INDEX_SCHEMA_VERSION = 3;
+const INDEX_SCHEMA_VERSION = 5;
 const READ_CHUNK_BYTES = 256 * 1024;
 const EMPTY_AUTHORITY_CHAIN = crypto.createHash('sha256').update('operational-memory-authority-v1').digest('hex');
 const runtimeRequire = createRequire(import.meta.url);
@@ -11,6 +11,8 @@ const runtimeRequire = createRequire(import.meta.url);
 export interface IndexableOperationalMemoryEvent {
   id: string;
   workflowId: string;
+  taskId?: string;
+  runId?: string;
   kind: string;
   reasonCode: string;
   sourceTool: string;
@@ -26,10 +28,27 @@ export interface IndexedOperationalMemoryEvent extends IndexableOperationalMemor
   startOffset: number;
 }
 
+export interface IndexedOperationalMemoryProjectGroup {
+  fingerprint: string;
+  kind: string;
+  reasonCode: string;
+  lessonCode?: string;
+  sourceTool: string;
+  family: string;
+  stageId?: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  occurrences: number;
+  distinctWorkflows: number;
+  latestWorkflowId: string;
+  latestRecordSequence: number;
+}
+
 export interface OperationalMemoryScopeCorrelation {
   projectId?: string;
   repositoryId?: string;
 }
+
 
 export type OperationalMemoryLineParser = (
   line: string,
@@ -47,7 +66,7 @@ interface SqliteDatabase {
 }
 
 interface SqliteModule {
-  DatabaseSync?: new (location: string) => SqliteDatabase;
+  DatabaseSync?: new (location: string, options?: { readOnly?: boolean }) => SqliteDatabase;
 }
 
 type DatabaseConstructor = NonNullable<SqliteModule['DatabaseSync']>;
@@ -72,6 +91,8 @@ function createSchema(db: SqliteDatabase): void {
       start_offset INTEGER NOT NULL,
       end_offset INTEGER NOT NULL,
       workflow_id TEXT NOT NULL,
+      task_id TEXT,
+      run_id TEXT,
       kind TEXT NOT NULL,
       reason_code TEXT NOT NULL,
       lesson_code TEXT,
@@ -104,6 +125,23 @@ function createAggregateSchema(db: SqliteDatabase): void {
       latest_record_sequence INTEGER NOT NULL,
       PRIMARY KEY (workflow_id, fingerprint)
     );
+    CREATE TABLE IF NOT EXISTS project_groups (
+      fingerprint TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      lesson_code TEXT,
+      source_tool TEXT NOT NULL,
+      family TEXT NOT NULL,
+      stage_id TEXT,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      occurrences INTEGER NOT NULL,
+      distinct_workflows INTEGER NOT NULL,
+      latest_workflow_id TEXT NOT NULL,
+      latest_record_sequence INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS groups_fingerprint_latest
+      ON groups(fingerprint, latest_record_sequence);
     CREATE TABLE IF NOT EXISTS index_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       schema_version INTEGER NOT NULL,
@@ -156,7 +194,7 @@ function readIndexState(db: SqliteDatabase): IndexState | null {
 
 function validateSchema(db: SqliteDatabase): void {
   const requiredEventColumns = new Set([
-    'record_sequence', 'start_offset', 'end_offset', 'workflow_id',
+    'record_sequence', 'start_offset', 'end_offset', 'workflow_id', 'task_id', 'run_id',
     'kind', 'reason_code', 'source_tool', 'family', 'fingerprint', 'occurred_at',
   ]);
   const eventColumns = new Set(
@@ -170,6 +208,12 @@ function validateSchema(db: SqliteDatabase): void {
   );
   for (const column of ['workflow_id', 'fingerprint', 'occurrences', 'latest_record_sequence']) {
     if (!groupColumns.has(column)) throw new Error('Operational memory group schema is incompatible');
+  }
+  const projectGroupColumns = new Set(
+    db.prepare('PRAGMA table_info(project_groups)').all().map((row) => String(row.name)),
+  );
+  for (const column of ['fingerprint', 'occurrences', 'distinct_workflows', 'latest_workflow_id', 'latest_record_sequence']) {
+    if (!projectGroupColumns.has(column)) throw new Error('Operational memory project-group schema is incompatible');
   }
   const stateColumns = new Set(
     db.prepare('PRAGMA table_info(index_state)').all().map((row) => String(row.name)),
@@ -252,13 +296,14 @@ function insertEvent(
 ): void {
   db.prepare(`
     INSERT INTO events (
-      record_sequence, start_offset, end_offset, workflow_id, kind,
+      record_sequence, start_offset, end_offset, workflow_id, task_id, run_id, kind,
       reason_code, lesson_code, source_tool, family, stage_id, fingerprint, occurred_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     recordSequence, record.startOffset, record.endOffset, event.workflowId,
-    event.kind, event.reasonCode, event.lessonCode ?? null, event.sourceTool,
-    event.family, event.stageId ?? null, event.fingerprint, event.occurredAt,
+    event.taskId ?? null, event.runId ?? null, event.kind, event.reasonCode,
+    event.lessonCode ?? null, event.sourceTool, event.family, event.stageId ?? null,
+    event.fingerprint, event.occurredAt,
   );
 }
 function updateGroup(
@@ -287,6 +332,22 @@ function updateGroup(
     event.lessonCode ?? null, event.sourceTool, event.family, event.stageId ?? null,
     event.occurredAt, event.occurredAt, recordSequence,
   );
+}
+function updateProjectGroup(
+  db: SqliteDatabase, event: IndexableOperationalMemoryEvent,
+  recordSequence: number, firstForWorkflow: boolean,
+): void {
+  db.prepare(`
+    INSERT INTO project_groups (fingerprint, kind, reason_code, lesson_code, source_tool, family, stage_id,
+      first_seen_at, last_seen_at, occurrences, distinct_workflows, latest_workflow_id, latest_record_sequence)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+    ON CONFLICT(fingerprint) DO UPDATE SET kind=excluded.kind, reason_code=excluded.reason_code,
+      lesson_code=excluded.lesson_code, source_tool=excluded.source_tool, family=excluded.family,
+      stage_id=excluded.stage_id, last_seen_at=excluded.last_seen_at, occurrences=project_groups.occurrences + 1,
+      distinct_workflows=project_groups.distinct_workflows + ?, latest_workflow_id=excluded.latest_workflow_id,
+      latest_record_sequence=excluded.latest_record_sequence
+  `).run(event.fingerprint, event.kind, event.reasonCode, event.lessonCode ?? null, event.sourceTool, event.family,
+    event.stageId ?? null, event.occurredAt, event.occurredAt, event.workflowId, recordSequence, firstForWorkflow ? 1 : 0);
 }
 function writeIndexState(
   db: SqliteDatabase,
@@ -363,8 +424,12 @@ async function ingestRange(
         event = null;
       }
       if (event) {
+        const firstForWorkflow = !db.prepare(
+          'SELECT 1 AS present FROM groups WHERE workflow_id = ? AND fingerprint = ?',
+        ).get(event.workflowId, event.fingerprint);
         insertEvent(db, event, recordCount, record);
         updateGroup(db, event, recordCount);
+        updateProjectGroup(db, event, recordCount, firstForWorkflow);
       }
     }
     writeIndexState(
@@ -378,11 +443,11 @@ async function ingestRange(
     throw error;
   }
 }
-function openDatabase(indexPath: string): SqliteDatabase | null {
+function openDatabase(indexPath: string, readOnly = false): SqliteDatabase | null {
   const DatabaseSync = databaseConstructor();
   if (!DatabaseSync) return null;
   try {
-    return new DatabaseSync(indexPath);
+    return readOnly ? new DatabaseSync(indexPath, { readOnly: true }) : new DatabaseSync(indexPath);
   } catch {
     return null;
   }
@@ -567,7 +632,7 @@ export async function readOperationalMemoryIndexEvents(
     const minimumStartOffset = tailCutoff === 0 ? 0 : tailCutoff + 1;
     const minimumSequence = Math.max(1, state.recordCount - maxRecords + 1);
     const rows = db.prepare(`
-      SELECT record_sequence, start_offset, workflow_id, kind,
+      SELECT record_sequence, start_offset, workflow_id, task_id, run_id, kind,
         reason_code, lesson_code, source_tool, family, stage_id, fingerprint, occurred_at
       FROM events
       WHERE workflow_id = ? AND record_sequence >= ? AND start_offset >= ?
@@ -579,6 +644,8 @@ export async function readOperationalMemoryIndexEvents(
       startOffset: Number(row.start_offset),
       id: `indexed-event-${Number(row.record_sequence)}`,
       workflowId: String(row.workflow_id),
+      ...(textOrUndefined(row.task_id) ? { taskId: String(row.task_id) } : {}),
+      ...(textOrUndefined(row.run_id) ? { runId: String(row.run_id) } : {}),
       kind: String(row.kind),
       reasonCode: String(row.reason_code),
       sourceTool: String(row.source_tool),
@@ -588,6 +655,50 @@ export async function readOperationalMemoryIndexEvents(
       fingerprint: String(row.fingerprint),
       occurredAt: String(row.occurred_at),
     }));
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+export async function readOperationalMemoryProjectGroups(
+  memoryPath: string, indexPath: string, parseLine: OperationalMemoryLineParser,
+  scope?: OperationalMemoryScopeCorrelation,
+): Promise<IndexedOperationalMemoryProjectGroup[] | null> {
+  if (!await ensureOperationalMemoryIndex(memoryPath, indexPath, parseLine, scope)) return null;
+  const db = openDatabase(indexPath);
+  if (!db) return null;
+  try {
+    validateSchema(db);
+    const state = readIndexState(db);
+    if (!state || state.schemaVersion !== INDEX_SCHEMA_VERSION) return null;
+    if (scope?.projectId && state.projectId !== scope.projectId) return null;
+    if (scope?.repositoryId && state.repositoryId !== scope.repositoryId) return null;
+    const rows = db.prepare('SELECT * FROM project_groups ORDER BY latest_record_sequence DESC').all();
+    return rows.map((row) => ({
+      fingerprint: String(row.fingerprint), kind: String(row.kind), reasonCode: String(row.reason_code),
+      ...(textOrUndefined(row.lesson_code) ? { lessonCode: String(row.lesson_code) } : {}),
+      sourceTool: String(row.source_tool), family: String(row.family),
+      ...(textOrUndefined(row.stage_id) ? { stageId: String(row.stage_id) } : {}),
+      firstSeenAt: String(row.first_seen_at), lastSeenAt: String(row.last_seen_at),
+      occurrences: Number(row.occurrences), distinctWorkflows: Number(row.distinct_workflows),
+      latestWorkflowId: String(row.latest_workflow_id), latestRecordSequence: Number(row.latest_record_sequence),
+    }));
+  } catch { return null; } finally { db.close(); }
+}
+
+export async function readOperationalMemoryIndexCorrelation(
+  indexPath: string,
+): Promise<OperationalMemoryScopeCorrelation | null> {
+  const stat = await fs.stat(indexPath).catch(() => null);
+  if (!stat?.isFile()) return null;
+  const db = openDatabase(indexPath, true);
+  if (!db) return null;
+  try {
+    const state = readIndexState(db);
+    if (!state?.projectId) return null;
+    return { projectId: state.projectId, ...(state.repositoryId ? { repositoryId: state.repositoryId } : {}) };
   } catch {
     return null;
   } finally {

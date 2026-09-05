@@ -768,10 +768,12 @@ async function toStatus(
             : nextStage?.status === 'waiting_external'
                 ? (opportunisticStages[0] ?? nextStage)
                 : (readyStages[0] ?? nextStage);
+    const currentRunId = runIdForState(state);
     const operationalMemory = await getOperationalMemorySummary(
         state.projectRoot,
         state.workflowId,
         recommendedStage?.id ?? nextStage?.id,
+        { taskId: taskIdForState(state), ...(currentRunId ? { runId: currentRunId } : {}) },
     );
     return {
         workflowId: state.workflowId,
