@@ -11,6 +11,7 @@ import {
 export interface ActiveWorkEnforcementGateResult {
     allowed: boolean;
     result?: ServerResult;
+    projectRoots?: string[];
 }
 
 function getStringArg(args: unknown, key: string): string | undefined {
@@ -196,8 +197,10 @@ export async function applyActiveWorkEnforcementGate(
     const resources = mutatingFilesystemResources(tool, args);
 
     if (resources.length === 0) {
-        return { allowed: true };
+        return { allowed: true, projectRoots: [] };
     }
+
+    const projectRoots = new Set<string>();
 
     for (const requestedResource of resources) {
         let resource: string;
@@ -213,6 +216,7 @@ export async function applyActiveWorkEnforcementGate(
         if (!projectRoot) {
             continue;
         }
+        projectRoots.add(projectRoot);
 
         let listed: Awaited<ReturnType<typeof listActiveWork>>;
         try {
@@ -262,5 +266,5 @@ export async function applyActiveWorkEnforcementGate(
         }
     }
 
-    return { allowed: true };
+    return { allowed: true, projectRoots: [...projectRoots] };
 }

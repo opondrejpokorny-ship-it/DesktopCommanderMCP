@@ -181,6 +181,14 @@ try {
     });
     assert.ok(!skipDeploy.isError);
 
+    const finalProgress = await client.callTool({
+      name: 'report_task_progress',
+      arguments: { projectRoot: repo, estimatedRemainingMinutes: 0 },
+    });
+    assert.ok(!finalProgress.isError, JSON.stringify(finalProgress));
+    const finalProgressBody = JSON.parse(finalProgress.content?.[0]?.text ?? '{}');
+    assert.equal(finalProgressBody.percentRemaining, 0);
+
     const finished = await client.callTool({
       name: 'project_workflow',
       arguments: { action: 'finish', projectRoot: repo },
