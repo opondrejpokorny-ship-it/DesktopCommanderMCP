@@ -1,5 +1,7 @@
 import assert from 'node:assert';
+import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,11 +12,38 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const __filename = fileURLToPath(import.meta.url);
 const root = path.resolve(path.dirname(__filename), '..');
 const buildScript = path.join(root, 'scripts/build-free-package.cjs');
+const require = createRequire(import.meta.url);
+const { resolveNpmInvocation } = require('../scripts/npm-invocation.cjs');
 
 assert.ok(
   await fs.stat(buildScript).then(() => true, () => false),
   'A real Free package build script must exist',
 );
+
+const fakeNpmDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-free-malicious-npm-'));
+const fakeNpmScript = path.join(fakeNpmDir, 'fake-npm.cjs');
+const fakeNpmCmd = path.join(fakeNpmDir, 'npm.cmd');
+await fs.writeFile(fakeNpmScript, `
+const fs = require('node:fs');
+const path = require('node:path');
+const destination = process.argv[process.argv.indexOf('--pack-destination') + 1];
+const outside = path.resolve(destination, '..', 'outside.tgz');
+fs.writeFileSync(outside, 'not-a-free-package');
+process.stdout.write(JSON.stringify([{ filename: '../outside.tgz', files: [] }]));
+`, 'utf8');
+await fs.writeFile(fakeNpmCmd, `@echo off\r\n"${process.execPath}" "%~dp0fake-npm.cjs" %*\r\n`, 'utf8');
+try {
+  assert.throws(
+    () => execFileSync(process.execPath, [buildScript], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: fakeNpmDir + ';' + (process.env.PATH ?? '') },
+    }),
+    /outside.*artifact|artifact.*root|pack.*filename/i,
+  );
+} finally {
+  await fs.rm(fakeNpmDir, { recursive: true, force: true });
+}
 
 execFileSync(process.execPath, [buildScript], {
   cwd: root,
@@ -24,6 +53,11 @@ execFileSync(process.execPath, [buildScript], {
 const manifestPath = path.join(root, '.artifacts/free/package-manifest.json');
 const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
 assert.ok(manifest.tarball, 'Free package manifest must point to a tarball');
+assert.equal(path.isAbsolute(manifest.tarball), false, 'Free manifest tarball path must be relative to the artifact root');
+assert.match(manifest.tarballSha256 ?? '', /^[0-9a-f]{64}$/i, 'Free manifest must include tarball SHA-256');
+const tarballPath = path.resolve(path.dirname(manifestPath), manifest.tarball);
+const actualTarballSha256 = crypto.createHash('sha256').update(await fs.readFile(tarballPath)).digest('hex');
+assert.equal(actualTarballSha256, manifest.tarballSha256.toLowerCase(), 'Free manifest SHA-256 must bind the emitted tarball bytes');
 assert.ok(Array.isArray(manifest.files) && manifest.files.length > 0);
 
 const normalizedFiles = manifest.files.map((entry) =>
@@ -67,11 +101,14 @@ await fs.writeFile(
 );
 
 try {
-  execFileSync(
-    process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    ['install', '--ignore-scripts', '--no-audit', '--no-fund', manifest.tarball],
-    { cwd: consumerDir, stdio: 'inherit' },
-  );
+  const npmInstall = resolveNpmInvocation([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', tarballPath,
+  ]);
+  execFileSync(npmInstall.executable, npmInstall.args, {
+    cwd: consumerDir,
+    stdio: 'inherit',
+    ...npmInstall.options,
+  });
 
   const packageRoot = path.join(
     consumerDir,

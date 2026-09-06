@@ -6,9 +6,11 @@
  * while omitting prototype/commercial policy, approvals, paid Control Center
  * extensions and Team audit implementation from the emitted dependency graph and npm tarball.
  */
+const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { resolveNpmInvocation } = require('./npm-invocation.cjs');
 
 const root = path.resolve(__dirname, '..');
 const artifactRoot = path.join(root, '.artifacts', 'free');
@@ -17,16 +19,13 @@ const packageDir = path.join(artifactRoot, 'package');
 const distDir = path.join(packageDir, 'dist');
 const rootPackage = require(path.join(root, 'package.json'));
 
-function command(name) {
-  return process.platform === 'win32' ? name + '.cmd' : name;
-}
-
 function run(executable, args, options = {}) {
   return execFileSync(executable, args, {
     cwd: root,
     stdio: options.capture ? ['ignore', 'pipe', 'inherit'] : 'inherit',
     encoding: options.capture ? 'utf8' : undefined,
     env: { ...process.env, ...(options.env || {}) },
+    ...(options.execOptions || {}),
   });
 }
 
@@ -135,17 +134,30 @@ async function main() {
     }
   }
 
-  const packedRaw = run(
-    command('npm'),
-    ['pack', packageDir, '--json', '--pack-destination', artifactRoot],
-    { capture: true },
-  );
+  const npmPack = resolveNpmInvocation([
+    'pack', packageDir, '--json', '--pack-destination', artifactRoot,
+  ]);
+  const packedRaw = run(npmPack.executable, npmPack.args, { capture: true, execOptions: npmPack.options });
   const packed = JSON.parse(String(packedRaw));
   if (!Array.isArray(packed) || packed.length !== 1) {
     throw new Error('Unexpected npm pack output');
   }
   const pack = packed[0];
+  if (typeof pack.filename !== 'string' || !pack.filename) {
+    throw new Error('npm pack filename must be a non-empty string');
+  }
   const tarball = path.resolve(artifactRoot, pack.filename);
+  const tarballRelative = path.relative(artifactRoot, tarball);
+  if (
+    tarballRelative === '..' ||
+    tarballRelative.startsWith('..' + path.sep) ||
+    path.isAbsolute(tarballRelative)
+  ) {
+    throw new Error('npm pack filename must remain inside the Free artifact root');
+  }
+  const tarballSha256 = crypto.createHash('sha256')
+    .update(await fs.readFile(tarball))
+    .digest('hex');
   const gitSha = (() => {
     try {
       return String(run('git', ['rev-parse', 'HEAD'], { capture: true })).trim();
@@ -161,7 +173,8 @@ async function main() {
       package: packageJson.name,
       version: packageJson.version,
       sourceSha: gitSha,
-      tarball,
+      tarball: pack.filename,
+      tarballSha256,
       files: pack.files,
       forbiddenCommercialPaths: forbidden,
     }, null, 2) + '\n',
