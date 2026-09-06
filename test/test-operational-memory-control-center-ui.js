@@ -162,6 +162,8 @@ const clipboardWrites = [];
 let paginationGate;
 let releasePagination;
 let paginationCompletions = 0;
+let filterRefreshGate;
+let releaseFilterRefresh;
 let delayedEventFingerprint;
 let delayedEventGate;
 let releaseDelayedEvent;
@@ -201,7 +203,10 @@ try {
         const isContinuation = target.pathname === '/api/memory/groups' && target.searchParams.has('cursor');
         const isDelayedEvent = delayedEventFingerprint &&
           target.pathname === `/api/memory/groups/${encodeURIComponent(delayedEventFingerprint)}/events`;
+        const isDelayedFilterRefresh = target.pathname === '/api/memory/groups' &&
+          target.searchParams.get('kind') === 'lesson' && !target.searchParams.has('cursor');
         if (isContinuation && paginationGate) await paginationGate;
+        if (isDelayedFilterRefresh && filterRefreshGate) await filterRefreshGate;
         if (isDelayedEvent && delayedEventGate) await delayedEventGate;
         const response = await fetch(target, init);
         if (isContinuation) paginationCompletions += 1;
@@ -243,11 +248,38 @@ try {
 
   const kindFilter = dom.window.document.getElementById('memory-filter-kind');
   assert.ok(kindFilter);
+  filterRefreshGate = new Promise((resolve) => { releaseFilterRefresh = resolve; });
+  const continuationCallsBeforeFilter = memoryCalls.filter(
+    (url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor'),
+  ).length;
   kindFilter.value = 'lesson';
   kindFilter.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   await waitFor(
-    () => memoryCalls.some((url) => new URL(url).searchParams.get('kind') === 'lesson'),
+    () => memoryCalls.some((url) => {
+      const target = new URL(url);
+      return target.pathname === '/api/memory/groups' && target.searchParams.get('kind') === 'lesson' && !target.searchParams.has('cursor');
+    }),
     'server-side Memory kind filter',
+  );
+  const loadMoreDuringFilter = dom.window.document.getElementById('memory-load-more');
+  assert.ok(loadMoreDuringFilter);
+  assert.equal(loadMoreDuringFilter.hidden, true, 'filter refresh must hide stale pagination immediately');
+  paginationGate = new Promise((resolve) => { releasePagination = resolve; });
+  loadMoreDuringFilter.click();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const continuationCallsAfterFilterClick = memoryCalls.filter(
+    (url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor'),
+  ).length;
+  releasePagination();
+  releaseFilterRefresh();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  paginationGate = undefined;
+  releasePagination = undefined;
+  filterRefreshGate = undefined;
+  releaseFilterRefresh = undefined;
+  assert.equal(
+    continuationCallsAfterFilterClick, continuationCallsBeforeFilter,
+    'filter refresh must invalidate the previous cursor before its response completes',
   );
   await waitFor(
     () => dom.window.document.querySelectorAll('[data-memory-group]').length === 0,
@@ -291,28 +323,57 @@ try {
 
   const loadMore = dom.window.document.getElementById('memory-load-more');
   assert.ok(loadMore && !loadMore.hidden, 'Load more should expose returned keyset cursor');
+  const continuationCount = (predicate = () => true) => memoryCalls.filter((url) => {
+    const target = new URL(url);
+    return target.pathname === '/api/memory/groups' && target.searchParams.has('cursor') && predicate(target);
+  }).length;
+
+  const continuationCallsBefore = continuationCount();
   paginationGate = new Promise((resolve) => { releasePagination = resolve; });
-  const continuationCallsBefore = memoryCalls.filter(
-    (url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor'),
-  ).length;
+  const releaseOldPagination = releasePagination;
+  loadMore.click();
+  await waitFor(() => continuationCount() === continuationCallsBefore + 1, 'first in-flight continuation request');
+  paginationGate = undefined;
+  releasePagination = undefined;
+
+  const sourceFilter = dom.window.document.getElementById('memory-filter-source');
+  assert.ok(sourceFilter && [...sourceFilter.options].some((option) => option.value === 'read_file'));
+  sourceFilter.value = 'read_file';
+  sourceFilter.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  await waitFor(
+    () => memoryCalls.some((url) => {
+      const target = new URL(url);
+      return target.pathname === '/api/memory/groups' && target.searchParams.get('sourceTool') === 'read_file' && !target.searchParams.has('cursor');
+    }),
+    'same-result filter refresh',
+  );
+  await waitFor(() => !loadMore.hidden, 'replacement cursor after same-result filter refresh');
+
+  paginationGate = new Promise((resolve) => { releasePagination = resolve; });
+  const releaseNewPagination = releasePagination;
+  const filteredContinuationBefore = continuationCount((target) => target.searchParams.get('sourceTool') === 'read_file');
   loadMore.click();
   loadMore.click();
   await waitFor(
-    () => memoryCalls.filter((url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor')).length === continuationCallsBefore + 1,
-    'single Memory keyset continuation request',
+    () => continuationCount((target) => target.searchParams.get('sourceTool') === 'read_file') === filteredContinuationBefore + 1,
+    'single new-generation continuation request',
   );
+  const completionsBeforeOldRelease = paginationCompletions;
+  releaseOldPagination();
+  await waitFor(() => paginationCompletions === completionsBeforeOldRelease + 1, 'old-generation continuation completion');
+  loadMore.click();
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(
-    memoryCalls.filter((url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor')).length,
-    continuationCallsBefore + 1,
-    'repeated Load more clicks must not issue the same cursor twice',
+    continuationCount((target) => target.searchParams.get('sourceTool') === 'read_file'),
+    filteredContinuationBefore + 1,
+    'old-generation completion must not release the active new-generation cursor guard',
   );
-  releasePagination();
-  await waitFor(() => paginationCompletions >= 1, 'continuation completion');
+  releaseNewPagination();
+  await waitFor(() => dom.window.document.querySelectorAll('[data-memory-group]').length === 51, 'new-generation continuation completion');
   paginationGate = undefined;
   releasePagination = undefined;
   const pagedRows = [...dom.window.document.querySelectorAll('[data-memory-group]')];
-  assert.equal(pagedRows.length, 51, 'repeated Load more clicks must not append the same page twice');
+  assert.equal(pagedRows.length, 51, 'serialized pagination must append exactly one continuation page');
   const pagedFingerprints = new Set(
     pagedRows.map((row) => row.textContent.match(/fp-ui-\d{3}/)?.[0]).filter(Boolean),
   );

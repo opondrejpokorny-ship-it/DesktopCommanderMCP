@@ -430,6 +430,11 @@ const MEMORY_UI_SCRIPT = `(() => {
 
   async function refreshGroups(append = false) {
     const generation = append ? requestGeneration : ++requestGeneration;
+    if (!append) {
+      nextCursor = undefined;
+      activeAppendCursor = undefined;
+      loadMore.hidden = true;
+    }
     const cursorValue = append ? nextCursor : undefined;
     if (append && (!cursorValue || activeAppendCursor === cursorValue)) return;
     if (append) activeAppendCursor = cursorValue;
