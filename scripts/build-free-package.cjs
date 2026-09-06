@@ -99,6 +99,10 @@ async function main() {
     },
     exports: {
       '.': './dist/index.js',
+      './commercial-contract': {
+        types: './dist/commercial-contract.d.ts',
+        import: './dist/commercial-contract.js',
+      },
       './control-center-contract': {
         types: './dist/control-center-contract.d.ts',
         import: './dist/control-center-contract.js',
