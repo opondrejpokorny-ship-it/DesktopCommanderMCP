@@ -504,7 +504,7 @@ const MEMORY_UI_SCRIPT = `(() => {
       if (id === 'memory-filter-scope') syncScope();
       eventRequestGeneration += 1;
       empty(eventsRoot, 'Select a group to inspect sanitized events.');
-      if (loaded) refreshGroups(false);
+      if (loaded || loading) refreshGroups(false);
     });
   }
   loadMore.addEventListener('click', () => {

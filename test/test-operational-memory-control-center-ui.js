@@ -389,6 +389,67 @@ try {
     dom.window.document.body.textContent,
     /Repair memory|Delete lesson|Promote lesson|Ignore lesson/i,
   );
+  let raceDom;
+  let releaseInitialGroup;
+  const initialGroupGate = new Promise((resolve) => { releaseInitialGroup = resolve; });
+  let blockedInitialGroup = false;
+  let initialGroupFinished = false;
+  const raceCalls = [];
+  try {
+    raceDom = new JSDOM(html, {
+      url: controlCenter.url,
+      runScripts: 'dangerously',
+      pretendToBeVisual: true,
+      beforeParse(window) {
+        window.Headers = Headers;
+        window.Request = Request;
+        window.Response = Response;
+        window.fetch = async (input, init) => {
+          const raw = typeof input === 'string' ? input : input.url;
+          const target = new URL(raw, controlCenter.url);
+          if (target.pathname.startsWith('/api/memory/')) raceCalls.push(target.href);
+          const isInitialGroup = target.pathname === '/api/memory/groups' &&
+            !target.searchParams.has('cursor') && !target.searchParams.has('kind') && !blockedInitialGroup;
+          if (isInitialGroup) {
+            blockedInitialGroup = true;
+            await initialGroupGate;
+          }
+          const response = await fetch(target, init);
+          if (isInitialGroup) initialGroupFinished = true;
+          return response;
+        };
+      },
+    });
+    await waitFor(
+      () => raceDom.window.document.getElementById('dc-entitlement')?.textContent !== 'Loadingâ€¦',
+      'race Control Center state',
+    );
+    const raceMemoryButton = raceDom.window.document.querySelector('[data-dc-target="memory"]');
+    assert.ok(raceMemoryButton);
+    raceMemoryButton.click();
+    await waitFor(() => blockedInitialGroup, 'blocked initial Memory group request');
+    const raceKindFilter = raceDom.window.document.getElementById('memory-filter-kind');
+    assert.ok(raceKindFilter);
+    raceKindFilter.value = 'lesson';
+    raceKindFilter.dispatchEvent(new raceDom.window.Event('change', { bubbles: true }));
+    await waitFor(
+      () => raceCalls.some((url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.get('kind') === 'lesson'),
+      'replacement initial-load filter request',
+      800,
+    );
+    releaseInitialGroup();
+    releaseInitialGroup = undefined;
+    await waitFor(() => initialGroupFinished, 'stale initial Memory group response');
+    await waitFor(
+      () => raceDom.window.document.querySelectorAll('[data-memory-group]').length === 0,
+      'replacement initial-load filter result',
+    );
+    assert.equal(raceDom.window.document.getElementById('memory-load-more')?.hidden, true);
+  } finally {
+    releaseInitialGroup?.();
+    raceDom?.window.close();
+  }
+
   console.log('✅ Operational Memory Control Center lazy UI tests passed');
 } finally {
   dom?.window.close();
