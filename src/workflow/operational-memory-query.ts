@@ -899,15 +899,15 @@ function validateEventQuery(query: MemoryEventQuery) {
 function readEventPageFromIndex(db: SqliteDatabase, descriptor: HealthyIndexDescriptor,
   query: MemoryEventQuery, workflowId: string | undefined, cursor: EventCursorTuple | undefined, limit: number) {
   const projectId = structuralValue(descriptor.state.projectId); if (!projectId) return [];
-  const clauses = ['g.fingerprint = ?']; const params: unknown[] = [query.fingerprint];
-  if (workflowId) { clauses.push('g.workflow_id = ?'); params.push(workflowId); }
+  const clauses = ['e.fingerprint = ?']; const params: unknown[] = [query.fingerprint];
+  if (workflowId) { clauses.push('e.workflow_id = ?'); params.push(workflowId); }
   if (query.from !== undefined) { clauses.push('e.occurred_at >= ?'); params.push(query.from); }
   if (query.to !== undefined) { clauses.push('e.occurred_at <= ?'); params.push(query.to); }
   const after = cursorSql(cursor, projectId);
   const sql = 'SELECT e.record_sequence, e.workflow_id, e.task_id, e.run_id, e.kind, e.reason_code, ' +
     'e.lesson_code, e.source_tool, e.family, e.stage_id, e.fingerprint, e.occurred_at ' +
-    'FROM groups g JOIN events e ON e.workflow_id = g.workflow_id AND e.fingerprint = g.fingerprint ' +
-    'WHERE ' + clauses.join(' AND ') + after.sql +
+    'FROM events e WHERE ' + clauses.join(' AND ') +
+    ' AND EXISTS (SELECT 1 FROM groups g WHERE g.workflow_id = e.workflow_id AND g.fingerprint = e.fingerprint)' + after.sql +
     ' ORDER BY e.occurred_at DESC, e.workflow_id ASC, e.record_sequence DESC LIMIT ?';
   return db.prepare(sql).all(...params, ...after.params, limit + 1).flatMap((row) => {
     const parsed = parseEventRow(row, descriptor.state); return parsed ? [parsed] : [];
