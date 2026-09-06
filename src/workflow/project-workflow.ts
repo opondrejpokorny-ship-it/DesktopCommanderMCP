@@ -93,6 +93,25 @@ interface WorkflowStageState {
     reason?: string;
 }
 
+export const MIN_PROGRESS_REPORT_INTERVAL_MS = 5 * 60_000;
+export const MAX_PROGRESS_REPORT_INTERVAL_MS = 15 * 60_000;
+
+export type WorkflowProgressMilestoneStatus = 'completed' | 'blocked' | 'waiting_external';
+export interface WorkflowProgressMilestone {
+    stageId: string;
+    status: WorkflowProgressMilestoneStatus;
+    since: string;
+}
+export interface WorkflowProgressReportingState {
+    lastReportedAt: string;
+    pendingMilestone?: WorkflowProgressMilestone;
+}
+export interface WorkflowProgressReportingView extends WorkflowProgressReportingState {
+    required: boolean;
+    reason?: 'milestone' | 'interval';
+    dueAt: string;
+}
+
 interface WorkflowStateBase {
     workflowId: string;
     projectRoot: string;
@@ -106,6 +125,7 @@ interface WorkflowStateBase {
     stages: Record<string, WorkflowStageState>;
     gitBaseline: WorkflowGitSnapshot;
     lastGitCheck?: WorkflowGitSnapshot;
+    progressReporting?: WorkflowProgressReportingState;
 }
 
 interface WorkflowStateV1 extends WorkflowStateBase {
@@ -152,6 +172,7 @@ export interface WorkflowStatus {
     completed: boolean;
     stages: WorkflowStageView[];
     progress: WorkflowProgress;
+    progressReporting: WorkflowProgressReportingView;
     nextStage: WorkflowStageView | null;
     readyStages: WorkflowStageView[];
     opportunisticStages: WorkflowStageView[];
@@ -651,6 +672,53 @@ async function mutateState(
     return result;
 }
 
+function progressReportingState(state: WorkflowState): WorkflowProgressReportingState {
+    return state.progressReporting ?? { lastReportedAt: state.startedAt };
+}
+
+export function evaluateProgressReportingRequirement(
+    reporting: WorkflowProgressReportingState,
+    nowMs = Date.now(),
+    options: { forcePendingMilestone?: boolean } = {},
+): WorkflowProgressReportingView {
+    const lastReportedMs = Date.parse(reporting.lastReportedAt);
+    if (!Number.isFinite(lastReportedMs)) {
+        throw new Error('project workflow progress lastReportedAt is invalid');
+    }
+    let dueAtMs = lastReportedMs + MAX_PROGRESS_REPORT_INTERVAL_MS;
+    let reason: 'milestone' | 'interval' = 'interval';
+    const pending = reporting.pendingMilestone;
+    if (pending) {
+        const sinceMs = Date.parse(pending.since);
+        if (!Number.isFinite(sinceMs)) {
+            throw new Error('project workflow progress milestone timestamp is invalid');
+        }
+        const immediate = pending.status === 'blocked' || pending.status === 'waiting_external';
+        const milestoneDueAt = immediate
+            ? sinceMs
+            : Math.max(sinceMs, lastReportedMs + MIN_PROGRESS_REPORT_INTERVAL_MS);
+        if (milestoneDueAt <= dueAtMs) {
+            dueAtMs = milestoneDueAt;
+            reason = 'milestone';
+        }
+        if (options.forcePendingMilestone) {
+            return {
+                ...reporting,
+                required: true,
+                reason: 'milestone',
+                dueAt: new Date(Math.min(dueAtMs, nowMs)).toISOString(),
+            };
+        }
+    }
+    const required = nowMs >= dueAtMs;
+    return {
+        ...reporting,
+        required,
+        ...(required ? { reason } : {}),
+        dueAt: new Date(dueAtMs).toISOString(),
+    };
+}
+
 function progress(stages: WorkflowStageView[]): WorkflowProgress {
     const totalStages = stages.length;
     const requiredStages = stages.filter((stage) => stage.required).length;
@@ -794,6 +862,7 @@ async function toStatus(
         completed: !!state.completedAt,
         stages,
         progress: progress(stages),
+        progressReporting: evaluateProgressReportingRequirement(progressReportingState(state)),
         nextStage,
         readyStages,
         opportunisticStages,
@@ -850,6 +919,7 @@ export async function startProjectWorkflow(input: StartWorkflowInput): Promise<W
         stages,
         gitBaseline,
         lastGitCheck: gitBaseline,
+        progressReporting: { lastReportedAt: startedAt },
     };
     await persistState(state);
     return toStatus(state, gitBaseline);
@@ -970,12 +1040,71 @@ export async function recordProjectWorkflowStage(
                 reason: safeText(input.reason, input.status + ' stage reason'),
             };
         }
+        const reporting = progressReportingState(current);
+        let pendingMilestone = reporting.pendingMilestone;
+        if (
+            input.status === 'completed' ||
+            input.status === 'blocked' ||
+            input.status === 'waiting_external'
+        ) {
+            const candidate: WorkflowProgressMilestone = {
+                stageId: stage.id,
+                status: input.status,
+                since: updatedAt,
+            };
+            const urgent = input.status === 'blocked' || input.status === 'waiting_external';
+            if (!pendingMilestone || urgent) {
+                pendingMilestone = candidate;
+            }
+        }
         return {
             ...current,
             updatedAt,
             stages: { ...current.stages, [stage.id]: stageState },
+            progressReporting: {
+                lastReportedAt: reporting.lastReportedAt,
+                ...(pendingMilestone ? { pendingMilestone } : {}),
+            },
         };
     });
+    return toStatus(state, gitSnapshot);
+}
+
+export async function getProjectWorkflowProgressRequirementForResolvedRoot(
+    projectRoot: string,
+    options: { forcePendingMilestone?: boolean } = {},
+): Promise<WorkflowProgressReportingView | null> {
+    try {
+        const state = await loadState(path.resolve(projectRoot));
+        if (state.completedAt) return null;
+        return evaluateProgressReportingRequirement(progressReportingState(state), Date.now(), options);
+    } catch (error) {
+        if (error instanceof Error && error.message.startsWith('No project workflow state exists')) {
+            return null;
+        }
+        throw error;
+    }
+}
+
+export async function getProjectWorkflowProgressRequirement(
+    input: ProjectRootInput,
+    options: { forcePendingMilestone?: boolean } = {},
+): Promise<WorkflowProgressReportingView | null> {
+    const projectRoot = await resolveGitRoot(input.projectRoot);
+    return getProjectWorkflowProgressRequirementForResolvedRoot(projectRoot, options);
+}
+
+export async function recordProjectWorkflowProgressReport(
+    input: ProjectRootInput,
+): Promise<WorkflowStatus> {
+    const projectRoot = await resolveGitRoot(input.projectRoot);
+    const gitSnapshot = await inspectGit(projectRoot);
+    const reportedAt = now();
+    const state = await mutateState(projectRoot, (current) => ({
+        ...current,
+        updatedAt: reportedAt,
+        progressReporting: { lastReportedAt: reportedAt },
+    }));
     return toStatus(state, gitSnapshot);
 }
 

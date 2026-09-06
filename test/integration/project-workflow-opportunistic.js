@@ -134,6 +134,12 @@ try {
     assert.match(waiting.content?.[0]?.text ?? '', /waiting on external dependency.*ci/is);
     assert.match(waiting.content?.[0]?.text ?? '', /recommended.*readiness-audit/is);
 
+    const progress = await client.callTool({
+      name: 'report_task_progress',
+      arguments: { projectRoot: repo, estimatedRemainingMinutes: 5 },
+    });
+    assert.ok(!progress.isError, JSON.stringify(progress));
+
     const audit = await client.callTool({
       name: 'project_workflow',
       arguments: {

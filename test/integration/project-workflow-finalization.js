@@ -108,6 +108,11 @@ try {
     );
     assert.match(result.content?.[0]?.text ?? '', /re-check|waiting on external dependency/is);
 
+    result = await resumedClient.callTool({ name: 'report_task_progress', arguments: {
+      projectRoot: repo, estimatedRemainingMinutes: 5
+    }});
+    assert.ok(!result.isError, JSON.stringify(result));
+
     result = await resumedClient.callTool({ name: 'project_workflow', arguments: {
       action: 'record', projectRoot: repo, stageId: 'docs-sync',
       status: 'completed', evidence: proof('Too early.')
@@ -132,6 +137,11 @@ try {
       }});
       assert.ok(!result.isError, JSON.stringify(result));
     }
+
+    result = await resumedClient.callTool({ name: 'report_task_progress', arguments: {
+      projectRoot: repo, estimatedRemainingMinutes: 0
+    }});
+    assert.ok(!result.isError, JSON.stringify(result));
 
     result = await resumedClient.callTool({ name: 'project_workflow', arguments: {
       action: 'finish', projectRoot: repo

@@ -74,5 +74,8 @@ assert.match(rootSkill, /report_task_progress/);
 assert.match(rootSkill, /Free.*percent/i);
 assert.match(rootSkill, /Pro.*Team.*estimated.*time/is);
 assert.match(rootSkill, /ETA.*approximate|estimated time.*approximate/is);
+assert.match(rootSkill, /projectRoot.*authoritative|authoritative.*projectRoot/is);
+assert.match(rootSkill, /5\s*minutes?.*15\s*minutes?|15\s*minutes?.*5\s*minutes?/is);
+assert.match(rootSkill, /no background polling|without background polling/i);
 
 console.log('✅ Tier-aware progress reporting tests passed');

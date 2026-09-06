@@ -1,6 +1,6 @@
 ---
 name: software-project-workflow
-version: 0.1.2
+version: 0.1.3
 audience: agent
 description: >-
   Run software work as a repeatable lifecycle with operational memory. Use when
@@ -333,52 +333,43 @@ Do not checkpoint every minor edit.
 
 ## 10. Progress reporting
 
-For longer autonomous work, give the user short progress updates after meaningful
-milestones. Report progress across the **whole planned lifecycle**, not only the
-implementation phase.
+For longer autonomous work, give the user short progress updates across the **whole
+planned lifecycle**, not only implementation. When an active `project_workflow`
+exists, call `report_task_progress` with `projectRoot`; the server uses that
+projectRoot to derive the authoritative percent remaining from persisted workflow
+state. Caller-supplied `percentRemaining` and `currentPhase` are ignored in this
+workflow-backed mode. The manual percentage form remains available only for work
+that is not backed by `project_workflow`.
 
-Use the Desktop Commander `report_task_progress` tool to apply the configured
-tier entitlement to each progress update:
+Use the configured tier entitlement for presentation:
 
 - **Free:** report approximate percent remaining. Do not promise or expose an ETA.
-- **Pro / Team:** report approximate percent remaining **and estimated time
-  remaining** on every progress update.
+- **Pro / Team:** report approximate percent remaining and an approximate estimated
+  time remaining. The estimate is not a deadline or guarantee.
 
-The estimated time is approximate, not a deadline or guarantee. Re-estimate it
-after meaningful milestones or when a blocker materially changes the plan. Avoid
-false precision: prefer rounded estimates such as "about 20 min" or "about 1 h
-20 min".
+Progress enforcement is intentionally lazy, with no background polling. A completed
+milestone becomes report-worthy no more often than every 5 minutes, while an active
+workflow may not go more than 15 minutes without a progress report before the next
+covered repository mutation. `blocked` and `waiting_external` milestones are report-worthy
+immediately. Read-only work remains available while a report is due.
 
-When calling `report_task_progress`, provide:
+The server checks an overdue progress requirement before commercial policy preflight
+for covered repository mutations, so the progress gate cannot consume a one-time
+commercial approval. `report_task_progress` itself clears the persisted requirement
+for that workflow and must remain available to resolve the gate. Terminal `start_process`
+is not yet project-scoped by this watchdog; command policy, approvals, and upstream
+command validation remain authoritative.
 
-- `percentRemaining` from 0 to 100,
-- a short `currentPhase`,
-- `estimatedRemainingMinutes` as a rounded best estimate grounded in the
-  remaining plan. The server will remove ETA from Free even though it is supplied.
+When calling workflow-backed `report_task_progress`, provide:
 
-In the user-facing update, also summarize what was completed and what major work
-remains. Keep it brief enough to be useful during autonomous execution.
+- `projectRoot`,
+- `estimatedRemainingMinutes` as a rounded best estimate grounded in the remaining
+  plan. The server removes ETA from Free even though this field is supplied.
 
-Useful updates include:
-
-- approximate percent remaining,
-- paid-tier estimated time remaining,
-- a finding that changes the plan,
-- RED becoming GREEN,
-- a newly discovered risk,
-- the current blocker,
-- the next major phase.
-
-A suggested mental model:
-
-- Inspect / baseline: 10–20%
-- Plan / RED coverage: 10–15%
-- Implementation: 25–40%
-- Verification: 20–30%
-- Review / docs / live check: 15–25%
-
-Adjust for the actual task. Reserve 0% remaining / 100% complete for work whose
-requested behavior is verified and whose required documentation is current.
+After a meaningful milestone, record the lifecycle stage first, then report progress
+when due. The user-facing update should briefly state what completed and what major
+work remains. Reserve 0% remaining / 100% complete for work whose requested behavior
+is verified and whose required documentation is current.
 
 ## 11. Privacy and safety
 

@@ -181,11 +181,22 @@ export const InteractWithProcessArgsSchema = z.object({
 // Usage stats schema
 export const GetUsageStatsArgsSchema = z.object({});
 
-// Tier-aware lifecycle progress reporting
+// Tier-aware lifecycle progress reporting. Keep a top-level object schema so
+// MCP tools/list remains valid; cross-field rules distinguish workflow/manual use.
 export const ReportTaskProgressArgsSchema = z.object({
-  percentRemaining: z.number().min(0).max(100),
-  currentPhase: z.string().trim().min(1).max(120),
+  projectRoot: z.string().trim().min(1).optional(),
+  percentRemaining: z.number().min(0).max(100).optional(),
+  currentPhase: z.string().trim().min(1).max(120).optional(),
   estimatedRemainingMinutes: z.number().min(0).max(100000),
+}).superRefine((value, ctx) => {
+  if (!value.projectRoot) {
+    if (value.percentRemaining === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['percentRemaining'], message: 'percentRemaining is required without projectRoot' });
+    }
+    if (!value.currentPhase) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['currentPhase'], message: 'currentPhase is required without projectRoot' });
+    }
+  }
 });
 
 // Feedback tool schema - no pre-filled parameters, all user input

@@ -68,6 +68,8 @@ import { getUsageStats } from './tools/usage.js';
 import { buildProgressReport } from './progress/progress-reporter.js';
 import { applyCoreSafetyGate } from './runtime/core-safety.js';
 import { applyActiveWorkEnforcementGate } from './workflow/active-work-enforcement.js';
+import { applyProgressEnforcementGate } from './workflow/progress-enforcement.js';
+import { recordProjectWorkflowProgressReport } from './workflow/project-workflow.js';
 import {
     getRuntimeServices,
     resolveRuntimeAccess,
@@ -1197,20 +1199,21 @@ ${CMD_PREFIX_DESCRIPTION}`,
             {
                 name: "report_task_progress",
                 description: `
-                        Format lifecycle progress for a multi-step task using the configured Desktop Commander tier.
+                        Report whole-lifecycle progress using the configured Desktop Commander tier.
 
-                        Always reports approximate percent remaining and current phase.
-                        Pro and Team can additionally include an approximate estimated time remaining.
-                        Free never exposes ETA, even if estimatedRemainingMinutes is supplied.
+                        With projectRoot, percent remaining and current phase come from authoritative persisted
+                        project_workflow state and the report timestamp is recorded. Caller percentages are ignored
+                        in workflow mode; the manual percentage form remains for non-workflow tasks.
 
-                        Use after meaningful milestones in longer autonomous work. Base the percentage and ETA
-                        on the whole planned lifecycle, not only coding. ETA is an estimate, never a guarantee.
+                        Pro and Team can include approximate ETA. Free never exposes ETA. Enforcement is lazy,
+                        with no background polling. ETA is an estimate, never a guarantee.
 
                         ${CMD_PREFIX_DESCRIPTION}`,
                 inputSchema: zodToJsonSchema(ReportTaskProgressArgsSchema),
                 annotations: {
                     title: "Report Task Progress",
-                    readOnlyHint: true,
+                    readOnlyHint: false,
+                    destructiveHint: false,
                     openWorldHint: false,
                 },
             },
@@ -1415,6 +1418,21 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         return activeWorkGate.result!;
     }
 
+    // Progress reporting is a workflow-control-plane gate and must run before
+    // commercial policy preflight, which may consume a one-time approval.
+    const progressGate = await applyProgressEnforcementGate(name, args, {
+        projectRoots: activeWorkGate.projectRoots,
+    });
+    if (!progressGate.allowed) {
+        await recordOperationalFailureBestEffort(
+            name,
+            args,
+            progressGate.result!,
+            'deny',
+        );
+        return progressGate.result!;
+    }
+
     // Commercial policy is injected through runtime services. The shared server
     // never imports the commercial policy implementation directly.
     let runtimeAccess: RuntimeAccess;
@@ -1575,7 +1593,27 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
             case "report_task_progress":
                 try {
                     const progressArgs = ReportTaskProgressArgsSchema.parse(args ?? {});
-                    const progress = buildProgressReport(progressArgs, {
+                    let reportInput;
+                    if (typeof progressArgs.projectRoot === 'string') {
+                        const workflowStatus = await recordProjectWorkflowProgressReport({
+                            projectRoot: progressArgs.projectRoot,
+                        });
+                        reportInput = {
+                            percentRemaining: workflowStatus.progress.percentRemaining,
+                            currentPhase:
+                                workflowStatus.recommendedStage?.label ??
+                                workflowStatus.nextStage?.label ??
+                                (workflowStatus.completed ? 'complete' : 'workflow'),
+                            estimatedRemainingMinutes: progressArgs.estimatedRemainingMinutes,
+                        };
+                    } else {
+                        reportInput = {
+                            percentRemaining: progressArgs.percentRemaining!,
+                            currentPhase: progressArgs.currentPhase!,
+                            estimatedRemainingMinutes: progressArgs.estimatedRemainingMinutes,
+                        };
+                    }
+                    const progress = buildProgressReport(reportInput, {
                         tier: runtimeAccess.entitlement.tier,
                         includeEta: runtimeAccess.capabilities.has('progress.eta'),
                     });
