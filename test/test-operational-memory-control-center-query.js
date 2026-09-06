@@ -1,5 +1,6 @@
 /** RED -> GREEN coverage for M6 read-only Operational Memory overview. */
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,6 +18,7 @@ const ids = {
   healthyA: 'aaaaaaaaaaaaaaaaaaaaaaaa',
   healthyB: 'bbbbbbbbbbbbbbbbbbbbbbbb',
   healthyC: '999999999999999999999999',
+  healthyD: '888888888888888888888888',
   stale: 'cccccccccccccccccccccccc',
   missing: 'dddddddddddddddddddddddd',
   corrupt: 'eeeeeeeeeeeeeeeeeeeeeeee',
@@ -133,6 +135,25 @@ function createIndex(id, journalStat, { projectId, events = [], staleSizeDelta =
   db.close();
 }
 
+function seedEvents(id, events) {
+  const db = new DatabaseSync(indexPath(id));
+  const max = Number(db.prepare('SELECT COALESCE(MAX(record_sequence), 0) AS max FROM events').get().max);
+  const insert = db.prepare(`
+    INSERT INTO events (record_sequence, start_offset, end_offset, workflow_id, task_id, run_id,
+      kind, reason_code, lesson_code, source_tool, family, stage_id, fingerprint, occurred_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  events.forEach((event, index) => {
+    const sequence = max + index + 1;
+    insert.run(sequence, sequence * 10, sequence * 10 + 5, event.workflowId,
+      event.taskId ?? null, event.runId ?? null, event.kind, event.reasonCode, event.lessonCode ?? null,
+      event.sourceTool ?? 'project_workflow', event.family ?? 'workflow', event.stageId ?? null,
+      event.fingerprint, event.occurredAt);
+  });
+  db.prepare('UPDATE index_state SET record_count = (SELECT COUNT(*) FROM events) WHERE id = 1').run();
+  db.close();
+}
+
 function seedGroups(id, { workflowGroups = [], projectGroups = [] }) {
   const db = new DatabaseSync(indexPath(id));
   const insertWorkflow = db.prepare(`
@@ -158,6 +179,9 @@ function seedGroups(id, { workflowGroups = [], projectGroups = [] }) {
     row.sourceTool, row.family, row.stageId ?? null, row.firstSeenAt, row.lastSeenAt,
     row.occurrences, row.distinctWorkflows, row.latestWorkflowId, index + 1,
   ));  db.close();
+}
+function globalProjectKey(projectId, repositoryId = `repo-${projectId}`) {
+  return crypto.createHash('sha256').update(`global-project:${projectId}|${repositoryId}`).digest('hex').slice(0, 24);
 }
 function createGlobalIndex(rows) {
   const target = path.join(stateRoot, 'operational-memory.global.sqlite');
@@ -215,7 +239,7 @@ try {
   const third = '2026-09-05T12:00:00.000Z';
   const projectId = 'project-shared';
 
-  const healthyAStat = await createJournal(ids.healthyA, 'healthy-a');
+  const healthyAStat = await createJournal(ids.healthyA, 'healthy-a FAKE_API_KEY_SECRET rm -rf PRIVATE_COMMAND PRIVATE_FILE_CONTENT PRIVATE_MCP_ARGS PRIVATE_APPROVAL_PAYLOAD');
   createIndex(ids.healthyA, healthyAStat, { projectId, events: [
     { kind: 'error', reasonCode: 'not_found', fingerprint: 'fp-error', occurredAt: first },
     { kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', fingerprint: 'fp-lesson', occurredAt: second },
@@ -272,16 +296,18 @@ try {
     workflowGroups: [
       { workflowId: 'workflow-a1', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: first, lastSeenAt: second, occurrences: 2 },
       { workflowId: 'workflow-a2', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: second, lastSeenAt: '2026-09-05T12:30:00.000Z', occurrences: 1 },
-      { workflowId: 'workflow-a1', fingerprint: 'fp-lesson', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', stageId: 'learn', firstSeenAt: first, lastSeenAt: second, occurrences: 1 },
+      { workflowId: `workflow-${ids.healthyA}`, fingerprint: 'fp-lesson', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', stageId: 'learn', firstSeenAt: first, lastSeenAt: second, occurrences: 1 },
+      { workflowId: 'global-a', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', firstSeenAt: third, lastSeenAt: '2026-09-05T15:00:00.000Z', occurrences: 1 },
     ],
     projectGroups: [
       { fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: first, lastSeenAt: '2026-09-05T12:30:00.000Z', occurrences: 3, distinctWorkflows: 2, latestWorkflowId: 'workflow-a2' },
-      { fingerprint: 'fp-lesson', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', stageId: 'learn', firstSeenAt: first, lastSeenAt: second, occurrences: 1, distinctWorkflows: 1, latestWorkflowId: 'workflow-a1' },
+      { fingerprint: 'fp-lesson', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', stageId: 'learn', firstSeenAt: first, lastSeenAt: second, occurrences: 1, distinctWorkflows: 1, latestWorkflowId: `workflow-${ids.healthyA}` },
     ],
   });
   seedGroups(ids.healthyB, {
     workflowGroups: [
       { workflowId: 'workflow-b1', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: second, lastSeenAt: '2026-09-05T13:00:00.000Z', occurrences: 4 },
+      { workflowId: 'global-unsafe', fingerprint: 'fp-global', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', firstSeenAt: third, lastSeenAt: '2026-09-05T16:00:00.000Z', occurrences: 1 },
     ],
     projectGroups: [
       { fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: second, lastSeenAt: '2026-09-05T13:00:00.000Z', occurrences: 4, distinctWorkflows: 1, latestWorkflowId: 'workflow-b1' },
@@ -297,11 +323,41 @@ try {
     firstSeenAt: third, lastSeenAt: third, occurrences: 1,
     distinctWorkflows: 1, latestWorkflowId: `bulk-workflow-${index}`,
   }));
-  seedGroups(ids.healthyC, { projectGroups: bulkGroups });
+  seedGroups(ids.healthyC, {
+    workflowGroups: [
+      { workflowId: 'global-c', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', firstSeenAt: third, lastSeenAt: '2026-09-05T14:00:00.000Z', occurrences: 1 },
+      { workflowId: 'global-wrong-tool', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'read_file', family: 'filesystem', firstSeenAt: third, lastSeenAt: '2026-09-05T17:00:00.000Z', occurrences: 1 },
+      { workflowId: 'global-invalid-authority', fingerprint: 'fp-invalid-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', firstSeenAt: third, lastSeenAt: '2026-09-05T18:00:00.000Z', occurrences: 1 },
+    ],
+    projectGroups: bulkGroups,
+  });
+  seedEvents(ids.healthyA, [
+    { workflowId: 'workflow-a1', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', occurredAt: '2026-09-05T12:45:00.000Z' },
+    { workflowId: 'workflow-a2', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', occurredAt: '2026-09-05T12:30:00.000Z' },
+    { workflowId: 'global-a', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', occurredAt: '2026-09-05T15:00:00.000Z' },
+  ]);
+  seedEvents(ids.healthyB, [
+    { workflowId: 'workflow-b1', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', occurredAt: '2026-09-05T13:00:00.000Z' },
+    { workflowId: 'global-unsafe', fingerprint: 'fp-global', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', occurredAt: '2026-09-05T16:00:00.000Z' },
+  ]);
+  const forgedProjectId = 'project-forged';
+  const healthyDStat = await createJournal(ids.healthyD, 'healthy-d');
+  createIndex(ids.healthyD, healthyDStat, { projectId: forgedProjectId, events: [] });
+  seedGroups(ids.healthyD, { workflowGroups: [
+    { workflowId: 'global-forged', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', firstSeenAt: third, lastSeenAt: '2026-09-05T19:00:00.000Z', occurrences: 1 },
+  ] });
+  seedEvents(ids.healthyD, [
+    { workflowId: 'global-forged', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', occurredAt: '2026-09-05T19:00:00.000Z' },
+  ]);
+  seedEvents(ids.healthyC, [
+    { workflowId: 'global-c', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', occurredAt: '2026-09-05T14:00:00.000Z' },
+    { workflowId: 'global-wrong-tool', fingerprint: 'fp-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'read_file', family: 'filesystem', occurredAt: '2026-09-05T17:00:00.000Z' },
+    { workflowId: 'global-invalid-authority', fingerprint: 'fp-invalid-global', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', occurredAt: '2026-09-05T18:00:00.000Z' },
+  ]);
   createGlobalIndex([
-    { projectKey: 'global-project-a', fingerprint: 'fp-global', lessonCode: 'tooling_availability_check', firstSeenAt: first, lastSeenAt: '2026-09-05T16:00:00.000Z', occurrences: 3 },
-    { projectKey: 'global-project-b', fingerprint: 'fp-global', lessonCode: 'tooling_availability_check', firstSeenAt: second, lastSeenAt: '2026-09-05T17:00:00.000Z', occurrences: 2 },
-    { projectKey: 'global-project-b', fingerprint: 'fp-invalid-global', lessonCode: 'PRIVATE_INVALID_LESSON_CODE', firstSeenAt: first, lastSeenAt: third, occurrences: 99 },
+    { projectKey: globalProjectKey(projectId), fingerprint: 'fp-global', lessonCode: 'tooling_availability_check', firstSeenAt: first, lastSeenAt: '2026-09-05T16:00:00.000Z', occurrences: 3 },
+    { projectKey: globalProjectKey(otherProjectId), fingerprint: 'fp-global', lessonCode: 'tooling_availability_check', firstSeenAt: second, lastSeenAt: '2026-09-05T17:00:00.000Z', occurrences: 2 },
+    { projectKey: globalProjectKey(otherProjectId), fingerprint: 'fp-invalid-global', lessonCode: 'PRIVATE_INVALID_LESSON_CODE', firstSeenAt: first, lastSeenAt: third, occurrences: 99 },
   ]);
   const groupBefore = await snapshotStateFiles();
 
@@ -374,8 +430,46 @@ try {
   assert.ok(options.stageIds.includes('inspect'));
   assert.ok(!JSON.stringify(options).includes('PRIVATE_INVALID_LESSON_CODE'));
 
+  assert.equal(
+    typeof memoryQuery.queryOperationalMemoryEvents, 'function',
+    'Task 3 RED: sanitized event drill-down query must exist',
+  );
+  const eventPage = await memoryQuery.queryOperationalMemoryEvents({
+    scope: 'project', projectId, fingerprint: 'fp-lesson', limit: 50,
+  });
+  assert.equal(eventPage.items.length, 1);
+  assert.equal(eventPage.items[0].projectId, projectId);
+  assert.equal(eventPage.items[0].fingerprint, 'fp-lesson');
+  assert.equal(eventPage.items[0].kind, 'lesson');
+  assert.equal(eventPage.items[0].reasonCode, 'learned_pattern');
+  assert.equal(eventPage.items[0].lessonCode, 'tooling_availability_check');
+  assert.equal('recordSequence' in eventPage.items[0], false, 'internal sequence must not be returned');
+  const projectEvents = []; let eventCursor;
+  do {
+    const page = await memoryQuery.queryOperationalMemoryEvents({ scope: 'project', projectId, fingerprint: 'fp-shared', limit: 1, ...(eventCursor ? { cursor: eventCursor } : {}) });
+    projectEvents.push(...page.items); eventCursor = page.nextCursor;
+  } while (eventCursor);
+  assert.deepEqual(projectEvents.map((item) => item.workflowId), ['workflow-b1', 'workflow-a1', 'workflow-a2']);
+  assert.equal(new Set(projectEvents.map((item) => item.workflowId)).size, 3);
+  const workflowEvents = await memoryQuery.queryOperationalMemoryEvents({ scope: 'workflow', projectId, workflowId: 'workflow-a1', fingerprint: 'fp-shared', limit: 10 });
+  assert.deepEqual(workflowEvents.items.map((item) => item.workflowId), ['workflow-a1']);
+  const datedEvents = await memoryQuery.queryOperationalMemoryEvents({ scope: 'project', projectId, fingerprint: 'fp-shared', from: '2026-09-05T12:40:00.000Z', to: '2026-09-05T13:30:00.000Z', limit: 10 });
+  assert.deepEqual(datedEvents.items.map((item) => item.workflowId), ['workflow-b1', 'workflow-a1']);
+  await assert.rejects(() => memoryQuery.queryOperationalMemoryEvents({ scope: 'project', projectId, fingerprint: 'fp-shared', cursor: 'not-a-valid-event-cursor' }), /Invalid memory event cursor/);
+  const globalEvents = await memoryQuery.queryOperationalMemoryEvents({ scope: 'global', fingerprint: 'fp-global', limit: 10 });
+  assert.deepEqual(globalEvents.items.map((item) => [item.projectId, item.workflowId]), [[projectId, 'global-a'], [otherProjectId, 'global-c']], 'Global drill-down must exclude safe-looking rows from projects absent from M3B Global authority');
+  assert.ok(globalEvents.items.every((item) => item.kind === 'lesson' && item.reasonCode === 'learned_pattern' && item.sourceTool === 'project_workflow' && item.family === 'workflow'));
+  const invalidGlobalEvents = await memoryQuery.queryOperationalMemoryEvents({ scope: 'global', fingerprint: 'fp-invalid-global', limit: 10 });
+  assert.equal(invalidGlobalEvents.items.length, 0, 'invalid Global aggregate authority must fail closed');
+
+  const eventSerialized = JSON.stringify(eventPage);
+  for (const forbidden of [
+    'FAKE_API_KEY_SECRET', 'rm -rf PRIVATE_COMMAND', 'PRIVATE_FILE_CONTENT',
+    'PRIVATE_MCP_ARGS', 'PRIVATE_APPROVAL_PAYLOAD',
+  ]) assert.equal(eventSerialized.includes(forbidden), false, `event API must not expose ${forbidden}`);
+
   await assertSnapshotUnchanged(groupBefore);
-  console.log('âś… Operational Memory M6 group/filter/global tests passed');
+  console.log('âś… Operational Memory M6 group/filter/global + event drill-down tests passed');
 } finally {
   if (previousStateRoot === undefined) delete process.env.DESKTOP_COMMANDER_WORKFLOW_STATE_DIR;
   else process.env.DESKTOP_COMMANDER_WORKFLOW_STATE_DIR = previousStateRoot;

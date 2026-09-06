@@ -8,7 +8,7 @@ import {
   OPERATIONAL_LESSON_TEMPLATES,
   type OperationalLessonCode,
 } from './operational-memory-contract.js';
-import { readOperationalMemoryGlobalGroupsReadOnly } from './operational-memory-global-index.js';
+import { hasOperationalMemoryGlobalProjectLessonReadOnly, readOperationalMemoryGlobalGroupsReadOnly } from './operational-memory-global-index.js';
 import { resolveWorkflowStateRoot } from './workflow-storage.js';
 
 const INDEX_SCHEMA_VERSION = 5;
@@ -799,6 +799,172 @@ export async function queryOperationalMemoryGroups(
       : {}),
     health: inspection.health,
   };
+}
+
+export interface MemoryEventQuery {
+  fingerprint: string; projectId?: string; workflowId?: string; scope: MemoryBrowseScope;
+  from?: string; to?: string; limit?: number; cursor?: string;
+}
+export interface MemoryEventItem {
+  projectId?: string; repositoryId?: string; workflowId: string; taskId?: string; runId?: string;
+  kind: MemoryItemKind; reasonCode: string; lessonCode?: OperationalLessonCode;
+  sourceTool: string; family: string; stageId?: string; fingerprint: string; occurredAt: string;
+}
+export interface MemoryEventPage {
+  items: MemoryEventItem[]; nextCursor?: string; health: MemoryOverviewResponse['indexHealth'];
+}
+interface InternalMemoryEventItem extends MemoryEventItem { recordSequence: number; }
+type EventCursorTuple = [1, string, string, string, number, string, MemoryBrowseScope];
+const DEFAULT_EVENT_LIMIT = 50;
+const MAX_EVENT_LIMIT = 200;
+function normalizeEventLimit(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return DEFAULT_EVENT_LIMIT;
+  return Math.min(MAX_EVENT_LIMIT, Math.max(1, Math.floor(value)));
+}
+function optionalStructuralValue(value: unknown): string | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  return structuralValue(value);
+}
+function parseEventRow(row: Record<string, unknown>, state: ReadIndexState): InternalMemoryEventItem | null {
+  const projectId = structuralValue(state.projectId); const workflowId = structuralValue(row.workflow_id);
+  const fingerprint = structuralValue(row.fingerprint); const sourceTool = structuralValue(row.source_tool);
+  const family = structuralValue(row.family); const occurredAt = validTimestamp(row.occurred_at);
+  const recordSequence = Number(row.record_sequence); const kind = row.kind; const reasonCode = row.reason_code;  if (!projectId || !workflowId || !fingerprint || !sourceTool || !family || !occurredAt ||
+      !isMemoryKind(kind) || !isMemoryReasonCode(reasonCode) ||
+      !Number.isSafeInteger(recordSequence) || recordSequence < 1) return null;
+  const rawLesson = row.lesson_code; let lessonCode: OperationalLessonCode | undefined;
+  if (rawLesson !== null && rawLesson !== undefined && rawLesson !== '') {
+    const value = String(rawLesson); if (!isOperationalLessonCode(value)) return null; lessonCode = value;
+  }
+  if (reasonCode === 'learned_pattern' && !lessonCode) return null;
+  const repositoryId = optionalStructuralValue(state.repositoryId);
+  const taskId = optionalStructuralValue(row.task_id); const runId = optionalStructuralValue(row.run_id);
+  const stageId = optionalStructuralValue(row.stage_id);
+  return { projectId, ...(repositoryId ? { repositoryId } : {}), workflowId,
+    ...(taskId ? { taskId } : {}), ...(runId ? { runId } : {}), kind, reasonCode,
+    ...(lessonCode ? { lessonCode } : {}), sourceTool, family, ...(stageId ? { stageId } : {}),
+    fingerprint, occurredAt, recordSequence };
+}
+function eventTuple(item: InternalMemoryEventItem, scope: MemoryBrowseScope): EventCursorTuple {
+  return [1, item.occurredAt, item.projectId ?? '', item.workflowId,
+    item.recordSequence, item.fingerprint, scope];
+}
+function compareEventTuple(a: EventCursorTuple, b: EventCursorTuple): number {
+  if (a[1] !== b[1]) return a[1] > b[1] ? -1 : 1;
+  for (const index of [2, 3] as const) { const c = compareText(a[index], b[index]); if (c) return c; }
+  if (a[4] !== b[4]) return a[4] > b[4] ? -1 : 1;
+  const fingerprintCompared = compareText(a[5], b[5]);
+  return fingerprintCompared || compareText(a[6], b[6]);
+}
+function encodeEventCursor(item: InternalMemoryEventItem, scope: MemoryBrowseScope): string {
+  return Buffer.from(JSON.stringify(eventTuple(item, scope)), 'utf8').toString('base64url');
+}function decodeEventCursor(cursor: string, scope: MemoryBrowseScope, fingerprint: string): EventCursorTuple {
+  try {
+    if (cursor.length < 4 || cursor.length > 1536) throw new Error('invalid');
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 7 || parsed[0] !== 1) throw new Error('invalid');
+    const [version, occurredAt, projectId, workflowId, recordSequence, cursorFingerprint, cursorScope] = parsed;
+    if (version !== 1 || !validTimestamp(occurredAt) || typeof projectId !== 'string' ||
+        (projectId !== '' && !structuralValue(projectId)) || !structuralValue(workflowId) ||
+        !Number.isSafeInteger(recordSequence) || recordSequence < 1 ||
+        structuralValue(cursorFingerprint) !== fingerprint || cursorScope !== scope) throw new Error('invalid');
+    return [1, occurredAt, projectId, workflowId, recordSequence, cursorFingerprint, cursorScope];
+  } catch { throw new Error('Invalid memory event cursor'); }
+}
+function validateEventQuery(query: MemoryEventQuery) {
+  validateGroupScope(query.scope); const fingerprint = structuralValue(query.fingerprint);
+  if (!fingerprint) throw new Error('Invalid memory fingerprint');
+  validateDateFilter(query.from); validateDateFilter(query.to);
+  if (query.from && query.to && query.from > query.to) throw new Error('Invalid memory date range');
+  if (query.scope === 'global') {
+    if (query.projectId !== undefined || query.workflowId !== undefined)
+      throw new Error('Global memory drill-down cannot select a project or workflow');
+    return { scope: query.scope, fingerprint };
+  }
+  const projectId = structuralValue(query.projectId); if (!projectId) throw new Error('Memory project is required');
+  if (query.scope === 'project' && query.workflowId !== undefined)
+    throw new Error('Project memory drill-down cannot select a workflow');
+  const workflowId = query.workflowId === undefined ? undefined : structuralValue(query.workflowId);
+  if (query.workflowId !== undefined && !workflowId) throw new Error('Invalid memory workflow');
+  return { scope: query.scope, fingerprint, projectId, ...(workflowId ? { workflowId } : {}) };
+}function cursorSql(cursor: EventCursorTuple | undefined, projectId: string) {
+  if (!cursor) return { sql: '', params: [] as unknown[] };
+  const time = cursor[1]; const cursorProject = cursor[2]; const workflow = cursor[3]; const sequence = cursor[4];
+  const projectCompared = compareText(projectId, cursorProject);
+  if (projectCompared < 0) return { sql: ' AND e.occurred_at < ?', params: [time] };
+  if (projectCompared > 0) return { sql: ' AND e.occurred_at <= ?', params: [time] };
+  return { sql: ' AND (e.occurred_at < ? OR (e.occurred_at = ? AND (e.workflow_id > ? OR (e.workflow_id = ? AND e.record_sequence < ?))))',
+    params: [time, time, workflow, workflow, sequence] };
+}
+function readEventPageFromIndex(db: SqliteDatabase, descriptor: HealthyIndexDescriptor,
+  query: MemoryEventQuery, workflowId: string | undefined, cursor: EventCursorTuple | undefined, limit: number) {
+  const projectId = structuralValue(descriptor.state.projectId); if (!projectId) return [];
+  const clauses = ['g.fingerprint = ?']; const params: unknown[] = [query.fingerprint];
+  if (workflowId) { clauses.push('g.workflow_id = ?'); params.push(workflowId); }
+  if (query.from !== undefined) { clauses.push('e.occurred_at >= ?'); params.push(query.from); }
+  if (query.to !== undefined) { clauses.push('e.occurred_at <= ?'); params.push(query.to); }
+  const after = cursorSql(cursor, projectId);
+  const sql = 'SELECT e.record_sequence, e.workflow_id, e.task_id, e.run_id, e.kind, e.reason_code, ' +
+    'e.lesson_code, e.source_tool, e.family, e.stage_id, e.fingerprint, e.occurred_at ' +
+    'FROM groups g JOIN events e ON e.workflow_id = g.workflow_id AND e.fingerprint = g.fingerprint ' +
+    'WHERE ' + clauses.join(' AND ') + after.sql +
+    ' ORDER BY e.occurred_at DESC, e.workflow_id ASC, e.record_sequence DESC LIMIT ?';
+  return db.prepare(sql).all(...params, ...after.params, limit + 1).flatMap((row) => {
+    const parsed = parseEventRow(row, descriptor.state); return parsed ? [parsed] : [];
+  });
+}
+function eventDedupKey(item: InternalMemoryEventItem): string {
+  return [item.projectId ?? '', item.workflowId, item.recordSequence, item.fingerprint, item.occurredAt].join('\u0000');
+}function safeGlobalEvent(item: InternalMemoryEventItem, lessonCode: OperationalLessonCode): boolean {
+  return item.kind === 'lesson' && item.reasonCode === 'learned_pattern' && item.lessonCode === lessonCode &&
+    item.sourceTool === 'project_workflow' && item.family === 'workflow';
+}
+function publicEvent(item: InternalMemoryEventItem): MemoryEventItem {
+  const { recordSequence: _recordSequence, ...result } = item; return result;
+}
+export async function queryOperationalMemoryEvents(query: MemoryEventQuery): Promise<MemoryEventPage> {
+  const validated = validateEventQuery(query); const inspection = await inspectHealthyIndexes();
+  const limit = normalizeEventLimit(query.limit);
+  const cursor = query.cursor ? decodeEventCursor(query.cursor, validated.scope, validated.fingerprint) : undefined;
+  let globalLessonCode: OperationalLessonCode | undefined;
+  if (validated.scope === 'global') {
+    const candidates = (await collectGlobalGroups()).filter((item) =>
+      item.fingerprint === validated.fingerprint && item.lessonCode);
+    if (candidates.length !== 1 || !candidates[0].lessonCode) return { items: [], health: inspection.health };
+    globalLessonCode = candidates[0].lessonCode;
+  }
+  const DatabaseSync = databaseConstructor(); if (!DatabaseSync) return { items: [], health: inspection.health };
+  const deduped = new Map<string, InternalMemoryEventItem>();
+  for (const descriptor of inspection.healthy) {
+    const projectId = structuralValue(descriptor.state.projectId); if (!projectId) continue;
+    if (validated.scope !== 'global' && projectId !== validated.projectId) continue;
+    if (validated.scope === 'global') {
+      if (!globalLessonCode) continue;
+      const isAuthoritativeProject = await hasOperationalMemoryGlobalProjectLessonReadOnly(
+        { projectId: descriptor.state.projectId, repositoryId: descriptor.state.repositoryId },
+        validated.fingerprint,
+        globalLessonCode,
+      );
+      if (!isAuthoritativeProject) continue;
+    }
+    let db: SqliteDatabase | null = null;
+    try {
+      db = new DatabaseSync(descriptor.indexPath, { readOnly: true });
+      const rows = readEventPageFromIndex(db, descriptor, query,
+        validated.scope === 'workflow' ? validated.workflowId : undefined, cursor, limit);
+      for (const item of rows) {
+        if (validated.scope === 'global' && (!globalLessonCode || !safeGlobalEvent(item, globalLessonCode))) continue;
+        deduped.set(eventDedupKey(item), item);
+      }
+    } catch { continue; } finally { db?.close(); }
+  }  let items = [...deduped.values()];
+  items.sort((a, b) => compareEventTuple(eventTuple(a, validated.scope), eventTuple(b, validated.scope)));
+  if (cursor) items = items.filter((item) => compareEventTuple(eventTuple(item, validated.scope), cursor) > 0);
+  const hasMore = items.length > limit; const pageItems = items.slice(0, limit);
+  return { items: pageItems.map(publicEvent),
+    ...(hasMore && pageItems.length > 0
+      ? { nextCursor: encodeEventCursor(pageItems[pageItems.length - 1], validated.scope) } : {}),
+    health: inspection.health };
 }
 
 function boundedSorted(values: Set<string>, max: number): { values: string[]; truncated: boolean } {

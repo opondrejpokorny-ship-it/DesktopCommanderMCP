@@ -508,6 +508,31 @@ export async function readOperationalMemoryGlobalGroups(
  * Read the existing M3B Global aggregate without creating, synchronizing, or rebuilding it.
  * This is intended for human-facing read-only navigation such as M6 Control Center Memory.
  */
+export async function hasOperationalMemoryGlobalProjectLessonReadOnly(
+  scope: OperationalMemoryScopeCorrelation,
+  fingerprint: string,
+  lessonCode: string,
+): Promise<boolean> {
+  if (!isOperationalLessonCode(lessonCode)) return false;
+  const key = projectKey(scope);
+  if (!key) return false;
+  const indexPath = resolveOperationalMemoryGlobalIndexPath();
+  const stat = await fs.stat(indexPath).catch(() => null);
+  if (!stat?.isFile()) return false;
+  const db = openDatabase(indexPath, true);
+  if (!db) return false;
+  try {
+    validateSchema(db);
+    return !!db.prepare(
+      'SELECT 1 AS present FROM global_project_lessons WHERE project_key = ? AND fingerprint = ? AND lesson_code = ? LIMIT 1',
+    ).get(key, fingerprint, lessonCode);
+  } catch {
+    return false;
+  } finally {
+    db.close();
+  }
+}
+
 export async function readOperationalMemoryGlobalGroupsReadOnly(): Promise<IndexedOperationalMemoryGlobalGroup[]> {
   const indexPath = resolveOperationalMemoryGlobalIndexPath();
   const stat = await fs.stat(indexPath).catch(() => null);
