@@ -296,6 +296,7 @@ const MEMORY_UI_SCRIPT = `(() => {
   let loading = false;
   let nextCursor;
   let requestGeneration = 0;
+  let eventRequestGeneration = 0;
 
   function setText(selector, value) {
     const element = document.querySelector(selector);
@@ -374,15 +375,18 @@ const MEMORY_UI_SCRIPT = `(() => {
   }
 
   async function openDetails(item) {
+    const generation = ++eventRequestGeneration;
     empty(eventsRoot, 'Loading sanitized events…');
     try {
       const params = eventQuery(item);
       const path = '/api/memory/groups/' + encodeURIComponent(item.fingerprint) + '/events?' + params;
       const page = await api(path);
+      if (generation !== eventRequestGeneration) return;
       eventsRoot.replaceChildren();
       for (const event of page.items || []) eventsRoot.append(renderEvent(event));
       if (!eventsRoot.children.length) empty(eventsRoot, 'No sanitized events matched this group.');
     } catch (error) {
+      if (generation !== eventRequestGeneration) return;
       empty(eventsRoot, error instanceof Error ? error.message : 'Unable to load memory events.');
     }
   }
@@ -488,6 +492,8 @@ const MEMORY_UI_SCRIPT = `(() => {
   for (const id of filterIds) {
     byId(id).addEventListener('change', () => {
       if (id === 'memory-filter-scope') syncScope();
+      eventRequestGeneration += 1;
+      empty(eventsRoot, 'Select a group to inspect sanitized events.');
       if (loaded) refreshGroups(false);
     });
   }

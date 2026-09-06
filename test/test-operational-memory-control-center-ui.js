@@ -159,6 +159,13 @@ let controlCenter;
 let dom;
 const memoryCalls = [];
 const clipboardWrites = [];
+let paginationGate;
+let releasePagination;
+let paginationCompletions = 0;
+let delayedEventFingerprint;
+let delayedEventGate;
+let releaseDelayedEvent;
+let delayedEventCompletions = 0;
 try {
   await seedMemory();
   await fs.writeFile(policyFile, JSON.stringify({
@@ -191,7 +198,15 @@ try {
         const raw = typeof input === 'string' ? input : input.url;
         const target = new URL(raw, controlCenter.url);
         if (target.pathname.startsWith('/api/memory/')) memoryCalls.push(target.href);
-        return fetch(target, init);
+        const isContinuation = target.pathname === '/api/memory/groups' && target.searchParams.has('cursor');
+        const isDelayedEvent = delayedEventFingerprint &&
+          target.pathname === `/api/memory/groups/${encodeURIComponent(delayedEventFingerprint)}/events`;
+        if (isContinuation && paginationGate) await paginationGate;
+        if (isDelayedEvent && delayedEventGate) await delayedEventGate;
+        const response = await fetch(target, init);
+        if (isContinuation) paginationCompletions += 1;
+        if (isDelayedEvent) delayedEventCompletions += 1;
+        return response;
       };
       Object.defineProperty(window.navigator, 'clipboard', {
         configurable: true,
@@ -245,40 +260,60 @@ try {
     'restored error group page',
   );
 
+  const initialRows = [...dom.window.document.querySelectorAll('[data-memory-group]')];
+  assert.match(initialRows[0]?.textContent ?? '', /fp-ui-050/);
+  assert.match(initialRows[1]?.textContent ?? '', /fp-ui-049/);
+  const openButtons = [...dom.window.document.querySelectorAll('[data-memory-open]')];
+  assert.ok(openButtons.length >= 2);
+  delayedEventFingerprint = 'fp-ui-050';
+  delayedEventGate = new Promise((resolve) => { releaseDelayedEvent = resolve; });
+  openButtons[0].click();
+  await waitFor(
+    () => memoryCalls.some((url) => new URL(url).pathname.endsWith('/fp-ui-050/events')),
+    'delayed first Memory drill-down request',
+  );
+  openButtons[1].click();
+  await waitFor(
+    () => (dom.window.document.getElementById('memory-events')?.textContent ?? '').includes('fp-ui-049'),
+    'newer Memory drill-down rendering',
+  );
+  releaseDelayedEvent();
+  await waitFor(() => delayedEventCompletions === 1, 'delayed Memory drill-down completion');
+  const racedEventText = dom.window.document.getElementById('memory-events')?.textContent ?? '';
+  assert.match(racedEventText, /fp-ui-049/);
+  assert.doesNotMatch(racedEventText, /fp-ui-050/);
+  assert.match(racedEventText, /read_file/);
+  assert.match(racedEventText, /not_found/);
+  assert.doesNotMatch(racedEventText, /PRIVATE_FILE_CONTENT|PRIVATE_COMMAND/);
+  delayedEventFingerprint = undefined;
+  delayedEventGate = undefined;
+  releaseDelayedEvent = undefined;
+
   const loadMore = dom.window.document.getElementById('memory-load-more');
   assert.ok(loadMore && !loadMore.hidden, 'Load more should expose returned keyset cursor');
+  paginationGate = new Promise((resolve) => { releasePagination = resolve; });
+  loadMore.click();
   loadMore.click();
   await waitFor(
-    () => memoryCalls.some((url) => new URL(url).searchParams.has('cursor')),
-    'Memory keyset continuation request',
+    () => memoryCalls.filter((url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor')).length >= 2,
+    'overlapping Memory keyset continuation requests',
   );
-  await waitFor(
-    () => dom.window.document.querySelectorAll('[data-memory-group]').length === 51,
-    'second Memory group page',
+  releasePagination();
+  await waitFor(() => paginationCompletions >= 2, 'overlapping continuation completions');
+  paginationGate = undefined;
+  releasePagination = undefined;
+  const pagedRows = [...dom.window.document.querySelectorAll('[data-memory-group]')];
+  assert.equal(pagedRows.length, 51, 'repeated Load more clicks must not append the same page twice');
+  const pagedFingerprints = new Set(
+    pagedRows.map((row) => row.textContent.match(/fp-ui-\d{3}/)?.[0]).filter(Boolean),
   );
+  assert.equal(pagedFingerprints.size, 51, 'Memory pagination must not create duplicate fingerprints');
 
   const firstCopy = dom.window.document.querySelector('[data-memory-copy]');
   assert.ok(firstCopy);
   firstCopy.click();
   await waitFor(() => clipboardWrites.length === 1, 'fingerprint copy');
   assert.match(clipboardWrites[0], /^fp-ui-/);
-
-  const firstOpen = dom.window.document.querySelector('[data-memory-open]');
-  assert.ok(firstOpen);
-  firstOpen.click();
-  await waitFor(
-    () => memoryCalls.some((url) => /\/api\/memory\/groups\/[^/]+\/events$/.test(new URL(url).pathname)),
-    'Memory drill-down request',
-  );
-  await waitFor(
-    () => dom.window.document.querySelectorAll('[data-memory-event]').length === 1,
-    'Memory drill-down rendering',
-  );
-  const eventText = dom.window.document.getElementById('memory-events')?.textContent ?? '';
-  assert.match(eventText, /read_file/);
-  assert.match(eventText, /not_found/);
-  assert.match(eventText, /fp-ui-/);
-  assert.doesNotMatch(eventText, /PRIVATE_FILE_CONTENT|PRIVATE_COMMAND/);
 
   assert.doesNotMatch(
     dom.window.document.body.textContent,
