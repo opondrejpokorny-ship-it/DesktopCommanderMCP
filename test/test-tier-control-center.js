@@ -81,7 +81,12 @@ try {
   assert.ok(controlCenter.port > 0);
   const home = await fetch(controlCenter.url);
   assert.strictEqual(home.status, 200);
-  assert.match(await home.text(), /Desktop Commander Control Center/i);
+  const homeHtml = await home.text();
+  assert.match(homeHtml, /Desktop Commander Control Center/i);
+  assert.match(homeHtml, />Memory</);
+  assert.match(homeHtml, /id="memory-overview"/);
+  assert.match(homeHtml, /id="memory-groups"/);
+  assert.doesNotMatch(homeHtml, /Repair memory|Delete lesson|Promote lesson|Ignore lesson/i);
   assert.strictEqual(home.headers.get('cache-control'), 'no-store');
   assert.match(home.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
 

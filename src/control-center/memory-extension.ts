@@ -238,5 +238,263 @@ export function createMemoryControlCenterExtension(): ControlCenterExtensionV1 {
                 handle: handleFilterOptions,
             },
         ],
+        ui: {
+            viewId: 'memory',
+            label: 'Memory',
+            html: MEMORY_UI_HTML,
+            script: MEMORY_UI_SCRIPT,
+        },
     };
 }
+
+
+const MEMORY_UI_HTML = `
+<section id="memory-root">
+  <h2>Memory</h2>
+  <p id="memory-status">Open Memory to load the read-only index.</p>
+  <div id="memory-overview">
+    <strong data-memory-metric="total-events">—</strong> events ·
+    <span data-memory-metric="fingerprints">—</span> fingerprints ·
+    <span data-memory-metric="projects">—</span> projects ·
+    <span data-memory-metric="health">—</span> index
+  </div>
+  <fieldset>
+    <legend>Filters</legend>
+    <label>Scope <select id="memory-filter-scope">
+      <option value="project">Project</option>
+      <option value="workflow">Workflow</option>
+      <option value="global">Global</option>
+    </select></label>
+    <label>Project <select id="memory-filter-project"><option value="">All projects</option></select></label>
+    <label>Kind <select id="memory-filter-kind">
+      <option value="">All kinds</option><option value="error">Error</option>
+      <option value="limit">Limit</option><option value="lesson">Lesson</option>
+    </select></label>
+    <label>Source tool <select id="memory-filter-source"><option value="">All tools</option></select></label>
+    <label>Lesson <select id="memory-filter-lesson"><option value="">All lessons</option></select></label>
+    <label>Minimum occurrences <input id="memory-filter-occurrences" type="number" min="1" step="1"></label>
+    <label>From <input id="memory-filter-from" type="datetime-local"></label>
+    <label>To <input id="memory-filter-to" type="datetime-local"></label>
+  </fieldset>
+  <h3>Groups</h3>
+  <div id="memory-groups"><p class="dc-empty">Memory has not been loaded yet.</p></div>
+  <button id="memory-load-more" type="button" hidden>Load more</button>
+  <section aria-labelledby="memory-details-heading">
+    <h3 id="memory-details-heading">Details</h3>
+    <div id="memory-events"><p class="dc-empty">Select a group to inspect sanitized events.</p></div>
+  </section>
+</section>`;
+
+const MEMORY_UI_SCRIPT = `(() => {
+  const api = window.dcControlCenter.api;
+  const byId = (id) => document.getElementById(id);
+  const status = byId('memory-status');
+  const groupsRoot = byId('memory-groups');
+  const eventsRoot = byId('memory-events');
+  const loadMore = byId('memory-load-more');
+  let loaded = false;
+  let loading = false;
+  let nextCursor;
+  let requestGeneration = 0;
+
+  function setText(selector, value) {
+    const element = document.querySelector(selector);
+    if (element) element.textContent = String(value);
+  }
+
+  function empty(target, message) {
+    target.replaceChildren();
+    const node = document.createElement('p');
+    node.className = 'dc-empty';
+    node.textContent = message;
+    target.append(node);
+  }
+
+  function fillSelect(id, values, labelFor) {
+    const select = byId(id);
+    const current = select.value;
+    const first = select.firstElementChild.cloneNode(true);
+    select.replaceChildren(first);
+    for (const value of values) {
+      const option = document.createElement('option');
+      const raw = typeof value === 'string' ? value : value.projectId;
+      option.value = raw;
+      option.textContent = labelFor ? labelFor(value) : raw;
+      select.append(option);
+    }
+    if ([...select.options].some((option) => option.value === current)) select.value = current;
+  }
+
+  function safePieces(values) {
+    return values.filter((value) => value !== undefined && value !== null && value !== '').map(String);
+  }
+  function groupQuery(cursorValue) {
+    const params = new URLSearchParams();
+    const scope = byId('memory-filter-scope').value;
+    params.set('scope', scope);
+    params.set('limit', '50');
+    const project = byId('memory-filter-project').value;
+    if (scope !== 'global' && project) params.set('projectId', project);
+    const mappings = [
+      ['memory-filter-kind', 'kind'],
+      ['memory-filter-source', 'sourceTool'],
+      ['memory-filter-lesson', 'lessonCode'],
+      ['memory-filter-occurrences', 'minOccurrences'],
+      ['memory-filter-from', 'from'],
+      ['memory-filter-to', 'to'],
+    ];
+    for (const [id, key] of mappings) {
+      const value = byId(id).value;
+      if (value) params.set(key, value);
+    }
+    if (cursorValue) params.set('cursor', cursorValue);
+    return params;
+  }
+
+  function eventQuery(item) {
+    const params = new URLSearchParams();
+    params.set('scope', item.scope);
+    params.set('limit', '50');
+    if (item.scope !== 'global' && item.projectId) params.set('projectId', item.projectId);
+    if (item.scope === 'workflow' && item.workflowId) params.set('workflowId', item.workflowId);
+    return params;
+  }
+  function renderEvent(event) {
+    const row = document.createElement('article');
+    row.dataset.memoryEvent = 'true';
+    const title = document.createElement('strong');
+    title.textContent = safePieces([event.kind, event.reasonCode]).join(' · ');
+    const meta = document.createElement('p');
+    meta.textContent = safePieces([
+      event.sourceTool, event.family, event.stageId, event.workflowId,
+      event.taskId, event.runId, event.fingerprint, event.occurredAt,
+    ]).join(' · ');
+    row.append(title, meta);
+    return row;
+  }
+
+  async function openDetails(item) {
+    empty(eventsRoot, 'Loading sanitized events…');
+    try {
+      const params = eventQuery(item);
+      const path = '/api/memory/groups/' + encodeURIComponent(item.fingerprint) + '/events?' + params;
+      const page = await api(path);
+      eventsRoot.replaceChildren();
+      for (const event of page.items || []) eventsRoot.append(renderEvent(event));
+      if (!eventsRoot.children.length) empty(eventsRoot, 'No sanitized events matched this group.');
+    } catch (error) {
+      empty(eventsRoot, error instanceof Error ? error.message : 'Unable to load memory events.');
+    }
+  }
+
+  function renderGroup(item) {
+    const row = document.createElement('article');
+    row.dataset.memoryGroup = 'true';
+    const title = document.createElement('strong');
+    title.textContent = item.title || item.fingerprint;
+    const lesson = document.createElement('p');
+    lesson.textContent = item.lesson || '';
+    const meta = document.createElement('p');
+    meta.textContent = safePieces([
+      item.scope, item.kind, item.reasonCode, item.lessonCode,
+      item.sourceTool, item.family, item.stageId,
+      item.projectDisplayName, item.workflowId,
+      item.fingerprint, item.occurrences + ' occurrences', item.lastSeenAt,
+    ]).join(' · ');
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.dataset.memoryOpen = 'true';
+    open.textContent = 'Details';
+    open.addEventListener('click', () => openDetails(item));
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.dataset.memoryCopy = 'true';
+    copy.textContent = 'Copy fingerprint';
+    copy.addEventListener('click', async () => {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(item.fingerprint);
+    });
+    row.append(title, lesson, meta, open, copy);
+    return row;
+  }
+
+  function appendGroups(items, append) {
+    if (!append) groupsRoot.replaceChildren();
+    for (const item of items) groupsRoot.append(renderGroup(item));
+    if (!groupsRoot.children.length) empty(groupsRoot, 'No memory groups match these filters.');
+  }
+
+  async function refreshGroups(append = false) {
+    const generation = append ? requestGeneration : ++requestGeneration;
+    const cursorValue = append ? nextCursor : undefined;
+    status.textContent = append ? 'Loading more memory…' : 'Loading memory groups…';
+    try {
+      const page = await api('/api/memory/groups?' + groupQuery(cursorValue));
+      if (generation !== requestGeneration) return;
+      appendGroups(page.items || [], append);
+      nextCursor = page.nextCursor;
+      loadMore.hidden = !nextCursor;
+      status.textContent = page.health?.overall === 'healthy'
+        ? 'Memory index ready.'
+        : 'Memory index is ' + String(page.health?.overall || 'unavailable') + '.';
+    } catch (error) {
+      if (generation !== requestGeneration) return;
+      nextCursor = undefined;
+      loadMore.hidden = true;
+      empty(groupsRoot, error instanceof Error ? error.message : 'Unable to load memory groups.');
+      status.textContent = 'Memory groups unavailable.';
+    }
+  }
+
+  async function loadOverviewAndFilters() {
+    const [overview, filters] = await Promise.all([
+      api('/api/memory/overview'),
+      api('/api/memory/filter-options'),
+    ]);
+    setText('[data-memory-metric="total-events"]', overview.totalEvents);
+    setText('[data-memory-metric="fingerprints"]', overview.uniqueFingerprints);
+    setText('[data-memory-metric="projects"]', overview.projectsWithMemory);
+    setText('[data-memory-metric="health"]', overview.indexHealth?.overall || 'unavailable');
+    fillSelect('memory-filter-project', filters.projects || [], (entry) => entry.displayName);
+    fillSelect('memory-filter-source', filters.sourceTools || []);
+    fillSelect('memory-filter-lesson', filters.lessonCodes || []);
+  }
+  function syncScope() {
+    const global = byId('memory-filter-scope').value === 'global';
+    const project = byId('memory-filter-project');
+    project.disabled = global;
+    if (global) project.value = '';
+  }
+
+  async function ensureLoaded() {
+    if (loaded || loading) return;
+    loading = true;
+    status.textContent = 'Loading read-only memory…';
+    try {
+      await loadOverviewAndFilters();
+      await refreshGroups(false);
+      loaded = true;
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : 'Memory is unavailable.';
+    } finally {
+      loading = false;
+    }
+  }
+
+  const filterIds = [
+    'memory-filter-scope', 'memory-filter-project', 'memory-filter-kind',
+    'memory-filter-source', 'memory-filter-lesson', 'memory-filter-occurrences',
+    'memory-filter-from', 'memory-filter-to',
+  ];
+  for (const id of filterIds) {
+    byId(id).addEventListener('change', () => {
+      if (id === 'memory-filter-scope') syncScope();
+      if (loaded) refreshGroups(false);
+    });
+  }
+  loadMore.addEventListener('click', () => {
+    if (loaded && nextCursor) refreshGroups(true);
+  });
+  syncScope();
+  const memoryButton = document.querySelector('[data-dc-target="memory"]');
+  if (memoryButton) memoryButton.addEventListener('click', () => ensureLoaded());
+})();`;
