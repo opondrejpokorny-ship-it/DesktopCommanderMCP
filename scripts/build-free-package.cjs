@@ -6,6 +6,7 @@
  * while omitting prototype/commercial policy, approvals, paid Control Center
  * extensions and Team audit implementation from the emitted dependency graph and npm tarball.
  */
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -17,8 +18,17 @@ const packageDir = path.join(artifactRoot, 'package');
 const distDir = path.join(packageDir, 'dist');
 const rootPackage = require(path.join(root, 'package.json'));
 
-function command(name) {
-  return process.platform === 'win32' ? name + '.cmd' : name;
+function resolveNpmInvocation(args) {
+  if (process.platform !== 'win32') return { executable: 'npm', args };
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].filter(Boolean);
+  const npmCli = candidates.find((candidate) =>
+    /npm-cli\.js$/i.test(candidate) && fsSync.existsSync(candidate),
+  );
+  if (!npmCli) throw new Error('npm-cli.js could not be located');
+  return { executable: process.execPath, args: [npmCli, ...args] };
 }
 
 function run(executable, args, options = {}) {
@@ -135,11 +145,10 @@ async function main() {
     }
   }
 
-  const packedRaw = run(
-    command('npm'),
-    ['pack', packageDir, '--json', '--pack-destination', artifactRoot],
-    { capture: true },
-  );
+  const npmPack = resolveNpmInvocation([
+    'pack', packageDir, '--json', '--pack-destination', artifactRoot,
+  ]);
+  const packedRaw = run(npmPack.executable, npmPack.args, { capture: true });
   const packed = JSON.parse(String(packedRaw));
   if (!Array.isArray(packed) || packed.length !== 1) {
     throw new Error('Unexpected npm pack output');

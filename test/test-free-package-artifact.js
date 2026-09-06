@@ -11,6 +11,14 @@ const __filename = fileURLToPath(import.meta.url);
 const root = path.resolve(path.dirname(__filename), '..');
 const buildScript = path.join(root, 'scripts/build-free-package.cjs');
 
+function resolveNpmInvocation(args) {
+  if (process.platform !== 'win32') return { executable: 'npm', args };
+  const npmCli = path.join(
+    path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js',
+  );
+  return { executable: process.execPath, args: [npmCli, ...args] };
+}
+
 assert.ok(
   await fs.stat(buildScript).then(() => true, () => false),
   'A real Free package build script must exist',
@@ -24,6 +32,7 @@ execFileSync(process.execPath, [buildScript], {
 const manifestPath = path.join(root, '.artifacts/free/package-manifest.json');
 const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
 assert.ok(manifest.tarball, 'Free package manifest must point to a tarball');
+const tarballPath = path.resolve(path.dirname(manifestPath), manifest.tarball);
 assert.ok(Array.isArray(manifest.files) && manifest.files.length > 0);
 
 const normalizedFiles = manifest.files.map((entry) =>
@@ -67,11 +76,13 @@ await fs.writeFile(
 );
 
 try {
-  execFileSync(
-    process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    ['install', '--ignore-scripts', '--no-audit', '--no-fund', manifest.tarball],
-    { cwd: consumerDir, stdio: 'inherit' },
-  );
+  const npmInstall = resolveNpmInvocation([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', tarballPath,
+  ]);
+  execFileSync(npmInstall.executable, npmInstall.args, {
+    cwd: consumerDir,
+    stdio: 'inherit',
+  });
 
   const packageRoot = path.join(
     consumerDir,
