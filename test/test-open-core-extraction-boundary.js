@@ -91,6 +91,22 @@ assert.deepStrictEqual(
   'Open-core dependency boundary violations:\n' + violations.join('\n'),
 );
 
+const expectedOwners = {
+  'src/control-center/contract.ts': 'public',
+  'src/control-center/host.ts': 'public',
+  'src/control-center-contract.ts': 'public',
+  'src/control-center/pro-extension.ts': 'pro',
+  'src/control-center/team-extension.ts': 'team',
+  'src/control-center/demo-extension.ts': 'demo',
+  'src/control-center/server.ts': 'demo',
+};
+for (const [file, expectedOwner] of Object.entries(expectedOwners)) {
+  assert.strictEqual(ownerFor(file), expectedOwner, `Unexpected C3 owner for ${file}`);
+}
+const freeTsconfig = JSON.parse(await fs.readFile(path.join(root, 'tsconfig.free-package.json'), 'utf8'));
+assert.ok(freeTsconfig.files.includes('src/control-center-contract.ts'), 'Free build must root the public Control Center contract');
+assert.strictEqual(freeTsconfig.compilerOptions.declaration, true, 'Free build must emit its own declarations');
+
 for (const required of contract.requiredPublicContracts) {
   assert.strictEqual(
     ownerFor(required),

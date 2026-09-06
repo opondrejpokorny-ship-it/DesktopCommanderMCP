@@ -2,13 +2,14 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "./.artifacts/free/build",
-    "declaration": false,
+    "declaration": true,
     "diagnostics": false,
     "extendedDiagnostics": false,
     "listEmittedFiles": false
   },
   "files": [
     "src/free-index.ts",
+    "src/control-center-contract.ts",
     "src/types/caffeinate.d.ts"
   ],
   "include": [],

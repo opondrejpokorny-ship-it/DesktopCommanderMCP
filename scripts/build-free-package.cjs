@@ -3,8 +3,8 @@
  * Build a deliberately non-publishable Free proof package.
  *
  * This packages the same shared Desktop Commander runtime through src/free-index.ts
- * while omitting prototype/commercial policy, approvals, Control Center and Team
- * audit implementation from the emitted dependency graph and npm tarball.
+ * while omitting prototype/commercial policy, approvals, paid Control Center
+ * extensions and Team audit implementation from the emitted dependency graph and npm tarball.
  */
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -97,6 +97,13 @@ async function main() {
     bin: {
       'desktop-commander-free': 'dist/index.js',
     },
+    exports: {
+      '.': './dist/index.js',
+      './control-center-contract': {
+        types: './dist/control-center-contract.d.ts',
+        import: './dist/control-center-contract.js',
+      },
+    },
     dependencies: rootPackage.dependencies,
     optionalDependencies: rootPackage.optionalDependencies,
   };
@@ -112,7 +119,10 @@ async function main() {
   const forbidden = [
     'dist/policy/',
     'dist/prototype/',
-    'dist/control-center/',
+    'dist/control-center/pro-extension.js',
+    'dist/control-center/team-extension.js',
+    'dist/control-center/demo-extension.js',
+    'dist/control-center/server.js',
     'dist/npm-scripts/access-control.js',
   ];
   for (const prefix of forbidden) {
