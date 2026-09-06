@@ -23,6 +23,7 @@ function renderWorkflowSummary(status: WorkflowStatus): string {
         lines.push('Warning: workflow profile changed after this task started.');
     }
 
+<<<<<<< HEAD
     const staleStages = status.stages.filter((stage) => stage.evidenceStale);
     if (staleStages.length) {
         lines.push(
@@ -49,6 +50,15 @@ function renderWorkflowSummary(status: WorkflowStatus): string {
             );
         } else {
             lines.push('Re-check the external dependency before advancing.');
+=======
+    if (status.operationalMemory.lessons.length > 0) {
+        lines.push('Relevant operational lessons from prior attempts:');
+        for (const item of status.operationalMemory.lessons) {
+            lines.push(
+                '- ' + item.lesson +
+                (item.occurrences > 1 ? ' (seen ' + item.occurrences + ' times)' : ''),
+            );
+>>>>>>> origin/prototype/free-pro-team
         }
     }
 

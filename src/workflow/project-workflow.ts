@@ -2,8 +2,24 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { USER_HOME } from '../config.js';
 import { validatePath } from '../tools/filesystem.js';
+import {
+    getOperationalMemorySummary,
+    OperationalMemorySummary,
+    recordOperationalToolFailure,
+} from './operational-memory.js';
+import {
+    resolveWorkflowMemoryPath,
+    resolveWorkflowStatePath,
+    resolveWorkflowStateRoot,
+} from './workflow-storage.js';
+
+export {
+    recordOperationalToolFailure,
+    resolveWorkflowMemoryPath,
+    resolveWorkflowStatePath,
+    resolveWorkflowStateRoot,
+};
 
 export type WorkflowStageStatus =
     | 'pending'
@@ -109,11 +125,16 @@ export interface WorkflowStatus {
     completed: boolean;
     stages: WorkflowStageView[];
     progress: WorkflowProgress;
+<<<<<<< HEAD
     nextStage: WorkflowStageView | null;
     readyStages: WorkflowStageView[];
     opportunisticStages: WorkflowStageView[];
     waitingStages: WorkflowStageView[];
     recommendedStage: WorkflowStageView | null;
+=======
+    nextStage: (WorkflowStageDefinition & WorkflowStageState) | null;
+    operationalMemory: OperationalMemorySummary;
+>>>>>>> origin/prototype/free-pro-team
     git: WorkflowGitSnapshot;
     gitBaseline: WorkflowGitSnapshot;
 }
@@ -304,27 +325,6 @@ export function parseProjectWorkflowProfile(value: unknown): ProjectWorkflowProf
         ...(metadata ? { metadata } : {}),
         stages,
     };
-}
-
-export function resolveWorkflowStateRoot(): string {
-    return path.resolve(
-        process.env.DESKTOP_COMMANDER_WORKFLOW_STATE_DIR ??
-            path.join(USER_HOME, '.claude-server-commander', 'project-workflow'),
-    );
-}
-
-function projectIdentity(projectRoot: string): string {
-    const normalized = path.normalize(path.resolve(projectRoot));
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
-export function resolveWorkflowStatePath(projectRoot: string): string {
-    const digest = crypto
-        .createHash('sha256')
-        .update(projectIdentity(projectRoot))
-        .digest('hex')
-        .slice(0, 24);
-    return path.join(resolveWorkflowStateRoot(), digest + '.json');
 }
 
 export function resolveProjectWorkflowProfilePath(projectRoot: string): string {
@@ -659,6 +659,7 @@ async function toStatus(
     state: WorkflowState,
     gitSnapshot?: WorkflowGitSnapshot,
 ): Promise<WorkflowStatus> {
+<<<<<<< HEAD
     const git = gitSnapshot ?? (await inspectGit(state.projectRoot));
     const stages: WorkflowStageView[] = state.profile.stages.map((definition) => {
         const stageState = state.stages[definition.id];
@@ -703,6 +704,20 @@ async function toStatus(
                 ? (opportunisticStages[0] ?? nextStage)
                 : (readyStages[0] ?? nextStage);
 
+=======
+    const stages = state.profile.stages.map((definition) => ({
+        ...definition,
+        ...state.stages[definition.id],
+    }));
+    const nextStage =
+        stages.find((stage) => stage.status === 'pending' || stage.status === 'blocked') ??
+        null;
+    const operationalMemory = await getOperationalMemorySummary(
+        state.projectRoot,
+        state.workflowId,
+        nextStage?.id,
+    );
+>>>>>>> origin/prototype/free-pro-team
     return {
         workflowId: state.workflowId,
         projectRoot: state.projectRoot,
@@ -717,6 +732,7 @@ async function toStatus(
         ...(state.completedAt ? { completedAt: state.completedAt } : {}),
         completed: !!state.completedAt,
         stages,
+<<<<<<< HEAD
         progress: progress(stages),
         nextStage,
         readyStages,
@@ -724,6 +740,12 @@ async function toStatus(
         waitingStages,
         recommendedStage,
         git,
+=======
+        progress: progress(state),
+        nextStage,
+        operationalMemory,
+        git: gitSnapshot ?? (await inspectGit(state.projectRoot)),
+>>>>>>> origin/prototype/free-pro-team
         gitBaseline: state.gitBaseline,
     };
 }
