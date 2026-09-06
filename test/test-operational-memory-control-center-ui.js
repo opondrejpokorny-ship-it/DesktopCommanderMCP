@@ -292,14 +292,23 @@ try {
   const loadMore = dom.window.document.getElementById('memory-load-more');
   assert.ok(loadMore && !loadMore.hidden, 'Load more should expose returned keyset cursor');
   paginationGate = new Promise((resolve) => { releasePagination = resolve; });
+  const continuationCallsBefore = memoryCalls.filter(
+    (url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor'),
+  ).length;
   loadMore.click();
   loadMore.click();
   await waitFor(
-    () => memoryCalls.filter((url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor')).length >= 2,
-    'overlapping Memory keyset continuation requests',
+    () => memoryCalls.filter((url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor')).length === continuationCallsBefore + 1,
+    'single Memory keyset continuation request',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(
+    memoryCalls.filter((url) => new URL(url).pathname === '/api/memory/groups' && new URL(url).searchParams.has('cursor')).length,
+    continuationCallsBefore + 1,
+    'repeated Load more clicks must not issue the same cursor twice',
   );
   releasePagination();
-  await waitFor(() => paginationCompletions >= 2, 'overlapping continuation completions');
+  await waitFor(() => paginationCompletions >= 1, 'continuation completion');
   paginationGate = undefined;
   releasePagination = undefined;
   const pagedRows = [...dom.window.document.querySelectorAll('[data-memory-group]')];
