@@ -504,3 +504,43 @@ export async function readOperationalMemoryGlobalGroups(
     db.close();
   }
 }
+/**
+ * Read the existing M3B Global aggregate without creating, synchronizing, or rebuilding it.
+ * This is intended for human-facing read-only navigation such as M6 Control Center Memory.
+ */
+export async function readOperationalMemoryGlobalGroupsReadOnly(): Promise<IndexedOperationalMemoryGlobalGroup[]> {
+  const indexPath = resolveOperationalMemoryGlobalIndexPath();
+  const stat = await fs.stat(indexPath).catch(() => null);
+  if (!stat?.isFile()) return [];
+  const db = openDatabase(indexPath, true);
+  if (!db) return [];
+  try {
+    validateSchema(db);
+    const rows = db.prepare(`
+      SELECT fingerprint, lesson_code,
+        MIN(first_seen_at) AS first_seen_at,
+        MAX(last_seen_at) AS last_seen_at,
+        SUM(occurrences) AS occurrences,
+        COUNT(*) AS distinct_projects
+      FROM global_project_lessons
+      GROUP BY fingerprint, lesson_code
+      ORDER BY last_seen_at DESC, fingerprint ASC
+    `).all();
+    return rows.flatMap((row) => {
+      const lessonCode = String(row.lesson_code);
+      if (!isOperationalLessonCode(lessonCode)) return [];
+      return [{
+        fingerprint: String(row.fingerprint),
+        lessonCode,
+        firstSeenAt: String(row.first_seen_at),
+        lastSeenAt: String(row.last_seen_at),
+        occurrences: Number(row.occurrences),
+        distinctProjects: Number(row.distinct_projects),
+      }];
+    });
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}

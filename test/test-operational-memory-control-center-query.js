@@ -16,6 +16,7 @@ process.env.DESKTOP_COMMANDER_WORKFLOW_STATE_DIR = stateRoot;
 const ids = {
   healthyA: 'aaaaaaaaaaaaaaaaaaaaaaaa',
   healthyB: 'bbbbbbbbbbbbbbbbbbbbbbbb',
+  healthyC: '999999999999999999999999',
   stale: 'cccccccccccccccccccccccc',
   missing: 'dddddddddddddddddddddddd',
   corrupt: 'eeeeeeeeeeeeeeeeeeeeeeee',
@@ -132,6 +133,60 @@ function createIndex(id, journalStat, { projectId, events = [], staleSizeDelta =
   db.close();
 }
 
+function seedGroups(id, { workflowGroups = [], projectGroups = [] }) {
+  const db = new DatabaseSync(indexPath(id));
+  const insertWorkflow = db.prepare(`
+    INSERT INTO groups (
+      workflow_id, fingerprint, kind, reason_code, lesson_code, source_tool, family,
+      stage_id, first_seen_at, last_seen_at, occurrences, latest_record_sequence
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  workflowGroups.forEach((row, index) => insertWorkflow.run(
+    row.workflowId, row.fingerprint, row.kind, row.reasonCode, row.lessonCode ?? null,
+    row.sourceTool, row.family, row.stageId ?? null, row.firstSeenAt, row.lastSeenAt,
+    row.occurrences, index + 1,
+  ));
+  const insertProject = db.prepare(`
+    INSERT INTO project_groups (
+      fingerprint, kind, reason_code, lesson_code, source_tool, family, stage_id,
+      first_seen_at, last_seen_at, occurrences, distinct_workflows,
+      latest_workflow_id, latest_record_sequence
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  projectGroups.forEach((row, index) => insertProject.run(
+    row.fingerprint, row.kind, row.reasonCode, row.lessonCode ?? null,
+    row.sourceTool, row.family, row.stageId ?? null, row.firstSeenAt, row.lastSeenAt,
+    row.occurrences, row.distinctWorkflows, row.latestWorkflowId, index + 1,
+  ));  db.close();
+}
+function createGlobalIndex(rows) {
+  const target = path.join(stateRoot, 'operational-memory.global.sqlite');
+  const db = new DatabaseSync(target);
+  db.exec(`
+    CREATE TABLE global_sources (
+      source_id TEXT PRIMARY KEY, project_key TEXT NOT NULL,
+      authority_size_bytes INTEGER NOT NULL, authority_mtime_ms REAL NOT NULL,
+      authority_ctime_ms REAL NOT NULL
+    );
+    CREATE TABLE global_project_lessons (
+      project_key TEXT NOT NULL, fingerprint TEXT NOT NULL, lesson_code TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, occurrences INTEGER NOT NULL,
+      PRIMARY KEY (project_key, fingerprint)
+    );
+    CREATE TABLE global_state (id INTEGER PRIMARY KEY CHECK (id = 1), schema_version INTEGER NOT NULL);
+    INSERT INTO global_state (id, schema_version) VALUES (1, 1);
+  `);
+  const insert = db.prepare(`
+    INSERT INTO global_project_lessons (
+      project_key, fingerprint, lesson_code, first_seen_at, last_seen_at, occurrences
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of rows) insert.run(
+    row.projectKey, row.fingerprint, row.lessonCode, row.firstSeenAt, row.lastSeenAt, row.occurrences,
+  );
+  db.close();
+}
+
 async function snapshotStateFiles() {
   const names = (await fs.readdir(stateRoot)).sort();
   const snapshot = new Map();
@@ -209,10 +264,118 @@ try {
   assert.ok(overview.generatedAt);
   const serialized = JSON.stringify(overview);
   for (const forbidden of [tempDir, stateRoot, projectId, 'healthy-a', 'project-stale']) {
-    assert.ok(!serialized.includes(forbidden), `overview must not expose `);
+    assert.ok(!serialized.includes(forbidden), `overview must not expose ${forbidden}`);
   }
   await assertSnapshotUnchanged(before);
-  console.log('✅ Operational Memory M6 read-only overview tests passed');
+  console.log('âś… Operational Memory M6 read-only overview tests passed');
+  seedGroups(ids.healthyA, {
+    workflowGroups: [
+      { workflowId: 'workflow-a1', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: first, lastSeenAt: second, occurrences: 2 },
+      { workflowId: 'workflow-a2', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: second, lastSeenAt: '2026-09-05T12:30:00.000Z', occurrences: 1 },
+      { workflowId: 'workflow-a1', fingerprint: 'fp-lesson', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', stageId: 'learn', firstSeenAt: first, lastSeenAt: second, occurrences: 1 },
+    ],
+    projectGroups: [
+      { fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: first, lastSeenAt: '2026-09-05T12:30:00.000Z', occurrences: 3, distinctWorkflows: 2, latestWorkflowId: 'workflow-a2' },
+      { fingerprint: 'fp-lesson', kind: 'lesson', reasonCode: 'learned_pattern', lessonCode: 'tooling_availability_check', sourceTool: 'project_workflow', family: 'workflow', stageId: 'learn', firstSeenAt: first, lastSeenAt: second, occurrences: 1, distinctWorkflows: 1, latestWorkflowId: 'workflow-a1' },
+    ],
+  });
+  seedGroups(ids.healthyB, {
+    workflowGroups: [
+      { workflowId: 'workflow-b1', fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: second, lastSeenAt: '2026-09-05T13:00:00.000Z', occurrences: 4 },
+    ],
+    projectGroups: [
+      { fingerprint: 'fp-shared', kind: 'error', reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect', firstSeenAt: second, lastSeenAt: '2026-09-05T13:00:00.000Z', occurrences: 4, distinctWorkflows: 1, latestWorkflowId: 'workflow-b1' },
+    ],
+  });
+
+  const otherProjectId = 'project-other';
+  const healthyCStat = await createJournal(ids.healthyC, 'healthy-c');
+  createIndex(ids.healthyC, healthyCStat, { projectId: otherProjectId, events: [] });
+  const bulkGroups = Array.from({ length: 205 }, (_, index) => ({
+    fingerprint: `bulk-${String(index).padStart(3, '0')}`, kind: 'error',
+    reasonCode: 'validation_error', sourceTool: 'write_file', family: 'filesystem', stageId: 'review',
+    firstSeenAt: third, lastSeenAt: third, occurrences: 1,
+    distinctWorkflows: 1, latestWorkflowId: `bulk-workflow-${index}`,
+  }));
+  seedGroups(ids.healthyC, { projectGroups: bulkGroups });
+  createGlobalIndex([
+    { projectKey: 'global-project-a', fingerprint: 'fp-global', lessonCode: 'tooling_availability_check', firstSeenAt: first, lastSeenAt: '2026-09-05T16:00:00.000Z', occurrences: 3 },
+    { projectKey: 'global-project-b', fingerprint: 'fp-global', lessonCode: 'tooling_availability_check', firstSeenAt: second, lastSeenAt: '2026-09-05T17:00:00.000Z', occurrences: 2 },
+    { projectKey: 'global-project-b', fingerprint: 'fp-invalid-global', lessonCode: 'PRIVATE_INVALID_LESSON_CODE', firstSeenAt: first, lastSeenAt: third, occurrences: 99 },
+  ]);
+  const groupBefore = await snapshotStateFiles();
+
+  const projectPage = await memoryQuery.queryOperationalMemoryGroups({
+    scope: 'project', projectId, fingerprint: 'fp-shared', kind: 'error',
+    reasonCode: 'not_found', sourceTool: 'read_file', family: 'filesystem', stageId: 'inspect',
+    from: '2026-09-05T12:00:00.000Z', to: '2026-09-05T13:30:00.000Z',
+    minOccurrences: 7, limit: 1,
+  });
+  assert.equal(projectPage.items.length, 1);
+  assert.equal(projectPage.items[0].projectId, projectId);
+  assert.equal(projectPage.items[0].scope, 'project');
+  assert.equal(projectPage.items[0].fingerprint, 'fp-shared');
+  assert.equal(projectPage.items[0].occurrences, 7);
+  assert.equal(projectPage.items[0].distinctWorkflows, 3);
+  assert.ok(projectPage.items[0].title.includes('read_file'));
+  assert.ok(projectPage.items[0].lesson.length > 0);
+
+  const lessonPage = await memoryQuery.queryOperationalMemoryGroups({
+    scope: 'project', projectId, lessonCode: 'tooling_availability_check', limit: 10,
+  });
+  assert.equal(lessonPage.items.length, 1);
+  assert.equal(lessonPage.items[0].fingerprint, 'fp-lesson');
+  const workflowSeen = [];
+  let workflowCursor;
+  do {
+    const page = await memoryQuery.queryOperationalMemoryGroups({
+      scope: 'workflow', projectId, fingerprint: 'fp-shared', limit: 1,
+      ...(workflowCursor ? { cursor: workflowCursor } : {}),
+    });
+    workflowSeen.push(...page.items.map((item) => item.workflowId));
+    workflowCursor = page.nextCursor;
+  } while (workflowCursor);
+  assert.deepEqual(workflowSeen.sort(), ['workflow-a1', 'workflow-a2', 'workflow-b1']);
+
+  const capped = await memoryQuery.queryOperationalMemoryGroups({
+    scope: 'project', projectId: otherProjectId, limit: 999,
+  });
+  assert.equal(capped.items.length, 200, 'group page hard cap must be 200');
+  assert.ok(capped.nextCursor);
+  const cappedSecond = await memoryQuery.queryOperationalMemoryGroups({
+    scope: 'project', projectId: otherProjectId, limit: 200, cursor: capped.nextCursor,
+  });
+  assert.equal(cappedSecond.items.length, 5);
+  const fingerprints = [...capped.items, ...cappedSecond.items].map((item) => item.fingerprint);
+  assert.equal(new Set(fingerprints).size, 205, 'cursor continuation must not duplicate groups');
+  await assert.rejects(
+    () => memoryQuery.queryOperationalMemoryGroups({ scope: 'project', cursor: 'not-a-valid-cursor' }),
+    /Invalid memory cursor/,
+  );
+  const globalPage = await memoryQuery.queryOperationalMemoryGroups({ scope: 'global', limit: 10 });
+  assert.equal(globalPage.items.length, 1, 'only valid M3B-whitelisted global lessons are browseable');
+  assert.equal(globalPage.items[0].scope, 'global');
+  assert.equal(globalPage.items[0].projectId, undefined);
+  assert.equal(globalPage.items[0].fingerprint, 'fp-global');
+  assert.equal(globalPage.items[0].lessonCode, 'tooling_availability_check');
+  assert.equal(globalPage.items[0].occurrences, 5);
+  assert.equal(globalPage.items[0].distinctProjects, 2);
+  assert.ok(!JSON.stringify(globalPage).includes('PRIVATE_INVALID_LESSON_CODE'));
+
+  const options = await memoryQuery.getOperationalMemoryFilterOptions();
+  assert.ok(options.projects.some((project) => project.projectId === projectId));
+  assert.ok(options.projects.some((project) => project.projectId === otherProjectId));
+  assert.deepEqual(options.kinds, ['error', 'limit', 'lesson']);
+  assert.ok(options.reasonCodes.includes('not_found'));
+  assert.ok(options.reasonCodes.includes('learned_pattern'));
+  assert.ok(options.lessonCodes.includes('tooling_availability_check'));
+  assert.ok(options.sourceTools.includes('read_file'));
+  assert.ok(options.families.includes('filesystem'));
+  assert.ok(options.stageIds.includes('inspect'));
+  assert.ok(!JSON.stringify(options).includes('PRIVATE_INVALID_LESSON_CODE'));
+
+  await assertSnapshotUnchanged(groupBefore);
+  console.log('âś… Operational Memory M6 group/filter/global tests passed');
 } finally {
   if (previousStateRoot === undefined) delete process.env.DESKTOP_COMMANDER_WORKFLOW_STATE_DIR;
   else process.env.DESKTOP_COMMANDER_WORKFLOW_STATE_DIR = previousStateRoot;
