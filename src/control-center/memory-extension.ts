@@ -297,7 +297,7 @@ const MEMORY_UI_SCRIPT = `(() => {
   let nextCursor;
   let requestGeneration = 0;
   let eventRequestGeneration = 0;
-  let activeAppendCursor;
+  let activeAppendKey;
 
   function setText(selector, value) {
     const element = document.querySelector(selector);
@@ -432,12 +432,12 @@ const MEMORY_UI_SCRIPT = `(() => {
     const generation = append ? requestGeneration : ++requestGeneration;
     if (!append) {
       nextCursor = undefined;
-      activeAppendCursor = undefined;
       loadMore.hidden = true;
     }
     const cursorValue = append ? nextCursor : undefined;
-    if (append && (!cursorValue || activeAppendCursor === cursorValue)) return;
-    if (append) activeAppendCursor = cursorValue;
+    const appendKey = append && cursorValue ? String(generation) + ':' + cursorValue : undefined;
+    if (append && (!cursorValue || activeAppendKey === appendKey)) return;
+    if (append) activeAppendKey = appendKey;
     status.textContent = append ? 'Loading more memory…' : 'Loading memory groups…';
     try {
       const page = await api('/api/memory/groups?' + groupQuery(cursorValue));
@@ -455,7 +455,7 @@ const MEMORY_UI_SCRIPT = `(() => {
       empty(groupsRoot, error instanceof Error ? error.message : 'Unable to load memory groups.');
       status.textContent = 'Memory groups unavailable.';
     } finally {
-      if (append && activeAppendCursor === cursorValue) activeAppendCursor = undefined;
+      if (append && activeAppendKey === appendKey) activeAppendKey = undefined;
     }
   }
 
