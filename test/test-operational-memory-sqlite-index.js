@@ -18,6 +18,7 @@ import {
 import {
   resolveWorkflowMemoryIndexPath,
 } from '../dist/workflow/workflow-storage.js';
+import { queryOperationalMemoryEvents } from '../dist/workflow/operational-memory-query.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-memory-m2-'));
 const projectRoot = path.join(tempDir, 'repo');
@@ -81,16 +82,40 @@ try {
   ).get(started.workflowId, status.operationalMemory.lessons[0].fingerprint);
   const indexState = db.prepare('SELECT * FROM index_state WHERE id = 1').get();
   const eventColumns = db.prepare('PRAGMA table_info(events)').all().map((row) => row.name);
+  const eventIndexes = db.prepare("PRAGMA index_list('events')").all().map((row) => String(row.name));
   db.close();
 
   assert.equal(Number(eventCount), 2);
   assert.equal(Number(group.occurrences), 2);
   assert.equal(Number(indexState.schema_version), 5);
+  assert.ok(eventIndexes.includes('events_fingerprint_order'), 'fresh v5 index must include event-order helper index');
   assert.ok(Number(indexState.indexed_through_offset) > 0);
   assert.equal(Number(indexState.authority_size_bytes), (await fs.stat(memoryPath)).size);
   for (const forbidden of ['summary', 'lesson', 'event_id', 'raw_args', 'raw_command', 'file_contents']) {
     assert.ok(!eventColumns.includes(forbidden), `events must not persist ${forbidden}`);
   }
+
+  db = new DatabaseSync(indexPath);
+  db.exec('DROP INDEX events_fingerprint_order');
+  db.close();
+  const legacyBytesBefore = await fs.readFile(indexPath);
+  const legacyStatBefore = await fs.stat(indexPath);
+  const legacyPage = await queryOperationalMemoryEvents({
+    scope: 'workflow', projectId: started.projectIdentity.projectId, workflowId: started.workflowId,
+    fingerprint: status.operationalMemory.lessons[0].fingerprint, limit: 10,
+  });
+  assert.equal(legacyPage.items.length, 2, 'legacy v5 index must remain readable before writable maintenance');
+  const legacyBytesAfter = await fs.readFile(indexPath);
+  const legacyStatAfter = await fs.stat(indexPath);
+  assert.ok(legacyBytesBefore.equals(legacyBytesAfter), 'read-only M6 browse must not mutate legacy v5 index bytes');
+  assert.equal(legacyStatAfter.mtimeMs, legacyStatBefore.mtimeMs, 'read-only M6 browse must not mutate legacy v5 index mtime');
+  status = await getProjectWorkflowStatus({ projectRoot });
+  db = new DatabaseSync(indexPath, { readOnly: true });
+  const upgradedIndexes = db.prepare("PRAGMA index_list('events')").all().map((row) => String(row.name));
+  const upgradedState = db.prepare('SELECT schema_version FROM index_state WHERE id = 1').get();
+  db.close();
+  assert.ok(upgradedIndexes.includes('events_fingerprint_order'), 'normal writable synchronization must add helper index in place');
+  assert.equal(Number(upgradedState.schema_version), 5, 'helper index must not bump the persisted schema contract');
 
   status = await getProjectWorkflowStatus({ projectRoot });
   assert.equal(status.operationalMemory.totalEvents, 2);
