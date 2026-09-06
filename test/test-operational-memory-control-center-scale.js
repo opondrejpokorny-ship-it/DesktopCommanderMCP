@@ -75,6 +75,10 @@ function cloneEvent(seed, index) {
     ...seed,
     id: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
     occurredAt: new Date(BASE_TIME_MS + index).toISOString(),
+    ...(index === 1 ? {
+      summary: PRIVACY_MARKERS.slice(0, 3).join('|'),
+      lesson: PRIVACY_MARKERS.slice(3).join('|'),
+    } : {}),
   };
 }
 
@@ -89,13 +93,6 @@ async function appendScaleClones(memoryPath, lessonSeed, failureSeed) {
     }
     await fs.appendFile(memoryPath, lines.join('\n') + '\n', 'utf8');
   }
-}
-
-async function appendInvalidPrivacyNeighbors(memoryPath) {
-  const lines = PRIVACY_MARKERS.map((marker, index) => JSON.stringify({
-    version: 1, invalidScaleNeighbor: index + 1, marker,
-  }));
-  await fs.appendFile(memoryPath, lines.join('\n') + '\n', 'utf8');
 }
 
 async function snapshotMemoryFiles(stateRoot) {
@@ -222,7 +219,6 @@ try {
   assert.notEqual(lessonSeed.fingerprint, failureSeed.fingerprint);
 
   await appendScaleClones(memoryPath, lessonSeed, failureSeed);
-  await appendInvalidPrivacyNeighbors(memoryPath);
   await recordNotFound(primary);
   const primaryDb = new DatabaseSync(primaryIndexPath, { readOnly: true });
   let primaryEvents;
