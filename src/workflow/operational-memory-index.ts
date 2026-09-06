@@ -161,6 +161,10 @@ function initializeSchema(db: SqliteDatabase): void {
   createSchema(db);
   createAggregateSchema(db);
 }
+function createEventOrderIndex(db: SqliteDatabase): void {
+  db.exec(`CREATE INDEX IF NOT EXISTS events_fingerprint_order
+    ON events(fingerprint, occurred_at DESC, workflow_id ASC, record_sequence DESC);`);
+}
 
 interface IndexState {
   schemaVersion: number;
@@ -483,6 +487,7 @@ async function rebuildIndex(
     } else {
       writeIndexState(db, 0, 0, 0, 0, 0, scope, EMPTY_AUTHORITY_CHAIN);
     }
+    createEventOrderIndex(db);
     validateSchema(db);
     buildComplete = true;
   } finally {
@@ -527,6 +532,7 @@ async function synchronizeExistingIndex(
   try {
     initializeSchema(db);
     validateSchema(db);
+    try { createEventOrderIndex(db); } catch { /* optional physical optimization; retry later */ }
     const state = readIndexState(db);
     if (!state) return false;
     if (scope?.projectId && state.projectId !== scope.projectId) return false;
