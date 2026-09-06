@@ -92,7 +92,7 @@ try {
   assert.strictEqual(neutral.json.entitlement.tier, 'team');
   assert.deepStrictEqual(
     neutral.json.activeExtensions.map((entry) => entry.id),
-    ['pro', 'team', 'demo'],
+    ['pro', 'team', 'demo', 'memory'],
   );
   for (const forbiddenKey of ['policy', 'pendingApprovals', 'auditEvents', 'detectedDeviceIdentity']) {
     assert.ok(!(forbiddenKey in neutral.json), `/api/state must remain host-neutral: ${forbiddenKey}`);
@@ -210,7 +210,7 @@ try {
   assert.strictEqual(stateAfterTier.json.entitlement.tier, 'pro');
   assert.deepStrictEqual(
     stateAfterTier.json.activeExtensions.map((entry) => entry.id),
-    ['pro', 'demo'],
+    ['pro', 'demo', 'memory'],
   );
   const teamAfterTier = await api(controlCenter, '/api/team/device');
   assert.strictEqual(teamAfterTier.response.status, 404);

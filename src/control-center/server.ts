@@ -6,6 +6,7 @@ import type {
 } from './contract.js';
 import { createDemoControlCenterExtension } from './demo-extension.js';
 import { startControlCenterHost } from './host.js';
+import { createMemoryControlCenterExtension } from './memory-extension.js';
 import { createProControlCenterExtension } from './pro-extension.js';
 import { createTeamControlCenterExtension } from './team-extension.js';
 
@@ -27,6 +28,7 @@ export async function startControlCenter(
             createProControlCenterExtension({ auditSink }),
             createTeamControlCenterExtension(),
             createDemoControlCenterExtension(),
+            createMemoryControlCenterExtension(),
         ],
     });
 }
