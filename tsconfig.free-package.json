@@ -9,6 +9,7 @@
   },
   "files": [
     "src/free-index.ts",
+    "src/commercial-contract.ts",
     "src/control-center-contract.ts",
     "src/types/caffeinate.d.ts"
   ],

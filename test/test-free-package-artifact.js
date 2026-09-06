@@ -30,6 +30,8 @@ const normalizedFiles = manifest.files.map((entry) =>
   String(entry.path ?? entry).replaceAll('\\', '/').toLowerCase()
 );
 for (const required of [
+  'dist/commercial-contract.js',
+  'dist/commercial-contract.d.ts',
   'dist/control-center-contract.js',
   'dist/control-center-contract.d.ts',
   'dist/control-center/contract.js',
@@ -78,10 +80,22 @@ try {
     'desktop-commander-free-prototype',
   );
   const installedPackage = JSON.parse(await fs.readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  assert.deepStrictEqual(installedPackage.exports['./commercial-contract'], {
+    types: './dist/commercial-contract.d.ts',
+    import: './dist/commercial-contract.js',
+  });
   assert.deepStrictEqual(installedPackage.exports['./control-center-contract'], {
     types: './dist/control-center-contract.d.ts',
     import: './dist/control-center-contract.js',
   });
+  const commercialContractSmoke = path.join(consumerDir, 'commercial-contract-smoke.mjs');
+  await fs.writeFile(commercialContractSmoke, `
+import { COMMERCIAL_CONTRACT_VERSION, CapabilityRegistry, configureRuntimeServices } from '@wonderwhy-er/desktop-commander-free-prototype/commercial-contract';
+if (COMMERCIAL_CONTRACT_VERSION !== 1) throw new Error('Commercial contract version mismatch');
+if (typeof CapabilityRegistry !== 'function' || typeof configureRuntimeServices !== 'function') throw new Error('Commercial contract runtime exports missing');
+console.log('FREE_COMMERCIAL_CONTRACT_OK');
+`, 'utf8');
+  execFileSync(process.execPath, [commercialContractSmoke], { cwd: consumerDir, stdio: 'inherit' });
   const controlCenterSmoke = path.join(consumerDir, 'control-center-smoke.mjs');
   await fs.writeFile(controlCenterSmoke, `
 import { startControlCenterHost } from '@wonderwhy-er/desktop-commander-free-prototype/control-center-contract';
