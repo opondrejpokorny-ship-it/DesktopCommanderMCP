@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Recover one canonical RDC process
-        shell: powershell
+        shell: powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: |
           $ErrorActionPreference = 'Stop'
           $canonicalRoot = 'C:\DesktopCommanderTierPrototype'
