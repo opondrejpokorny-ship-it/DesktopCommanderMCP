@@ -72,12 +72,12 @@ function Get-CmdLaunchTarget([string]$CommandLine) {
   # trailing cmd grammar, extra arguments, and ambiguous quoting fail closed.
   $invocation = [regex]::Match(
     $CommandLine,
-    '(?is)^\s*(?:"[^"\r\n]*\\cmd\.exe"|[^\s"\r\n]*cmd\.exe)(?:\s+/(?:d|q|s))*\s+/c\s+(?<tail>.+?)\s*$'
+    '(?is)^[ \t]*(?:"[^"\r\n]*\\cmd\.exe"|[^ \t"\r\n]*cmd\.exe)[ \t]+/c[ \t]+(?<tail>.+?)[ \t]*$'
   )
   if (-not $invocation.Success) { return $null }
 
   $tail = $invocation.Groups['tail'].Value.Trim()
-  $targetMatch = [regex]::Match($tail, '^""(?<target>[^"\r\n]+)"\s*"$')
+  $targetMatch = [regex]::Match($tail, '^""(?<target>[^"\r\n]+)"[ \t]*"$')
   if (-not $targetMatch.Success) { return $null }
 
   $target = $targetMatch.Groups['target'].Value
