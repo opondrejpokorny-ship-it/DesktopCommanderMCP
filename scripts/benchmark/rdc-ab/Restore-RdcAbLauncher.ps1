@@ -62,6 +62,21 @@ try {
     catch [Threading.AbandonedMutexException] { $ownsSupervisorMutex = $true }
     if (-not $ownsSupervisorMutex) { throw 'RDC A/B supervisor is active; restore stopped without changes' }
 
+    $installedDelegatorSupervisor = Join-Path $root 'host\Run-RdcAbSupervisor.ps1'
+    $expectedDelegator = @(
+      '@echo off',
+      'setlocal',
+      ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $installedDelegatorSupervisor + '" -BenchmarkRoot "' + $root + '"'),
+      'exit /b %errorlevel%'
+    ) -join "`r`n"
+    $expectedDelegator += "`r`n"
+    $expectedBytes = [Text.Encoding]::ASCII.GetBytes($expectedDelegator)
+    $actualBytes = [IO.File]::ReadAllBytes($launcher)
+    if ($actualBytes.Length -ne $expectedBytes.Length) { throw 'Launcher is not the installed RDC A/B delegator; restore stopped without changes' }
+    for ($index = 0; $index -lt $expectedBytes.Length; $index++) {
+      if ($actualBytes[$index] -ne $expectedBytes[$index]) { throw 'Launcher is not the installed RDC A/B delegator; restore stopped without changes' }
+    }
+
     $temp = "$launcher.restore-$PID-$([guid]::NewGuid().ToString('N'))"
     [IO.File]::WriteAllBytes($temp, [IO.File]::ReadAllBytes($backup))
     try { Move-Item -LiteralPath $temp -Destination $launcher -Force }
