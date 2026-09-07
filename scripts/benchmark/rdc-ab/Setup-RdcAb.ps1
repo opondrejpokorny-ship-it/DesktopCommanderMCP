@@ -178,6 +178,8 @@ try {
   Assert-RdcAbInheritedChildAcl $stage (Join-Path $stage 'active-variant.txt') 'Active variant pointer'
   Assert-RdcAbInheritedChildAcl $stage $clean.Repo 'Clean runtime root'
   Assert-RdcAbInheritedChildAcl $stage $prototype.Repo 'Prototype runtime root'
+  Assert-RdcAbRuntimeTreeAcl $stage $clean.Repo 'Clean runtime tree'
+  Assert-RdcAbRuntimeTreeAcl $stage $prototype.Repo 'Prototype runtime tree'
   if ($testControl) {
     [IO.File]::WriteAllText((Join-Path $testControl 'ready'), '')
     $releasePath = Join-Path $testControl 'release'

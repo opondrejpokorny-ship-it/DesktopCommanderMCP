@@ -202,6 +202,7 @@ function Get-ValidatedSelection {
   if ($null -eq $entry) { throw "Manifest is missing variant: $variant" }
   $repo = Assert-WithinRoot ([string]$entry.repoPath) "$variant repoPath"
   Assert-RdcAbInheritedChildAcl $root $repo "$variant runtime root"
+  Assert-RdcAbRuntimeTreeAcl $root $repo "$variant runtime tree"
   $actualSha = (& git.exe -C $repo rev-parse HEAD 2>$null).Trim()
   if ($LASTEXITCODE -ne 0) { throw "Unable to read $variant Git HEAD" }
   $expectedSha = ([string]$entry.expectedSha).ToLowerInvariant()

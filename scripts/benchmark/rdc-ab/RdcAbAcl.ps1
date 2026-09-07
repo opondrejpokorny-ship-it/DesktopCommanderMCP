@@ -5,7 +5,9 @@ function Assert-RdcAbAclCapableVolume([string]$Path) {
   $full = [IO.Path]::GetFullPath($Path)
   $driveRoot = [IO.Path]::GetPathRoot($full)
   if (-not $driveRoot) { throw 'RDC A/B ACL boundary requires a local drive path' }
+  if ($full.StartsWith('\\')) { throw 'RDC A/B ACL boundary requires a local fixed drive path' }
   $drive = [IO.DriveInfo]::new($driveRoot)
+  if ($drive.DriveType -ne [IO.DriveType]::Fixed) { throw 'RDC A/B ACL boundary requires a local fixed drive' }
   if (-not $drive.DriveFormat.Equals('NTFS', [StringComparison]::OrdinalIgnoreCase)) {
     throw "RDC A/B ACL boundary requires NTFS; found $($drive.DriveFormat)"
   }
@@ -26,11 +28,14 @@ function Get-RdcAbTrustedSidSet([string]$OwnerSid) {
 
 function Assert-RdcAbProtectedRootAcl([string]$Path) {
   Assert-RdcAbAclCapableVolume $Path
+  $attrs = [IO.File]::GetAttributes($Path)
+  if (($attrs -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'RDC A/B benchmark root must not be a reparse point' }
   $acl = Get-Acl -LiteralPath $Path
   if (-not $acl.AreAccessRulesProtected) { throw 'RDC A/B benchmark root ACL must be protected from inheritance' }
   $ownerSid = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-  if ($ownerSid -in @('S-1-1-0','S-1-5-11','S-1-5-32-545')) {
-    throw 'RDC A/B benchmark root owner is not a trusted principal'
+  $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  if (-not $ownerSid.Equals($currentSid, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'RDC A/B benchmark root owner must equal the current process user'
   }
   $trusted = Get-RdcAbTrustedSidSet $ownerSid
   $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -71,6 +76,39 @@ function Assert-RdcAbInheritedChildAcl([string]$Root, [string]$Path, [string]$La
     }
     if (-not $trusted.Contains($rule.IdentityReference.Value)) {
       throw "$Label ACL inherits an untrusted principal: $($rule.IdentityReference.Value)"
+    }
+  }
+}
+
+function Assert-RdcAbRuntimeTreeAcl([string]$Root, [string]$RuntimeRoot, [string]$Label) {
+  $rootOwner = Assert-RdcAbProtectedRootAcl $Root
+  $trusted = Get-RdcAbTrustedSidSet $rootOwner
+  $stack = New-Object 'System.Collections.Generic.Stack[string]'
+  $stack.Push([IO.Path]::GetFullPath($RuntimeRoot))
+  while ($stack.Count -gt 0) {
+    $current = $stack.Pop()
+    $attributes = [IO.File]::GetAttributes($current)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "$Label contains a reparse point: $current"
+    }
+    $acl = Get-Acl -LiteralPath $current
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (-not $owner.Equals($rootOwner, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "$Label contains an object not owned by the benchmark owner: $current"
+    }
+    if ($acl.AreAccessRulesProtected) { throw "$Label contains a protected descendant ACL: $current" }
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    foreach ($rule in $rules) {
+      if (-not $rule.IsInherited) { throw "$Label contains an explicit descendant ACL rule: $current" }
+      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+        throw "$Label contains a deny descendant ACL rule: $current"
+      }
+      if (-not $trusted.Contains($rule.IdentityReference.Value)) {
+        throw "$Label contains an untrusted descendant ACL principal: $($rule.IdentityReference.Value)"
+      }
+    }
+    if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+      foreach ($child in [IO.Directory]::GetFileSystemEntries($current)) { $stack.Push($child) }
     }
   }
 }

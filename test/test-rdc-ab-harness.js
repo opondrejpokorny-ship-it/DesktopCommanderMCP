@@ -199,7 +199,7 @@ foreach ($child in Get-ChildItem -LiteralPath $target -Force) {
   });
 }
 function grantAuthenticatedUsersModify(target) {
-  execFileSync('icacls.exe', [target, '/grant', '*S-1-5-11:(OI)(CI)M', '/Q'], {
+  execFileSync('icacls.exe', [target, '/grant', '*S-1-5-11:M', '/Q'], {
     encoding: 'utf8', windowsHide: true,
   });
 }
@@ -592,6 +592,16 @@ if (process.platform === 'win32') {
     assert.notEqual(preparedValidation.status, 0);
     assert.match(`${preparedValidation.stdout}\n${preparedValidation.stderr}`, /ACL|permission|security boundary|untrusted|protected/i);
     protectBenchmarkRootForTest(preparedRoot);
+
+    const preparedEntrypoint = path.join(preparedRoot, 'prototype', 'repo', 'dist', 'index.js');
+    grantAuthenticatedUsersModify(preparedEntrypoint);
+    preparedValidation = validatePrepared();
+    assert.notEqual(preparedValidation.status, 0);
+    assert.match(`${preparedValidation.stdout}\n${preparedValidation.stderr}`, /ACL|permission|untrusted|runtime|child/i);
+    execFileSync('icacls.exe', [preparedEntrypoint, '/reset', '/Q'], { encoding: 'utf8', windowsHide: true });
+    preparedValidation = validatePrepared();
+    assert.equal(preparedValidation.status, 0, `${preparedValidation.stdout}\n${preparedValidation.stderr}`);
+    console.log('PASS RDC A/B supervisor rejects unsafe descendant runtime ACL');
     const preparedManifest = JSON.parse(await fs.readFile(path.join(preparedRoot, 'manifest.json'), 'utf8'));
     assert.equal(preparedManifest.variants.clean.expectedSha, sourceCleanSha);
     assert.equal(preparedManifest.variants.prototype.expectedSha, sourcePrototypeSha);
