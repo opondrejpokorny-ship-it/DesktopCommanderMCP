@@ -1,0 +1,83 @@
+name: RDC Recovery 2026-09-07
+
+on:
+  push:
+    branches:
+      - ops/rdc-recovery-20260907
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Recover one canonical RDC process
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $canonicalRoot = 'C:\DesktopCommanderTierPrototype'
+          $benchmarkRoot = 'C:\RDC-Benchmark'
+          $launcher = 'C:\Users\ondre\AppData\Local\DesktopCommanderRemote\start-remote.cmd'
+          $entry = Join-Path $canonicalRoot 'dist\index.js'
+          if (-not (Test-Path -LiteralPath $entry -PathType Leaf)) { throw "Canonical RDC entrypoint missing: $entry" }
+          if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "Canonical RDC launcher missing: $launcher" }
+
+          function Get-RemoteNodes {
+            @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
+              $cmd = [string]$_.CommandLine
+              $cmd -match 'dist[\\/]index\.js' -and $cmd -match '(?:^|\s)remote(?:\s|$)'
+            })
+          }
+          function Get-BenchmarkSupervisors {
+            @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object {
+              [string]$_.CommandLine -like '*Run-RdcAbSupervisor.ps1*'
+            })
+          }
+          function Get-Launchers {
+            @(Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" | Where-Object {
+              [string]$_.CommandLine -like '*DesktopCommanderRemote*start-remote.cmd*'
+            })
+          }
+
+          $nodes = Get-RemoteNodes
+          $canonicalBefore = @($nodes | Where-Object { [string]$_.CommandLine -like "*$canonicalRoot*" })
+          $benchmarkBefore = @($nodes | Where-Object { [string]$_.CommandLine -like "*$benchmarkRoot*" })
+          $supervisors = Get-BenchmarkSupervisors
+          Write-Host "BEFORE canonical=$($canonicalBefore.Count) benchmark=$($benchmarkBefore.Count) supervisors=$($supervisors.Count) launchers=$((Get-Launchers).Count)"
+
+          foreach ($p in $supervisors) {
+            Write-Host "Stopping stale benchmark supervisor pid=$($p.ProcessId)"
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+          }
+          foreach ($node in @($benchmarkBefore + $canonicalBefore)) {
+            Write-Host "Stopping RDC process tree pid=$($node.ProcessId)"
+            & taskkill.exe /PID $node.ProcessId /T /F | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "taskkill failed for pid=$($node.ProcessId) exit=$LASTEXITCODE" }
+          }
+
+          Start-Sleep -Seconds 3
+          if ((Get-Launchers).Count -eq 0) {
+            Write-Host 'Canonical launcher absent; starting it.'
+            Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', ('"' + $launcher + '"') -WindowStyle Hidden
+          } else {
+            Write-Host 'Canonical launcher already present; allowing its watch loop to restart RDC.'
+          }
+
+          Start-Sleep -Seconds 20
+          $after = Get-RemoteNodes
+          $canonicalAfter = @($after | Where-Object { [string]$_.CommandLine -like "*$canonicalRoot*" })
+          $benchmarkAfter = @($after | Where-Object { [string]$_.CommandLine -like "*$benchmarkRoot*" })
+          $launcherAfter = Get-Launchers
+          Write-Host "AFTER canonical=$($canonicalAfter.Count) benchmark=$($benchmarkAfter.Count) supervisors=$((Get-BenchmarkSupervisors).Count) launchers=$($launcherAfter.Count)"
+          $canonicalAfter | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+          if ($canonicalAfter.Count -ne 1) { throw "Expected exactly one canonical RDC process, got $($canonicalAfter.Count)" }
+          if ($benchmarkAfter.Count -ne 0) { throw "Expected zero benchmark RDC processes, got $($benchmarkAfter.Count)" }
+          if ($launcherAfter.Count -lt 1) { throw 'Canonical launcher is not running after recovery' }
+
+          $log = 'C:\Users\ondre\AppData\Local\DesktopCommanderRemote\remote-prototype.log'
+          if (Test-Path -LiteralPath $log) {
+            Write-Host '--- remote log tail ---'
+            Get-Content -LiteralPath $log -Tail 80
+          }
