@@ -148,6 +148,72 @@ function windowsProcessCreationIso(pid) {
     encoding: 'utf8', windowsHide: true,
   }).trim();
 }
+function windowsAclSummary(target) {
+  const script = `
+$acl = Get-Acl -LiteralPath $env:RDC_AB_ACL_TARGET
+$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$trusted = @($owner, 'S-1-5-18', 'S-1-5-32-544')
+$mask = [System.Security.AccessControl.FileSystemRights]::Write -bor
+  [System.Security.AccessControl.FileSystemRights]::Delete -bor
+  [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+  [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+  [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+$unsafe = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+  $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+  $_.IdentityReference.Value -notin $trusted -and
+  (($_.FileSystemRights -band $mask) -ne 0)
+} | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+[ordered]@{ protected = $acl.AreAccessRulesProtected; ownerSid = $owner; unsafeWriteSids = $unsafe } |
+  ConvertTo-Json -Compress
+`;
+  const stdout = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+    encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, RDC_AB_ACL_TARGET: target },
+  }).trim();
+  return JSON.parse(stdout);
+}
+function protectBenchmarkRootForTest(target) {
+  const script = `
+$target = [IO.Path]::GetFullPath($env:RDC_AB_ACL_TARGET)
+$current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl.SetOwner($current)
+$acl.SetAccessRuleProtection($true, $false)
+$inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+foreach ($sidText in @($current.Value, 'S-1-5-18', 'S-1-5-32-544') | Select-Object -Unique) {
+  $sid = New-Object Security.Principal.SecurityIdentifier($sidText)
+  $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+    $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit,
+    [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+  [void]$acl.AddAccessRule($rule)
+}
+Set-Acl -LiteralPath $target -AclObject $acl
+foreach ($child in Get-ChildItem -LiteralPath $target -Force) {
+  & icacls.exe $child.FullName /reset /T /C /Q | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "icacls reset failed for $($child.FullName)" }
+}
+`;
+  execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+    encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, RDC_AB_ACL_TARGET: target },
+  });
+}
+function grantAuthenticatedUsersModify(target) {
+  const script = `
+$acl = Get-Acl -LiteralPath $env:RDC_AB_ACL_TARGET
+$sid = New-Object Security.Principal.SecurityIdentifier('S-1-5-11')
+$inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+$rule = New-Object Security.AccessControl.FileSystemAccessRule(
+  $sid, [Security.AccessControl.FileSystemRights]::Modify, $inherit,
+  [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+[void]$acl.AddAccessRule($rule)
+Set-Acl -LiteralPath $env:RDC_AB_ACL_TARGET -AclObject $acl
+`;
+  execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+    encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, RDC_AB_ACL_TARGET: target },
+  });
+}
 async function makeRepo(repoPath, marker) {
   await fs.mkdir(path.join(repoPath, 'dist'), { recursive: true });
   execFileSync('git', ['init', repoPath]);
@@ -521,6 +587,21 @@ if (process.platform === 'win32') {
       encoding: 'utf8', env: setupEnvironment,
     });
     assert.equal(setupRun.status, 0, `${setupRun.stdout}\n${setupRun.stderr}`);
+    const preparedAcl = windowsAclSummary(preparedRoot);
+    assert.equal(preparedAcl.protected, true, 'setup must publish a protected benchmark-root DACL');
+    assert.deepEqual(preparedAcl.unsafeWriteSids, [], 'setup must remove untrusted benchmark-root write grants');
+    const setupSupervisor = path.resolve('scripts/benchmark/rdc-ab/Run-RdcAbSupervisor.ps1');
+    const validatePrepared = () => spawnSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', setupSupervisor,
+      '-BenchmarkRoot', preparedRoot, '-ValidateOnly',
+    ], { encoding: 'utf8' });
+    let preparedValidation = validatePrepared();
+    assert.equal(preparedValidation.status, 0, `${preparedValidation.stdout}\n${preparedValidation.stderr}`);
+    grantAuthenticatedUsersModify(preparedRoot);
+    preparedValidation = validatePrepared();
+    assert.notEqual(preparedValidation.status, 0);
+    assert.match(`${preparedValidation.stdout}\n${preparedValidation.stderr}`, /ACL|permission|security boundary|untrusted|protected/i);
+    protectBenchmarkRootForTest(preparedRoot);
     const preparedManifest = JSON.parse(await fs.readFile(path.join(preparedRoot, 'manifest.json'), 'utf8'));
     assert.equal(preparedManifest.variants.clean.expectedSha, sourceCleanSha);
     assert.equal(preparedManifest.variants.prototype.expectedSha, sourcePrototypeSha);
@@ -652,6 +733,7 @@ if (process.platform === 'win32') {
     },
   }));
   await fs.writeFile(path.join(hostRoot, 'active-variant.txt'), 'prototype\n');
+  protectBenchmarkRootForTest(hostRoot);
   const launcher = path.join(hostSandbox, 'start-remote.cmd');
   const originalLauncher = '@echo off\r\necho ORIGINAL\r\n';
   await fs.writeFile(launcher, originalLauncher);
@@ -934,6 +1016,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     },
   }));
   await fs.writeFile(path.join(handoffRoot, 'active-variant.txt'), 'prototype\n');
+  protectBenchmarkRootForTest(handoffRoot);
 
   const canonicalRepo = path.join(handoffSandbox, 'DesktopCommanderTierPrototype');
   const canonicalEntrypoint = path.join(canonicalRepo, 'dist', 'index.js');
