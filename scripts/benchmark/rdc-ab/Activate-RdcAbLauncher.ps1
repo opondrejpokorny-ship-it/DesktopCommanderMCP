@@ -66,22 +66,26 @@ for ($index = 0; $index -lt $expectedBytes.Length; $index++) {
 
 function Get-CmdLaunchTarget([string]$CommandLine) {
   if (-not $CommandLine) { return $null }
-  $match = [regex]::Match($CommandLine, '(?is)(?:^|\s)/(?:c|k)(?::|\s+)(?<tail>.+)$')
-  if (-not $match.Success) { return $null }
-  $tail = $match.Groups['tail'].Value.Trim()
-  if ($tail.StartsWith('""') -and $tail.EndsWith('"')) { $tail = $tail.Substring(1, $tail.Length - 2).Trim() }
-  if ($tail.StartsWith('"')) {
-    $closingQuote = $tail.IndexOf('"', 1)
-    if ($closingQuote -lt 0) { return $null }
-    $target = $tail.Substring(1, $closingQuote - 1)
-  } else {
-    $separator = $tail.IndexOfAny([char[]]@(' ', "`t"))
-    $target = if ($separator -lt 0) { $tail } else { $tail.Substring(0, $separator) }
+
+  # Win32_Process.CommandLine includes cmd.exe plus its arguments. Activation may
+  # retire only the exact /c watcher invocation that runs this launcher. /k,
+  # trailing cmd grammar, extra arguments, and ambiguous quoting fail closed.
+  $invocation = [regex]::Match(
+    $CommandLine,
+    '(?is)^\s*(?:"[^"\r\n]*\\cmd\.exe"|[^\s"\r\n]*cmd\.exe)(?:\s+/(?:d|q|s))*\s+/c\s+(?<tail>.+?)\s*$'
+  )
+  if (-not $invocation.Success) { return $null }
+
+  $tail = $invocation.Groups['tail'].Value.Trim()
+  $targetMatch = [regex]::Match($tail, '^""(?<target>[^"\r\n]+)"\s*"$')
+  if (-not $targetMatch.Success) { return $null }
+
+  $target = $targetMatch.Groups['target'].Value
+  if (-not $target -or $target.IndexOfAny([char[]]@('&','|','<','>','^','%','!')) -ge 0) {
+    return $null
   }
-  if (-not $target) { return $null }
   try { return [IO.Path]::GetFullPath($target) } catch { return $null }
 }
-
 function Get-CmdProcessInventory {
   if ($testControl) {
     $inventoryPath = Join-Path $testControl 'process-inventory.json'
@@ -126,7 +130,7 @@ try {
     $null -ne (Get-CmdLaunchTarget ([string]$_.CommandLine)) -and
     (Get-CmdLaunchTarget ([string]$_.CommandLine)).Equals($launcher, [StringComparison]::OrdinalIgnoreCase)
   })
-  if ($matchingWatchers.Count -eq 0) { throw 'No exact old launcher watcher was found; activation stopped without changes' }
+  if ($matchingWatchers.Count -eq 0) { throw 'Watcher command is not exact; activation stopped without changes' }
   if ($matchingWatchers.Count -gt 1) { throw 'Multiple exact old launcher watchers were found; activation stopped without changes' }
 
   $knownRemote = @(Get-KnownRemoteProcesses)

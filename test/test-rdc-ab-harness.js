@@ -1038,6 +1038,19 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     }
     console.log('PASS RDC A/B activation rejects /k and trailing watcher commands');
 
+    await fs.writeFile(inventoryPath, JSON.stringify([{
+      ...exactWatcherInventory,
+      CommandLine: `cmd.exe /c ""${handoffLauncher}" "`,
+    }]));
+    const productionShapeActivation = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+    assert.notEqual(productionShapeActivation.status, 0);
+    assert.match(
+      `${productionShapeActivation.stdout}\n${productionShapeActivation.stderr}`,
+      /start|process|executable|application/i,
+      'observed production /c watcher shape must reach replacement launch rather than fail watcher matching',
+    );
+    assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    console.log('PASS RDC A/B activation accepts observed production /c watcher shape');
     // This genuine remote is unrelated to the canonical entrypoint. The fixture
     // also records that it is not a child of the old watcher for the test seam.
     const unrelatedRemote = spawnCaptured(process.execPath, [
