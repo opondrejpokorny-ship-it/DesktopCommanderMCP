@@ -71,6 +71,13 @@ function spawnCaptured(file, args, options = {}) {
   return { child, completed };
 }
 
+async function terminateFakeProcesses(pids) {
+  for (const pid of new Set(pids.filter((value) => Number.isInteger(value) && value > 0))) {
+    try { process.kill(pid); } catch {}
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+
 async function waitForDirectoryCondition(directory, predicate, processes, label, timeoutMs = 15000) {
   if (await predicate()) return;
   await new Promise((resolve, reject) => {
@@ -865,6 +872,18 @@ if (process.platform === 'win32') {
   const restoreRun = spawnSync('powershell.exe', restoreArgs, { encoding: 'utf8' });
   assert.equal(restoreRun.status, 0, `${restoreRun.stdout}\n${restoreRun.stderr}`);
   assert.equal(await fs.readFile(launcher, 'utf8'), originalLauncher);
+
+  // A backup alone must not authorize overwriting a launcher subsequently claimed
+  // by another install. This is RED until restore authenticates its delegator.
+  const foreignLauncher = '@echo off\r\necho FOREIGN-INSTALL\r\n';
+  const reinstallForOwnership = spawnSync('powershell.exe', installArgs, { encoding: 'utf8' });
+  assert.equal(reinstallForOwnership.status, 0, `${reinstallForOwnership.stdout}\n${reinstallForOwnership.stderr}`);
+  await fs.writeFile(launcher, foreignLauncher);
+  const foreignRestore = spawnSync('powershell.exe', restoreArgs, { encoding: 'utf8' });
+  assert.notEqual(foreignRestore.status, 0);
+  assert.match(`${foreignRestore.stdout}\n${foreignRestore.stderr}`, /launcher.+(owned|delegator|install)/i);
+  assert.equal(await fs.readFile(launcher, 'utf8'), foreignLauncher);
+  console.log('PASS RDC A/B restore refuses a foreign launcher');
   console.log('PASS RDC A/B launcher restore contract');
   await fs.rm(hostSandbox, { recursive: true, force: true });
 } else {
@@ -939,6 +958,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   let activatedWrapperPid;
   let originalChildPid;
+  let unrelatedRemotePid;
   try {
     await waitForDirectoryCondition(
       signals,
@@ -986,6 +1006,91 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
         RDC_AB_TEST_CONTROL_DIRECTORY: signals,
       },
     };
+
+    // A launcher path embedded in /k, or followed by a cmd operator, is not an
+    // exact watcher invocation. This is RED until activation rejects all of them.
+    const unavailableCommandProcessor = path.join(signals, 'unavailable-cmd.exe');
+    await fs.writeFile(unavailableCommandProcessor, 'not a Windows executable');
+    const prelaunchActivationOptions = {
+      ...activationOptions,
+      env: { ...activationOptions.env, ComSpec: unavailableCommandProcessor },
+    };
+    for (const unsafeCommandLine of [
+      `cmd.exe /d /q /k ""${handoffLauncher}""`,
+      `cmd.exe /d /s /c ""${handoffLauncher}"" & echo injected`,
+      `cmd.exe /d /s /c ""${handoffLauncher}"" && echo injected`,
+      `cmd.exe /d /s /c ""${handoffLauncher}"" || echo injected`,
+      `cmd.exe /d /s /c ""${handoffLauncher}"" | more`,
+      `cmd.exe /d /s /c ""${handoffLauncher}"" > nul`,
+    ]) {
+      await fs.writeFile(inventoryPath, JSON.stringify([{
+        ...exactWatcherInventory,
+        CommandLine: unsafeCommandLine,
+      }]));
+      const unsafeWatcherActivation = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+      assert.notEqual(unsafeWatcherActivation.status, 0, unsafeCommandLine);
+      assert.match(
+        `${unsafeWatcherActivation.stdout}\n${unsafeWatcherActivation.stderr}`,
+        /watcher.+(exact|unsafe|command)/i,
+        unsafeCommandLine,
+      );
+      assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0), unsafeCommandLine);
+    }
+    console.log('PASS RDC A/B activation rejects /k and trailing watcher commands');
+
+    // This genuine remote is unrelated to the canonical entrypoint. The fixture
+    // also records that it is not a child of the old watcher for the test seam.
+    const unrelatedRemote = spawnCaptured(process.execPath, [
+      '-e', 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000)', 'remote',
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    unrelatedRemotePid = unrelatedRemote.child.pid;
+    await fs.writeFile(path.join(signals, 'remote-process-inventory.json'), JSON.stringify([{
+      Name: 'node.exe',
+      ProcessId: unrelatedRemotePid,
+      ParentProcessId: 0,
+      CommandLine: `"${process.execPath}" -e "unrelated remote" remote`,
+    }]));
+    await fs.writeFile(inventoryPath, JSON.stringify([exactWatcherInventory]));
+    const unrelatedRemoteActivation = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+    assert.notEqual(unrelatedRemoteActivation.status, 0);
+    assert.match(
+      `${unrelatedRemoteActivation.stdout}\n${unrelatedRemoteActivation.stderr}`,
+      /exact.+live.+RDC.+child|remote.+(canonical|watcher|entrypoint)/i,
+    );
+    assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    console.log('PASS RDC A/B activation requires the exact old-watcher remote child');
+
+    // The existing hold is reached only after ValidateOnly. Mutating here makes
+    // validation-to-launch integrity deterministic rather than timing-sensitive.
+    await fs.writeFile(path.join(signals, 'hold-activation'), '');
+    const toctouActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: activationOptions.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForDirectoryCondition(
+      signals,
+      async () => fs.access(path.join(signals, 'activation-ready')).then(() => true, () => false)
+        || toctouActivation.child.exitCode !== null,
+      [toctouActivation], 'activation validation before launcher TOCTOU mutation',
+    );
+    assert.equal(toctouActivation.child.exitCode, null, 'activation exited before its post-validation hold');
+    await fs.writeFile(handoffLauncher, '@echo off\r\nexit /b 0\r\n');
+    await fs.writeFile(path.join(signals, 'activation-release'), '');
+    const toctouResult = await toctouActivation.completed;
+    assert.notEqual(toctouResult.status, 0);
+    assert.match(
+      `${toctouResult.stdout}\n${toctouResult.stderr}`,
+      /launcher.+(changed|mutation)|verified.+bytes/i,
+    );
+    assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    await fs.rm(path.join(signals, 'hold-activation'));
+    await fs.rm(path.join(signals, 'activation-release'));
+    const restoreDelegator = spawnSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', handoffInstaller,
+      '-BenchmarkRoot', handoffRoot, '-LauncherPath', handoffLauncher,
+    ], { encoding: 'utf8' });
+    assert.equal(restoreDelegator.status, 0, `${restoreDelegator.stdout}\n${restoreDelegator.stderr}`);
+    console.log('PASS RDC A/B activation closes validation-to-launch TOCTOU');
     const ambiguousActivation = spawnSync('powershell.exe', activationArgs, activationOptions);
     assert.notEqual(ambiguousActivation.status, 0);
     assert.match(`${ambiguousActivation.stdout}\n${ambiguousActivation.stderr}`, /multiple.+watcher/i);
@@ -1129,6 +1234,10 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
         5000,
       ).catch(() => {});
     }
+    const fakeRemotePids = await fs.readFile(oldInstancesPath, 'utf8')
+      .then((value) => value.trim().split(/\r?\n/).map(Number), () => []);
+    fakeRemotePids.push(unrelatedRemotePid);
+    await terminateFakeProcesses(fakeRemotePids);
     await fs.rm(handoffSandbox, { recursive: true, force: true }).catch(() => {});
   }
 } else if (process.platform !== 'win32') {
