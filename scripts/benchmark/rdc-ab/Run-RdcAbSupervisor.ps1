@@ -185,6 +185,92 @@ function Get-RuntimeDigest([string]$Repository) {
     $hasher.Dispose()
   }
 }
+function Open-SealedRuntime([string]$Repository) {
+  $rootAttributes = [IO.File]::GetAttributes($Repository)
+  if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+      ($rootAttributes -band [IO.FileAttributes]::Directory) -eq 0) {
+    throw 'Runtime seal repository must be a real directory'
+  }
+  $files = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+  function Add-SealedRuntimeFiles([string]$Directory, [string]$RelativePath) {
+    foreach ($child in [IO.Directory]::GetFileSystemEntries($Directory)) {
+      $name = [IO.Path]::GetFileName($child)
+      if ($RelativePath.Length -eq 0 -and $name -ceq '.git') { continue }
+      $attributes = [IO.File]::GetAttributes($child)
+      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Runtime seal rejects a symlink, junction, or reparse point'
+      }
+      $childRelative = if ($RelativePath.Length -eq 0) { $name } else { $RelativePath + '/' + $name }
+      $item = Get-Item -LiteralPath $child -Force
+      if ($item -is [IO.DirectoryInfo]) {
+        Add-SealedRuntimeFiles $child $childRelative
+      } elseif ($item -is [IO.FileInfo]) {
+        $files.Add($childRelative, $child)
+      } else {
+        throw 'Runtime seal rejects a non-file, non-directory entry'
+      }
+    }
+  }
+  Add-SealedRuntimeFiles $Repository ''
+  $relativePaths = New-Object string[] $files.Count
+  $files.Keys.CopyTo($relativePaths, 0)
+  [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
+  $handles = New-Object 'System.Collections.Generic.List[System.IO.FileStream]'
+  $sealedFiles = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
+  try {
+    foreach ($relativePath in $relativePaths) {
+      $filePath = $files[$relativePath]
+      $attributes = [IO.File]::GetAttributes($filePath)
+      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+          ($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+        throw 'Runtime seal rejects a symlink, junction, or reparse point'
+      }
+      $handle = [IO.File]::Open($filePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+      $handles.Add($handle)
+      $sealedFiles.Add($relativePath, [pscustomobject]@{ Path=$filePath; Handle=$handle })
+    }
+    return [pscustomobject]@{ Repository=$Repository; Files=$sealedFiles; Handles=$handles }
+  } catch {
+    foreach ($handle in $handles) { $handle.Dispose() }
+    throw
+  }
+}
+function Close-SealedRuntime($SealedRuntime) {
+  if ($null -ne $SealedRuntime) {
+    foreach ($handle in $SealedRuntime.Handles) { $handle.Dispose() }
+  }
+}
+function Get-SealedRuntimeDigest($SealedRuntime) {
+  $relativePaths = New-Object string[] $SealedRuntime.Files.Count
+  $SealedRuntime.Files.Keys.CopyTo($relativePaths, 0)
+  [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    foreach ($relativePath in $relativePaths) {
+      $stream = $SealedRuntime.Files[$relativePath].Handle
+      $stream.Position = 0
+      $fileHasher = [Security.Cryptography.SHA256]::Create()
+      try { $fileDigest = ([BitConverter]::ToString($fileHasher.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+      finally { $fileHasher.Dispose(); $stream.Position = 0 }
+      $record = $relativePath + [char]0 + $fileDigest + [char]10
+      $bytes = [Text.Encoding]::UTF8.GetBytes($record)
+      [void]$hasher.TransformBlock($bytes, 0, $bytes.Length, $bytes, 0)
+    }
+    [void]$hasher.TransformFinalBlock([byte[]]@(), 0, 0)
+    return ([BitConverter]::ToString($hasher.Hash)).Replace('-', '').ToLowerInvariant()
+  } finally { $hasher.Dispose() }
+}
+function Get-SealedRuntimeFileDigest($SealedRuntime, [string]$Path) {
+  foreach ($sealedFile in $SealedRuntime.Files.Values) {
+    if ($sealedFile.Path.Equals($Path, [StringComparison]::OrdinalIgnoreCase)) {
+      $sealedFile.Handle.Position = 0
+      $hasher = [Security.Cryptography.SHA256]::Create()
+      try { return ([BitConverter]::ToString($hasher.ComputeHash($sealedFile.Handle))).Replace('-', '').ToLowerInvariant() }
+      finally { $hasher.Dispose(); $sealedFile.Handle.Position = 0 }
+    }
+  }
+  throw 'Runtime seal is missing the build entrypoint'
+}
 function Assert-TrackedWorktreeClean([string]$Repository, [string]$Variant) {
   & git.exe -C $Repository diff --no-ext-diff --quiet HEAD --
   $status = $LASTEXITCODE
@@ -192,7 +278,7 @@ function Assert-TrackedWorktreeClean([string]$Repository, [string]$Variant) {
   if ($status -eq 1) { throw "$Variant tracked worktree differs from HEAD" }
   throw "Unable to compare $Variant tracked worktree with HEAD"
 }
-function Get-ValidatedSelection {
+function Get-ValidatedSelection($SealedRuntime = $null) {
   [void](Assert-RdcAbProtectedRootAcl $root)
   Assert-RdcAbInheritedChildAcl $root $manifestPath 'Benchmark manifest'
   Assert-RdcAbInheritedChildAcl $root $activePath 'Active variant pointer'
@@ -201,8 +287,12 @@ function Get-ValidatedSelection {
   $entry = $manifest.variants.$variant
   if ($null -eq $entry) { throw "Manifest is missing variant: $variant" }
   $repo = Assert-WithinRoot ([string]$entry.repoPath) "$variant repoPath"
-  Assert-RdcAbInheritedChildAcl $root $repo "$variant runtime root"
-  Assert-RdcAbRuntimeTreeAcl $root $repo "$variant runtime tree"
+  if ($null -ne $SealedRuntime) {
+    Assert-RdcAbRuntimeNamespaceSeal $root $repo $SealedRuntime.NamespaceSeal.OwnerSid
+  } else {
+    Assert-RdcAbInheritedChildAcl $root $repo "$variant runtime root"
+    Assert-RdcAbRuntimeTreeAcl $root $repo "$variant runtime tree"
+  }
   $actualSha = (& git.exe -C $repo rev-parse HEAD 2>$null).Trim()
   if ($LASTEXITCODE -ne 0) { throw "Unable to read $variant Git HEAD" }
   $expectedSha = ([string]$entry.expectedSha).ToLowerInvariant()
@@ -214,7 +304,7 @@ function Get-ValidatedSelection {
     throw "$variant build entrypoint is missing: $entrypoint"
   }
   if ($entry.buildDigest) {
-    $actualDigest = (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualDigest = if ($null -ne $SealedRuntime) { Get-SealedRuntimeFileDigest $SealedRuntime $entrypoint } else { (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant() }
     if ($actualDigest -ne ([string]$entry.buildDigest).ToLowerInvariant()) {
       throw "$variant build digest mismatch"
     }
@@ -224,7 +314,21 @@ function Get-ValidatedSelection {
     throw "$variant runtimeDigest is required and must be lowercase SHA-256 hex"
   }
   Assert-TrackedWorktreeClean $repo $variant
-  $actualRuntimeDigest = Get-RuntimeDigest $repo
+  if ($null -ne $SealedRuntime) {
+    if (-not $SealedRuntime.Repository.Equals($repo, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Runtime seal repository mismatch'
+    }
+    # Re-enumerate using the digest's rules after every file is locked; this
+    # detects additions/removals while the sealed-stream digest binds the
+    # selected bytes that will remain locked through node's lifetime.
+    $liveRuntimeDigest = Get-RuntimeDigest $repo
+    $actualRuntimeDigest = Get-SealedRuntimeDigest $SealedRuntime
+    if (-not $liveRuntimeDigest.Equals($actualRuntimeDigest, [StringComparison]::Ordinal)) {
+      throw 'Runtime tree changed after sealing'
+    }
+  } else {
+    $actualRuntimeDigest = Get-RuntimeDigest $repo
+  }
   if (-not $actualRuntimeDigest.Equals($expectedRuntimeDigest, [StringComparison]::Ordinal)) {
     throw "$variant runtime digest mismatch"
   }
@@ -248,9 +352,70 @@ function Get-PrototypeStateEnvironment($Selection, [switch]$EnsureDirectories) {
   return $mapping
 }
 
-$selection = Get-ValidatedSelection
-$prototypeEnv = Get-PrototypeStateEnvironment $selection
+$namespaceSealJournal = Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
+function Get-RdcAbNamespaceSealJournal {
+  if (-not (Test-Path -LiteralPath $namespaceSealJournal -PathType Leaf)) { return $null }
+  try { return Get-Content -Raw -LiteralPath $namespaceSealJournal | ConvertFrom-Json }
+  catch { throw 'RDC A/B runtime namespace seal journal is malformed; refusing to mutate it' }
+}
+function Set-RdcAbNamespaceSealJournal($Journal) {
+  [IO.File]::WriteAllText($namespaceSealJournal, ($Journal | ConvertTo-Json -Compress), [Text.Encoding]::UTF8)
+}
+function Test-RdcAbJournalRemoteChildAlive($Journal) {
+  $entrypoint = [string]$Journal.Entrypoint
+  $expectedPid = [int]$Journal.ChildPid
+  $expectedStart = [string]$Journal.ChildStartUtc
+  $expectedParent = [int]$Journal.SupervisorPid
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='node.exe'")) {
+    if ($expectedPid -ne 0 -and $process.ProcessId -ne $expectedPid) { continue }
+    if ($expectedPid -eq 0 -and $process.ParentProcessId -ne $expectedParent) { continue }
+    $cmd = [string]$process.CommandLine
+    if ($cmd.IndexOf($entrypoint, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or $cmd -notmatch '(?:^|\s)remote(?:\s|$)') { continue }
+    if ($expectedStart) {
+      try {
+        $start = (Get-Process -Id $process.ProcessId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')
+        if (-not $start.Equals($expectedStart, [StringComparison]::Ordinal)) { continue }
+      } catch { continue }
+    }
+    return $true
+  }
+  return $false
+}
+function Recover-RdcAbRuntimeNamespaceSeal {
+  $journal = Get-RdcAbNamespaceSealJournal
+  if ($null -eq $journal) { return }
+  if ([int]$journal.Rights -ne [int](Get-RdcAbRuntimeNamespaceSealRights)) {
+    throw 'RDC A/B runtime namespace seal journal has an unexpected ACE mask; refusing recovery'
+  }
+  if (Test-RdcAbJournalRemoteChildAlive $journal) {
+    throw 'RDC A/B runtime namespace seal journal belongs to a live exact remote child; refusing recovery'
+  }
+  $repo = [IO.Path]::GetFullPath([string]$journal.Repository).TrimEnd('\')
+  $entrypoint = [IO.Path]::GetFullPath([string]$journal.Entrypoint)
+  Assert-LexicallyWithinRoot $repo 'Runtime namespace seal journal repository' | Out-Null
+  if (-not (Test-Path -LiteralPath $repo -PathType Container) -or -not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) {
+    throw 'RDC A/B runtime namespace seal journal target is unavailable; refusing recovery'
+  }
+  if (-not (ConvertTo-CanonicalExistingPath $repo 'Runtime namespace seal journal repository').Equals([string]$journal.CanonicalRepository, [StringComparison]::OrdinalIgnoreCase) -or
+      -not (ConvertTo-CanonicalExistingPath $entrypoint 'Runtime namespace seal journal entrypoint').Equals([string]$journal.CanonicalEntrypoint, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'RDC A/B runtime namespace seal journal target changed; refusing recovery'
+  }
+  try {
+    Remove-RdcAbRuntimeNamespaceSeal $root $repo ([string]$journal.OwnerSid)
+  } catch {
+    # A crash can occur after the exact ACE is removed but before this journal
+    # is deleted.  Only accept that case when the strict unsealed baseline is
+    # already restored; otherwise preserve the journal and fail closed.
+    Assert-RdcAbRuntimeTreeAcl $root $repo 'Runtime tree during stale namespace seal recovery'
+  }
+  Remove-Item -LiteralPath $namespaceSealJournal -Force
+  Assert-RdcAbRuntimeTreeAcl $root $repo 'Runtime tree after stale namespace seal recovery'
+}
+$staleNamespaceSeal = Get-RdcAbNamespaceSealJournal
 if ($ValidateOnly) {
+  if ($null -ne $staleNamespaceSeal) { throw 'RDC A/B stale runtime namespace seal journal detected; ValidateOnly will not mutate it' }
+  $selection = Get-ValidatedSelection
+  $prototypeEnv = Get-PrototypeStateEnvironment $selection
   [ordered]@{
     variant = $selection.Variant
     expectedSha = ([string]$selection.Entry.expectedSha).ToLowerInvariant()
@@ -302,6 +467,7 @@ try {
   if (-not $ownsSupervisorMutex) {
     throw "RDC A/B supervisor is already active (mutex '$($supervisorMutex.Name)')"
   }
+  Recover-RdcAbRuntimeNamespaceSeal
 
 $managedKeys = @(
   'DESKTOP_COMMANDER_POLICY_FILE',
@@ -351,9 +517,22 @@ function Wait-TestLaunchBarrier {
 }
 function Complete-TestLaunchDecision {
   if (-not $testControl) { return $false }
+  if (Test-Path -LiteralPath (Join-Path $testControl 'hold-post-validation-seal') -PathType Leaf) {
+    return $false
+  }
   $launchPath = Join-Path $testControl "launch-$PID"
   [IO.File]::WriteAllText($launchPath, '')
   return $true
+}
+function Wait-TestPostValidationSealBarrier {
+  if (-not $testControl) { return }
+  $holdPath = Join-Path $testControl 'hold-post-validation-seal'
+  if (-not (Test-Path -LiteralPath $holdPath -PathType Leaf)) { return }
+  [IO.File]::WriteAllText((Join-Path $testControl 'post-validation-seal-ready'), '')
+  $releasePath = Join-Path $testControl 'post-validation-seal-release'
+  while (-not (Test-Path -LiteralPath $releasePath -PathType Leaf)) {
+    Start-Sleep -Milliseconds 25
+  }
 }
 function Wait-RetryInterval {
   if ($testControl) { Start-Sleep -Milliseconds 50 }
@@ -383,6 +562,9 @@ while ($true) {
   $launchBlocked = $false
   $environmentApplied = $false
   $saved = @{}
+  $sealedRuntime = $null
+  $namespaceSeal = $null
+  $namespaceSealJournalRecord = $null
   try {
     $existing = @(Get-KnownRemoteProcesses)
     if ($existing.Count -gt 0) {
@@ -390,20 +572,64 @@ while ($true) {
     } else {
       $selection = Get-ValidatedSelection
       $prototypeEnv = Get-PrototypeStateEnvironment $selection -EnsureDirectories
+      # Journal before installing the ACE: if this process dies at any later
+      # point, recovery can identify a direct node child by parent/PID/start.
+      $namespaceSealJournalRecord = [ordered]@{
+        Repository = $selection.Repo
+        CanonicalRepository = ConvertTo-CanonicalExistingPath $selection.Repo 'Runtime namespace seal repository'
+        Entrypoint = $selection.Entrypoint
+        CanonicalEntrypoint = ConvertTo-CanonicalExistingPath $selection.Entrypoint 'Runtime namespace seal entrypoint'
+        OwnerSid = $identitySid
+        Rights = [int](Get-RdcAbRuntimeNamespaceSealRights)
+        SupervisorPid = $PID
+        ChildPid = 0
+        ChildStartUtc = ''
+      }
+      Set-RdcAbNamespaceSealJournal $namespaceSealJournalRecord
+      $namespaceSeal = Install-RdcAbRuntimeNamespaceSeal $root $selection.Repo
+      Assert-RdcAbRuntimeNamespaceSeal $root $selection.Repo $namespaceSeal.OwnerSid
+      $sealedRuntime = Open-SealedRuntime $selection.Repo
+      $sealedRuntime | Add-Member -NotePropertyName NamespaceSeal -NotePropertyValue $namespaceSeal
+      # This is the final validation: it runs only after all runtime files are
+      # opened read-only without delete/write sharing, and hashes those streams.
+      $selection = Get-ValidatedSelection $sealedRuntime
       foreach ($key in $managedKeys) {
         $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
         $value = if ($prototypeEnv.Contains($key)) { [string]$prototypeEnv[$key] } else { $null }
         [Environment]::SetEnvironmentVariable($key, $value, 'Process')
       }
       $environmentApplied = $true
+      Wait-TestPostValidationSealBarrier
       Write-SafeSupervisorEvent 'launch' $selection
-      & $node $selection.Entrypoint remote
-      $exitCode = $LASTEXITCODE
+      $startInfo = [Diagnostics.ProcessStartInfo]::new()
+      $startInfo.FileName = $node
+      $startInfo.Arguments = '"' + $selection.Entrypoint.Replace('"', '\"') + '" remote'
+      $startInfo.UseShellExecute = $false
+      $child = [Diagnostics.Process]::Start($startInfo)
+      $namespaceSealJournalRecord.ChildPid = $child.Id
+      $namespaceSealJournalRecord.ChildStartUtc = $child.StartTime.ToUniversalTime().ToString('o')
+      Set-RdcAbNamespaceSealJournal $namespaceSealJournalRecord
+      $child.WaitForExit()
+      $exitCode = $child.ExitCode
+      $child.Dispose()
     }
   } finally {
-    if ($environmentApplied) {
-      foreach ($key in $managedKeys) {
-        [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process')
+    try {
+      if ($environmentApplied) {
+        foreach ($key in $managedKeys) {
+          [Environment]::SetEnvironmentVariable($key, $saved[$key], 'Process')
+        }
+      }
+    } finally {
+      try {
+        Close-SealedRuntime $sealedRuntime
+      } finally {
+        if ($null -ne $namespaceSeal) {
+          Remove-RdcAbRuntimeNamespaceSeal $root $selection.Repo $namespaceSeal.OwnerSid
+        }
+        if ($null -ne $namespaceSealJournalRecord -and (Test-Path -LiteralPath $namespaceSealJournal -PathType Leaf)) {
+          Remove-Item -LiteralPath $namespaceSealJournal -Force
+        }
       }
     }
   }

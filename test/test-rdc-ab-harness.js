@@ -862,6 +862,138 @@ if (process.platform === 'win32') {
   assert.match(`${validation.stdout}\n${validation.stderr}`, /active|variant/i);
   console.log('PASS RDC A/B supervisor validation contract');
 
+  // This deliberately names a new seam: it must be reached after the last
+  // runtime validation and immediately before node receives dist/index.js.
+  // The current supervisor has no sealed selection at that point, so this is
+  // permanent RED until it exposes the barrier and holds the selected bytes.
+  const sealRoot = path.join(hostSandbox, 'post-validation-seal-benchmark');
+  const sealRepo = path.join(sealRoot, 'clean', 'repo');
+  const sealControl = path.join(hostSandbox, 'post-validation-seal-control');
+  const originalMarkerPath = path.join(sealControl, 'original-marker');
+  const originalMarker = 'sealed-original-marker';
+  const overwriteMarker = 'overwrite-marker';
+  const replacementMarker = 'replacement-marker';
+  await fs.mkdir(sealControl);
+  const sealEntrypointSource = `require('node:fs').writeFileSync(process.env.RDC_AB_TEST_MARKER, ${JSON.stringify(originalMarker)});\n`;
+  const sealRuntime = await makeRuntimeRepo(sealRepo, sealEntrypointSource);
+  await fs.writeFile(path.join(sealRoot, 'manifest.json'), JSON.stringify({
+    schemaVersion: 1,
+    benchmarkRoot: sealRoot,
+    variants: {
+      clean: {
+        repoPath: sealRepo,
+        expectedSha: sealRuntime.sha,
+        buildDigest: sha256(sealEntrypointSource),
+        runtimeDigest: sealRuntime.runtimeDigest,
+      },
+      prototype: {
+        repoPath: sealRepo,
+        expectedSha: sealRuntime.sha,
+        buildDigest: sha256(sealEntrypointSource),
+        runtimeDigest: sealRuntime.runtimeDigest,
+      },
+    },
+  }));
+  await fs.writeFile(path.join(sealRoot, 'active-variant.txt'), 'clean\n');
+  protectBenchmarkRootForTest(sealRoot);
+  const sealEntrypoint = path.join(sealRepo, 'dist', 'index.js');
+  const replacementEntrypoint = path.join(sealControl, 'index.replacement.js');
+  await fs.writeFile(replacementEntrypoint, `throw new Error(${JSON.stringify(replacementMarker)});\n`);
+  const sealSupervisor = spawnCaptured('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', supervisor,
+    '-BenchmarkRoot', sealRoot, '-TestControlDirectory', sealControl,
+  ], {
+    env: {
+      ...process.env,
+      RDC_AB_ENABLE_TEST_CONTROL: '1',
+      RDC_AB_TEST_MARKER: originalMarkerPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    // Release the older launch-decision test barrier: the new barrier must be
+    // later, after the inner (final) Get-ValidatedSelection call.
+    await fs.writeFile(path.join(sealControl, 'release'), '');
+    await fs.writeFile(path.join(sealControl, 'hold-post-validation-seal'), '');
+    try {
+      await waitForDirectoryCondition(
+        sealControl,
+        async () => fs.access(path.join(sealControl, 'post-validation-seal-ready')).then(() => true, () => false)
+          || sealSupervisor.child.exitCode !== null,
+        [sealSupervisor],
+        'supervisor post-validation sealed-selection barrier',
+      );
+    } catch (error) {
+      const snapshot = await sealSupervisor.completed.catch(() => null);
+      throw new Error(`${error.message}\nSUPERVISOR_STDOUT:\n${snapshot?.stdout ?? ''}\nSUPERVISOR_STDERR:\n${snapshot?.stderr ?? ''}`);
+    }
+    assert.equal(sealSupervisor.child.exitCode, null,
+      'supervisor exited before the post-validation sealed-selection barrier');
+
+    // Run the attacker outside this harness process. The two attempts must be
+    // made after final validation, not merely after the earlier test hook.
+    const injectedRuntimePath = path.join(sealRepo, 'dist', 'injected-after-validation.js');
+    const mutationAttempt = spawnSync(process.execPath, ['-e', [
+      "const fs = require('node:fs/promises');",
+      'const [entrypoint, replacement, injected, overwrite] = process.argv.slice(1);',
+      'const result = {};',
+      '(async () => { for (const [name, action] of Object.entries({',
+      '  overwrite: () => fs.writeFile(entrypoint, overwrite),',
+      '  replacement: () => fs.rename(replacement, entrypoint),',
+      '  create: () => fs.writeFile(injected, "injected-runtime"),',
+      '})) {',
+      '  try { await action(); result[name] = { succeeded: true }; }',
+      '  catch (error) { result[name] = { succeeded: false, code: error.code }; }',
+      '}',
+      'process.stdout.write(JSON.stringify(result)); })().catch((error) => {',
+      '  console.error(error.stack); process.exitCode = 1;',
+      '});',
+    ].join('\n'), sealEntrypoint, replacementEntrypoint, injectedRuntimePath,
+    `throw new Error(${JSON.stringify(overwriteMarker)});\n`], {
+      encoding: 'utf8', windowsHide: true,
+    });
+    assert.equal(mutationAttempt.status, 0, mutationAttempt.stderr);
+    const mutationResult = JSON.parse(mutationAttempt.stdout);
+    assert.equal(mutationResult.overwrite.succeeded, false,
+      `a sealed selected entrypoint must reject a separate-process overwrite: ${mutationAttempt.stdout}`);
+    assert.equal(mutationResult.replacement.succeeded, false,
+      `a sealed selected entrypoint must reject separate-process atomic replacement: ${mutationAttempt.stdout}`);
+    assert.equal(mutationResult.create.succeeded, false,
+      `a sealed runtime tree must reject a new file after final validation: ${mutationAttempt.stdout}`);
+    await assert.rejects(() => fs.access(injectedRuntimePath), /ENOENT|no such file/i);
+    assert.deepEqual(await fs.readFile(sealEntrypoint), Buffer.from(sealEntrypointSource));
+
+    await fs.writeFile(path.join(sealControl, 'post-validation-seal-release'), '');
+    await waitForDirectoryCondition(
+      sealControl,
+      async () => fs.readFile(originalMarkerPath, 'utf8').then((value) => value === originalMarker, () => false)
+        || sealSupervisor.child.exitCode !== null,
+      [sealSupervisor],
+      'node to execute the sealed original entrypoint bytes',
+    );
+    assert.equal(await fs.readFile(originalMarkerPath, 'utf8'), originalMarker);
+    // Prevent the long-lived supervisor from immediately starting a second sealed
+    // child. Its `exit` event is written only after runtime handles/namespace seal
+    // and journal cleanup have completed.
+    await fs.writeFile(path.join(sealControl, 'known-remote'), '');
+    const sealLog = path.join(sealRoot, 'logs', 'supervisor.jsonl');
+    await waitForDirectoryCondition(
+      path.dirname(sealLog),
+      async () => fs.readFile(sealLog, 'utf8').then((value) => value.includes('"event":"exit"'), () => false),
+      [sealSupervisor],
+      'supervisor to clean the runtime seal after the child exits',
+    );
+  } finally {
+    await fs.writeFile(path.join(sealControl, 'release'), '').catch(() => {});
+    await fs.writeFile(path.join(sealControl, 'post-validation-seal-release'), '').catch(() => {});
+    if (sealSupervisor.child.exitCode === null) sealSupervisor.child.kill();
+    await sealSupervisor.completed.catch(() => {});
+    await fs.rm(sealRoot, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(sealControl, { recursive: true, force: true }).catch(() => {});
+  }
+  console.log('PASS RDC A/B supervisor seals the final validation-to-node selection');
+  if (process.env.RDC_AB_TEST_CASE === 'supervisor-runtime-toctou') process.exit(0);
+
   if (process.env.RDC_AB_TEST_CASE !== 'handoff') {
     await fs.writeFile(path.join(hostRoot, 'active-variant.txt'), 'clean\n');
     const raceControl = path.join(hostSandbox, 'supervisor-race-control');
