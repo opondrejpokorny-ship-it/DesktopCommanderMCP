@@ -10,6 +10,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$aclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
+if (-not (Test-Path -LiteralPath $aclHelper -PathType Leaf)) { throw 'RDC A/B ACL helper is missing' }
+. $aclHelper
 $testControl = $env:RDC_AB_TEST_CONTROL_DIRECTORY
 if ($testControl) {
   if ($env:RDC_AB_ENABLE_TEST_CONTROL -ne '1') { throw 'Setup test control is disabled' }
@@ -122,11 +125,21 @@ function Prepare-Variant([string]$Name, [string]$Source, [string]$Sha) {
 $published = $false
 try {
   New-Item -ItemType Directory -Path $stage -Force | Out-Null
+  Set-RdcAbProtectedRootAcl $stage
   $clean = Prepare-Variant 'clean' $CleanSource $CleanSha
   $prototype = Prepare-Variant 'prototype' $PrototypeSource $PrototypeSha
   foreach ($relative in @('state\prototype','fixtures','runs','logs')) {
     New-Item -ItemType Directory -Path (Join-Path $stage $relative) -Force | Out-Null
   }
+
+  # Build/install occurs while the private random stage is writable. Lock the stage
+  # before computing the authoritative runtime digests so untrusted local principals
+  # cannot change bytes between identity capture and publication.
+  Set-RdcAbProtectedRootAcl $stage
+  $clean.Digest = (Get-FileHash -LiteralPath (Join-Path $clean.Repo 'dist\index.js') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $clean.RuntimeDigest = Get-RuntimeDigest $clean.Repo
+  $prototype.Digest = (Get-FileHash -LiteralPath (Join-Path $prototype.Repo 'dist\index.js') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $prototype.RuntimeDigest = Get-RuntimeDigest $prototype.Repo
 
   $finalPrototypeState = Join-Path $root 'state\prototype'
   $manifest = [ordered]@{
@@ -160,6 +173,11 @@ try {
   }
   Write-AtomicUtf8 (Join-Path $stage 'manifest.json') (($manifest | ConvertTo-Json -Depth 8) + "`n")
   Write-AtomicUtf8 (Join-Path $stage 'active-variant.txt') "prototype`n"
+  [void](Assert-RdcAbProtectedRootAcl $stage)
+  Assert-RdcAbInheritedChildAcl $stage (Join-Path $stage 'manifest.json') 'Benchmark manifest'
+  Assert-RdcAbInheritedChildAcl $stage (Join-Path $stage 'active-variant.txt') 'Active variant pointer'
+  Assert-RdcAbInheritedChildAcl $stage $clean.Repo 'Clean runtime root'
+  Assert-RdcAbInheritedChildAcl $stage $prototype.Repo 'Prototype runtime root'
   if ($testControl) {
     [IO.File]::WriteAllText((Join-Path $testControl 'ready'), '')
     $releasePath = Join-Path $testControl 'release'
@@ -169,6 +187,9 @@ try {
   }
   [IO.Directory]::Move($stage, $root)
   $published = $true
+  [void](Assert-RdcAbProtectedRootAcl $root)
+  Assert-RdcAbInheritedChildAcl $root (Join-Path $root 'manifest.json') 'Published benchmark manifest'
+  Assert-RdcAbInheritedChildAcl $root (Join-Path $root 'active-variant.txt') 'Published active variant pointer'
   Write-Output (($manifest | ConvertTo-Json -Depth 8 -Compress))
 } catch {
   if (-not $published -and (Test-Path -LiteralPath $stage)) {

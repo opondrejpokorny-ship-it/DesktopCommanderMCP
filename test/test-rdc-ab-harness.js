@@ -187,7 +187,7 @@ foreach ($sidText in @($current.Value, 'S-1-5-18', 'S-1-5-32-544') | Select-Obje
     [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
   [void]$acl.AddAccessRule($rule)
 }
-Set-Acl -LiteralPath $target -AclObject $acl
+([IO.DirectoryInfo](Get-Item -LiteralPath $target -Force)).SetAccessControl($acl)
 foreach ($child in Get-ChildItem -LiteralPath $target -Force) {
   & icacls.exe $child.FullName /reset /T /C /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "icacls reset failed for $($child.FullName)" }
@@ -199,21 +199,11 @@ foreach ($child in Get-ChildItem -LiteralPath $target -Force) {
   });
 }
 function grantAuthenticatedUsersModify(target) {
-  const script = `
-$acl = Get-Acl -LiteralPath $env:RDC_AB_ACL_TARGET
-$sid = New-Object Security.Principal.SecurityIdentifier('S-1-5-11')
-$inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
-$rule = New-Object Security.AccessControl.FileSystemAccessRule(
-  $sid, [Security.AccessControl.FileSystemRights]::Modify, $inherit,
-  [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
-[void]$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $env:RDC_AB_ACL_TARGET -AclObject $acl
-`;
-  execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+  execFileSync('icacls.exe', [target, '/grant', '*S-1-5-11:(OI)(CI)M', '/Q'], {
     encoding: 'utf8', windowsHide: true,
-    env: { ...process.env, RDC_AB_ACL_TARGET: target },
   });
 }
+
 async function makeRepo(repoPath, marker) {
   await fs.mkdir(path.join(repoPath, 'dist'), { recursive: true });
   execFileSync('git', ['init', repoPath]);

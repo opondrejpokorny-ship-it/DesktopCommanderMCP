@@ -7,8 +7,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$aclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
+if (-not (Test-Path -LiteralPath $aclHelper -PathType Leaf)) { throw 'RDC A/B ACL helper is missing' }
+. $aclHelper
 $root = [IO.Path]::GetFullPath($BenchmarkRoot).TrimEnd('\')
 if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Benchmark root missing: $root" }
+[void](Assert-RdcAbProtectedRootAcl $root)
 if (-not ('RdcAbNativePath' -as [type])) {
   Add-Type -TypeDefinition @'
 using System;
@@ -60,6 +64,8 @@ $manifestPath = Join-Path $root 'manifest.json'
 $activePath = Join-Path $root 'active-variant.txt'
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Benchmark manifest missing: $manifestPath" }
 if (-not (Test-Path -LiteralPath $activePath -PathType Leaf)) { throw "Active variant pointer missing: $activePath" }
+Assert-RdcAbInheritedChildAcl $root $manifestPath 'Benchmark manifest'
+Assert-RdcAbInheritedChildAcl $root $activePath 'Active variant pointer'
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 if ($manifest.schemaVersion -ne 1) { throw 'Unsupported benchmark schemaVersion' }
 $manifestRoot = [IO.Path]::GetFullPath([string]$manifest.benchmarkRoot).TrimEnd('\')
@@ -187,11 +193,15 @@ function Assert-TrackedWorktreeClean([string]$Repository, [string]$Variant) {
   throw "Unable to compare $Variant tracked worktree with HEAD"
 }
 function Get-ValidatedSelection {
+  [void](Assert-RdcAbProtectedRootAcl $root)
+  Assert-RdcAbInheritedChildAcl $root $manifestPath 'Benchmark manifest'
+  Assert-RdcAbInheritedChildAcl $root $activePath 'Active variant pointer'
   $variant = (Get-Content -Raw -LiteralPath $activePath).Trim()
   if ($variant -notin @('clean','prototype')) { throw "Unknown active benchmark variant: $variant" }
   $entry = $manifest.variants.$variant
   if ($null -eq $entry) { throw "Manifest is missing variant: $variant" }
   $repo = Assert-WithinRoot ([string]$entry.repoPath) "$variant repoPath"
+  Assert-RdcAbInheritedChildAcl $root $repo "$variant runtime root"
   $actualSha = (& git.exe -C $repo rev-parse HEAD 2>$null).Trim()
   if ($LASTEXITCODE -ne 0) { throw "Unable to read $variant Git HEAD" }
   $expectedSha = ([string]$entry.expectedSha).ToLowerInvariant()

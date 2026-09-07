@@ -34,7 +34,9 @@ function Get-IdentityScopedMutexName([string]$Prefix) {
 }
 
 $sourceSupervisor = Join-Path $PSScriptRoot 'Run-RdcAbSupervisor.ps1'
+$sourceAclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
 if (-not (Test-Path -LiteralPath $sourceSupervisor -PathType Leaf)) { throw 'Supervisor source script is missing' }
+if (-not (Test-Path -LiteralPath $sourceAclHelper -PathType Leaf)) { throw 'ACL helper source script is missing' }
 if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "Launcher is missing: $launcher" }
 
 function Test-Supervisor([string]$ScriptPath) {
@@ -49,6 +51,11 @@ if ($validated.variant -notin @('clean','prototype')) { throw 'Supervisor return
 $hostDir = Join-Path $root 'host'
 New-Item -ItemType Directory -Path $hostDir -Force | Out-Null
 $installedSupervisor = Join-Path $hostDir 'Run-RdcAbSupervisor.ps1'
+$installedAclHelper = Join-Path $hostDir 'RdcAbAcl.ps1'
+$aclTemp = "$installedAclHelper.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
+Copy-Item -LiteralPath $sourceAclHelper -Destination $aclTemp -Force
+try { Move-Item -LiteralPath $aclTemp -Destination $installedAclHelper -Force }
+finally { Remove-Item -LiteralPath $aclTemp -Force -ErrorAction SilentlyContinue }
 $supervisorTemp = "$installedSupervisor.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
 Copy-Item -LiteralPath $sourceSupervisor -Destination $supervisorTemp -Force
 try { Move-Item -LiteralPath $supervisorTemp -Destination $installedSupervisor -Force }
