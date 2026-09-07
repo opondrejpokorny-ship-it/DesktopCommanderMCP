@@ -6,11 +6,19 @@ const packageDir = path.join(root, '.artifacts', 'free', 'package');
 const artifactRoot = path.join(root, '.artifacts', 'free');
 const expectedArgs = ['pack', packageDir, '--json', '--pack-destination', artifactRoot];
 
+function hasExpectedPackArgs(args, offset = 0) {
+  if (!Array.isArray(args) || args.length !== expectedArgs.length + offset) return false;
+  return expectedArgs.every((arg, index) => args[index + offset] === arg);
+}
+
 function shouldStubNpmPack(executable, args) {
   const base = path.basename(String(executable)).toLowerCase();
-  if (base !== 'npm' && base !== 'npm.cmd') return false;
-  if (!Array.isArray(args) || args.length !== expectedArgs.length) return false;
-  return args.every((arg, index) => arg === expectedArgs[index]);
+  if (['npm', 'npm.cmd', 'npm.exe'].includes(base)) {
+    return hasExpectedPackArgs(args);
+  }
+  if (!['node', 'node.exe'].includes(base) || !hasExpectedPackArgs(args, 1)) return false;
+  const npmCli = String(args[0]).replaceAll('\\', '/').toLowerCase();
+  return npmCli.endsWith('/node_modules/npm/bin/npm-cli.js');
 }
 
 const originalExecFileSync = childProcess.execFileSync;

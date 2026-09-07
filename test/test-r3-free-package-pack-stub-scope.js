@@ -12,9 +12,13 @@ assert.equal(typeof shouldStubNpmPack, 'function', 'pack stub must expose its ex
 const packageDir = path.join(root, '.artifacts', 'free', 'package');
 const artifactRoot = path.join(root, '.artifacts', 'free');
 const exactArgs = ['pack', packageDir, '--json', '--pack-destination', artifactRoot];
+const npmCli = path.join(root, 'toolchain', 'node_modules', 'npm', 'bin', 'npm-cli.js');
 
 assert.equal(shouldStubNpmPack('npm', exactArgs), true);
 assert.equal(shouldStubNpmPack('npm.cmd', exactArgs), true);
+assert.equal(shouldStubNpmPack('npm.exe', exactArgs), true);
+assert.equal(shouldStubNpmPack('node.exe', [npmCli, ...exactArgs]), true);
+assert.equal(shouldStubNpmPack('node.exe', [path.join(root, 'other-cli.js'), ...exactArgs]), false);
 assert.equal(shouldStubNpmPack('npm.cmd', ['pack', path.join(root, 'other'), '--json', '--pack-destination', artifactRoot]), false);
 assert.equal(shouldStubNpmPack('npm.cmd', ['pack', packageDir, '--json', '--pack-destination', path.join(root, 'other')]), false);
 assert.equal(shouldStubNpmPack('npm.cmd', [...exactArgs, '--dry-run']), false);
