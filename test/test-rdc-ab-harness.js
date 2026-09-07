@@ -902,6 +902,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
   const signals = path.join(handoffSandbox, 'signals');
   await fs.mkdir(signals);
   await fs.writeFile(path.join(signals, 'release'), '');
+  // Supervisor test-control uses this marker independently of activation's
+  // exact remote-process inventory. It remains until the old child exits.
   await fs.writeFile(path.join(signals, 'known-remote'), '');
   await fs.mkdir(path.join(handoffRoot, 'state', 'prototype'), { recursive: true });
   await fs.writeFile(path.join(handoffRoot, 'manifest.json'), JSON.stringify({
@@ -943,8 +945,13 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
   const handoffLauncher = path.join(handoffSandbox, 'start-remote.cmd');
   const originalWatcher = [
     '@echo off',
+    'setlocal',
+    `set "ROOT=${canonicalRepo}"`,
+    `set "NODE=${process.execPath}"`,
+    'set "ENTRY=%ROOT%\\dist\\index.js"',
+    '',
     ':loop',
-    `"${process.execPath}" "${canonicalEntrypoint}" remote`,
+    '"%NODE%" "%ENTRY%" remote',
     'goto loop',
     '',
   ].join('\r\n');
@@ -976,9 +983,12 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     ], { encoding: 'utf8' });
     assert.equal(installHandoff.status, 0, `${installHandoff.stdout}\n${installHandoff.stderr}`);
     assert.equal(await fs.readFile(`${handoffLauncher}.rdc-ab-original`, 'utf8'), originalWatcher);
+    const watcherCreation = new Date(Date.now() - 2_000).toISOString();
+    const remoteCreation = new Date(Date.now() - 1_000).toISOString();
     const exactWatcherInventory = {
       Name: 'cmd.exe',
       ProcessId: oldWatcher.child.pid,
+      CreationDate: watcherCreation,
       CommandLine: `cmd.exe /c ""${handoffLauncher}" "`,
     };
     const decoyWatcherInventory = {
@@ -987,6 +997,15 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       CommandLine: 'cmd.exe /d /q /k',
     };
     const inventoryPath = path.join(signals, 'process-inventory.json');
+    const remoteInventoryPath = path.join(signals, 'remote-process-inventory.json');
+    const exactRemoteInventory = {
+      Name: 'node.exe',
+      ProcessId: originalChildPid,
+      ParentProcessId: oldWatcher.child.pid,
+      CreationDate: remoteCreation,
+      CommandLine: `"${process.execPath}" "${canonicalEntrypoint}" remote`,
+    };
+    await fs.writeFile(remoteInventoryPath, JSON.stringify([exactRemoteInventory]));
     await fs.writeFile(inventoryPath, JSON.stringify([
       exactWatcherInventory,
       { ...exactWatcherInventory },
@@ -1009,11 +1028,12 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
 
     // A launcher path embedded in /k, or followed by a cmd operator, is not an
     // exact watcher invocation. This is RED until activation rejects all of them.
-    const unavailableCommandProcessor = path.join(signals, 'unavailable-cmd.exe');
-    await fs.writeFile(unavailableCommandProcessor, 'not a Windows executable');
+    // Use a real executable that deterministically exits on cmd.exe-only flags,
+    // so this proves watcher acceptance reaches replacement launch without a live handoff.
+    const failingCommandProcessor = process.execPath;
     const prelaunchActivationOptions = {
       ...activationOptions,
-      env: { ...activationOptions.env, ComSpec: unavailableCommandProcessor },
+      env: { ...activationOptions.env, ComSpec: failingCommandProcessor },
     };
     for (const unsafeCommandLine of [
       `cmd.exe /d /q /k ""${handoffLauncher}""`,
@@ -1049,31 +1069,42 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     assert.notEqual(productionShapeActivation.status, 0);
     assert.match(
       `${productionShapeActivation.stdout}\n${productionShapeActivation.stderr}`,
-      /start|process|executable|application/i,
+      /launcher|handoff|start|process|executable|application/i,
       'observed production /c watcher shape must reach replacement launch rather than fail watcher matching',
     );
     assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
     console.log('PASS RDC A/B activation accepts observed production /c watcher shape');
-    // This genuine remote is unrelated to the canonical entrypoint. The fixture
-    // also records that it is not a child of the old watcher for the test seam.
+    // Remote identity is fail-closed independently of watcher matching. Neither
+    // an unrelated remote, a correct-looking command with the wrong parent, nor
+    // a watcher child running the wrong entrypoint may authorize handoff.
     const unrelatedRemote = spawnCaptured(process.execPath, [
       '-e', 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000)', 'remote',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     unrelatedRemotePid = unrelatedRemote.child.pid;
-    await fs.writeFile(path.join(signals, 'remote-process-inventory.json'), JSON.stringify([{
-      Name: 'node.exe',
-      ProcessId: unrelatedRemotePid,
-      ParentProcessId: 0,
-      CommandLine: `"${process.execPath}" -e "unrelated remote" remote`,
-    }]));
-    await fs.writeFile(inventoryPath, JSON.stringify([exactWatcherInventory]));
-    const unrelatedRemoteActivation = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
-    assert.notEqual(unrelatedRemoteActivation.status, 0);
-    assert.match(
-      `${unrelatedRemoteActivation.stdout}\n${unrelatedRemoteActivation.stderr}`,
-      /exact.+live.+RDC.+child|remote.+(canonical|watcher|entrypoint)/i,
-    );
-    assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    const wrongEntrypoint = path.join(handoffSandbox, 'other', 'dist', 'index.js');
+    for (const invalidRemoteInventory of [
+      [{
+        Name: 'node.exe', ProcessId: unrelatedRemotePid, ParentProcessId: 0,
+        CommandLine: `"${process.execPath}" -e "unrelated remote" remote`,
+      }],
+      [{ ...exactRemoteInventory, ParentProcessId: 0 }],
+      [{ ...exactRemoteInventory, CreationDate: '2000-01-01T00:00:00.000Z' }],
+      [{
+        ...exactRemoteInventory,
+        CommandLine: `"${process.execPath}" "${wrongEntrypoint}" remote`,
+      }],
+    ]) {
+      await fs.writeFile(remoteInventoryPath, JSON.stringify(invalidRemoteInventory));
+      await fs.writeFile(inventoryPath, JSON.stringify([exactWatcherInventory]));
+      const invalidRemoteActivation = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+      assert.notEqual(invalidRemoteActivation.status, 0);
+      assert.match(
+        `${invalidRemoteActivation.stdout}\n${invalidRemoteActivation.stderr}`,
+        /exact.+live.+RDC.+child|remote.+(canonical|watcher|entrypoint|parent)/i,
+      );
+      assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    }
+    await fs.writeFile(remoteInventoryPath, JSON.stringify([exactRemoteInventory]));
     console.log('PASS RDC A/B activation requires the exact old-watcher remote child');
 
     // The existing hold is reached only after ValidateOnly. Mutating here makes
@@ -1101,12 +1132,18 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
     await fs.rm(path.join(signals, 'hold-activation'));
     await fs.rm(path.join(signals, 'activation-release'));
+    await fs.rm(path.join(signals, 'activation-ready'));
     const restoreDelegator = spawnSync('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', handoffInstaller,
       '-BenchmarkRoot', handoffRoot, '-LauncherPath', handoffLauncher,
     ], { encoding: 'utf8' });
     assert.equal(restoreDelegator.status, 0, `${restoreDelegator.stdout}\n${restoreDelegator.stderr}`);
     console.log('PASS RDC A/B activation closes validation-to-launch TOCTOU');
+    await fs.writeFile(inventoryPath, JSON.stringify([
+      exactWatcherInventory,
+      { ...exactWatcherInventory },
+      decoyWatcherInventory,
+    ]));
     const ambiguousActivation = spawnSync('powershell.exe', activationArgs, activationOptions);
     assert.notEqual(ambiguousActivation.status, 0);
     assert.match(`${ambiguousActivation.stdout}\n${ambiguousActivation.stderr}`, /multiple.+watcher/i);
@@ -1168,6 +1205,11 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     console.log('PASS RDC A/B stale watcher identity fails closed');
 
     const handoffRestore = path.resolve('scripts/benchmark/rdc-ab/Restore-RdcAbLauncher.ps1');
+    const launchMarkersBeforeFinalHandoff = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    await fs.rm(path.join(signals, 'activation-ready'), { force: true });
+    await fs.rm(path.join(signals, 'activation-release'), { force: true });
     await fs.writeFile(path.join(signals, 'hold-activation'), '');
     const heldActivation = spawnCaptured('powershell.exe', activationArgs, {
       env: activationOptions.env,
@@ -1215,9 +1257,12 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     );
     assert.doesNotThrow(() => process.kill(originalChildPid, 0));
     const signalsBeforeOldChildExit = await fs.readdir(signals);
-    assert.equal(
-      signalsBeforeOldChildExit.some((name) => name.startsWith('launch-')),
-      false,
+    const newLaunchMarkersBeforeOldChildExit = signalsBeforeOldChildExit.filter(
+      (name) => name.startsWith('launch-') && !launchMarkersBeforeFinalHandoff.has(name),
+    );
+    assert.deepEqual(
+      newLaunchMarkersBeforeOldChildExit,
+      [],
       signalsBeforeOldChildExit.join(','),
     );
 
@@ -1226,7 +1271,9 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       signals,
       async () => {
         const names = await fs.readdir(signals);
-        return names.includes('old-exit-1') && names.some((name) => name.startsWith('launch-'));
+        return names.includes('old-exit-1') && names.some(
+          (name) => name.startsWith('launch-') && !launchMarkersBeforeFinalHandoff.has(name),
+        );
       },
       [],
       'the old child exit and installed supervisor launch authority',

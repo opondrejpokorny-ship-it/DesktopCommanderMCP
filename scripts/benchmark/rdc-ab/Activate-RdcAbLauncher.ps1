@@ -64,6 +64,22 @@ for ($index = 0; $index -lt $expectedBytes.Length; $index++) {
   if ($actualBytes[$index] -ne $expectedBytes[$index]) { throw 'Launcher is not the installed RDC A/B delegator' }
 }
 
+function Assert-VerifiedLauncherStream([IO.Stream]$Stream) {
+  if (-not $Stream.CanRead -or -not $Stream.CanSeek) {
+    throw 'Verified launcher bytes cannot be read safely'
+  }
+  $Stream.Position = 0
+  if ($Stream.Length -ne $expectedBytes.Length) {
+    throw 'Launcher changed after validation; verified bytes no longer match'
+  }
+  for ($index = 0; $index -lt $expectedBytes.Length; $index++) {
+    if ($Stream.ReadByte() -ne [int]$expectedBytes[$index]) {
+      throw 'Launcher changed after validation; verified bytes no longer match'
+    }
+  }
+  $Stream.Position = 0
+}
+
 function Get-CmdLaunchTarget([string]$CommandLine) {
   if (-not $CommandLine) { return $null }
 
@@ -95,19 +111,78 @@ function Get-CmdProcessInventory {
   return (Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction Stop)
 }
 
-function Get-KnownRemoteProcesses {
-  if ($testControl) {
-    if (Test-Path -LiteralPath (Join-Path $testControl 'known-remote') -PathType Leaf) {
-      return @([pscustomobject]@{ ProcessId = 1 })
-    }
-    return @()
+function Get-OriginalLauncherRemoteContract {
+  $backup = "$launcher.rdc-ab-original"
+  $text = [IO.File]::ReadAllText($backup)
+  $rootMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"ROOT=(?<value>[^"\r\n]+)"[ \t]*\r?$')
+  $nodeMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"NODE=(?<value>[^"\r\n]+)"[ \t]*\r?$')
+  $entryMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"ENTRY=%ROOT%\\dist\\index\.js"[ \t]*\r?$')
+  $launchMatches = [regex]::Matches(
+    $text,
+    '(?im)^[ \t]*"%NODE%"[ \t]+"%ENTRY%"[ \t]+remote(?:[ \t]+>>[ \t]+"[^"\r\n]+"[ \t]+2>&1)?[ \t]*\r?$'
+  )
+  if ($rootMatches.Count -ne 1 -or $nodeMatches.Count -ne 1 -or
+      $entryMatches.Count -ne 1 -or $launchMatches.Count -ne 1) {
+    throw 'Original launcher remote contract is not exact'
   }
-  $markers = @('DesktopCommanderTierPrototype', 'RDC-Benchmark')
-  return @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
-    $cmd = [string]$_.CommandLine
-    $hasMarker = $false
-    foreach ($marker in $markers) { if ($cmd -like "*$marker*") { $hasMarker = $true; break } }
-    $hasMarker -and $cmd -match 'dist[\\/]index\.js' -and $cmd -match '(?:^|\s)remote(?:\s|$)'
+
+  $rootValue = $rootMatches[0].Groups['value'].Value
+  $nodeValue = $nodeMatches[0].Groups['value'].Value
+  $unsafe = [char[]]@('&','|','<','>','^','%','!')
+  if ($rootValue.IndexOfAny($unsafe) -ge 0 -or $nodeValue.IndexOfAny($unsafe) -ge 0) {
+    throw 'Original launcher remote contract contains unsafe expansion syntax'
+  }
+  try {
+    $legacyRoot = [IO.Path]::GetFullPath($rootValue).TrimEnd('\\')
+    $legacyNode = [IO.Path]::GetFullPath($nodeValue)
+    $legacyEntrypoint = [IO.Path]::GetFullPath((Join-Path $legacyRoot 'dist\\index.js'))
+  } catch { throw 'Original launcher remote contract contains an invalid path' }
+  if (-not [IO.Path]::GetFileName($legacyNode).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Original launcher remote contract does not name node.exe'
+  }
+  if (-not (Test-Path -LiteralPath $legacyNode -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $legacyEntrypoint -PathType Leaf)) {
+    throw 'Original launcher remote contract target is missing'
+  }
+  return [pscustomobject]@{ Node = $legacyNode; Entrypoint = $legacyEntrypoint }
+}
+
+function Get-RemoteProcessInventory {
+  if ($testControl) {
+    $inventoryPath = Join-Path $testControl 'remote-process-inventory.json'
+    if (-not (Test-Path -LiteralPath $inventoryPath -PathType Leaf)) {
+      throw 'Activation test remote process inventory is missing'
+    }
+    return @((Get-Content -Raw -LiteralPath $inventoryPath | ConvertFrom-Json))
+  }
+  return @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop)
+}
+
+function ConvertTo-ProcessCreationUtc($Value) {
+  if ($null -eq $Value) { return $null }
+  try {
+    if ($Value -is [DateTime]) { return ([DateTime]$Value).ToUniversalTime() }
+    return ([DateTimeOffset]::Parse([string]$Value)).UtcDateTime
+  } catch { return $null }
+}
+
+function Get-ExactRemoteProcesses([int]$WatcherPid, [DateTime]$WatcherCreationUtc, $Contract) {
+  return @(Get-RemoteProcessInventory | Where-Object {
+    if (-not ([string]$_.Name).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if ([int64]$_.ParentProcessId -ne [int64]$WatcherPid) { return $false }
+    $remoteCreationUtc = ConvertTo-ProcessCreationUtc $_.CreationDate
+    if ($null -eq $remoteCreationUtc -or $remoteCreationUtc -lt $WatcherCreationUtc) { return $false }
+    $match = [regex]::Match(
+      [string]$_.CommandLine,
+      '^[ \t]*"(?<node>[^"\r\n]+)"[ \t]+"(?<entry>[^"\r\n]+)"[ \t]+remote[ \t]*$'
+    )
+    if (-not $match.Success) { return $false }
+    try {
+      $node = [IO.Path]::GetFullPath($match.Groups['node'].Value)
+      $entry = [IO.Path]::GetFullPath($match.Groups['entry'].Value)
+    } catch { return $false }
+    return $node.Equals([string]$Contract.Node, [StringComparison]::OrdinalIgnoreCase) -and
+      $entry.Equals([string]$Contract.Entrypoint, [StringComparison]::OrdinalIgnoreCase)
   })
 }
 
@@ -133,8 +208,15 @@ try {
   if ($matchingWatchers.Count -eq 0) { throw 'Watcher command is not exact; activation stopped without changes' }
   if ($matchingWatchers.Count -gt 1) { throw 'Multiple exact old launcher watchers were found; activation stopped without changes' }
 
-  $knownRemote = @(Get-KnownRemoteProcesses)
-  if ($knownRemote.Count -ne 1) { throw "Activation requires exactly one live RDC remote child; found $($knownRemote.Count)" }
+  $watcherPid = [int]$matchingWatchers[0].ProcessId
+  if ($watcherPid -le 0 -or $watcherPid -eq $PID) { throw 'Old launcher watcher identity is invalid' }
+  $watcherCreationUtc = ConvertTo-ProcessCreationUtc $matchingWatchers[0].CreationDate
+  if ($null -eq $watcherCreationUtc) { throw 'Old launcher watcher creation time is unavailable' }
+  $legacyContract = Get-OriginalLauncherRemoteContract
+  $knownRemote = @(Get-ExactRemoteProcesses -WatcherPid $watcherPid -WatcherCreationUtc $watcherCreationUtc -Contract $legacyContract)
+  if ($knownRemote.Count -ne 1) {
+    throw "Activation requires exactly one exact live RDC remote child of the watcher; found $($knownRemote.Count)"
+  }
 
   $cmdPath = $env:ComSpec
   if (-not $cmdPath -or -not (Test-Path -LiteralPath $cmdPath -PathType Leaf)) {
@@ -142,8 +224,6 @@ try {
   }
   if (-not $cmdPath -or -not (Test-Path -LiteralPath $cmdPath -PathType Leaf)) { throw 'Windows command processor is unavailable' }
 
-  $watcherPid = [int]$matchingWatchers[0].ProcessId
-  if ($watcherPid -le 0 -or $watcherPid -eq $PID) { throw 'Old launcher watcher identity is invalid' }
   $watcherProcess = [Diagnostics.Process]::GetProcessById($watcherPid)
   if (-not $watcherProcess.ProcessName.Equals('cmd', [StringComparison]::OrdinalIgnoreCase)) {
     $watcherProcess.Dispose()
@@ -153,7 +233,18 @@ try {
 
   $argumentLine = '/d /s /c ""' + $launcher + '""'
   $startedWrapper = $null
+  $launcherReadLock = $null
   try {
+    try {
+      # Hold a read-only, no-write/no-delete share on the verified launcher from
+      # the final byte check through wrapper startup. cmd.exe can still read it.
+      $launcherReadLock = [IO.File]::Open(
+        $launcher, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+      )
+    } catch {
+      throw "Unable to lock verified launcher bytes before handoff: $($_.Exception.Message)"
+    }
+    Assert-VerifiedLauncherStream $launcherReadLock
     $startedWrapper = Start-Process -FilePath $cmdPath -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
     if ($null -eq $startedWrapper) { throw 'Unable to start installed RDC A/B launcher' }
     $startedWrapperPid = $startedWrapper.Id
@@ -179,6 +270,7 @@ try {
   } finally {
     $watcherProcess.Dispose()
     if ($null -ne $startedWrapper) { $startedWrapper.Dispose() }
+    if ($null -ne $launcherReadLock) { $launcherReadLock.Dispose() }
   }
 
   [ordered]@{
