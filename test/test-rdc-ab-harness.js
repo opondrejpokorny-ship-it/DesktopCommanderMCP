@@ -979,7 +979,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     const exactWatcherInventory = {
       Name: 'cmd.exe',
       ProcessId: oldWatcher.child.pid,
-      CommandLine: `cmd.exe /d /s /c ""${handoffLauncher}""`,
+      CommandLine: `cmd.exe /c ""${handoffLauncher}" "`,
     };
     const decoyWatcherInventory = {
       Name: 'cmd.exe',
@@ -1017,6 +1017,9 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     };
     for (const unsafeCommandLine of [
       `cmd.exe /d /q /k ""${handoffLauncher}""`,
+      `cmd.exe /d /c ""${handoffLauncher}""`,
+      `cmd.exe /q /c ""${handoffLauncher}""`,
+      `cmd.exe /s /c ""${handoffLauncher}""`,
       `cmd.exe /d /s /c ""${handoffLauncher}"" & echo injected`,
       `cmd.exe /d /s /c ""${handoffLauncher}"" && echo injected`,
       `cmd.exe /d /s /c ""${handoffLauncher}"" || echo injected`,
