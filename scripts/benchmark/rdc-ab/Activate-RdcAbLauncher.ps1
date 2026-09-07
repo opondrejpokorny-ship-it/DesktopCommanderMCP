@@ -212,9 +212,23 @@ try {
   if ($watcherPid -le 0 -or $watcherPid -eq $PID) { throw 'Old launcher watcher identity is invalid' }
   $watcherCreationUtc = ConvertTo-ProcessCreationUtc $matchingWatchers[0].CreationDate
   if ($null -eq $watcherCreationUtc) { throw 'Old launcher watcher creation time is unavailable' }
+
+  $watcherProcess = [Diagnostics.Process]::GetProcessById($watcherPid)
+  if (-not $watcherProcess.ProcessName.Equals('cmd', [StringComparison]::OrdinalIgnoreCase)) {
+    $watcherProcess.Dispose()
+    throw 'Old launcher watcher changed before activation'
+  }
+  $actualWatcherCreationUtc = $watcherProcess.StartTime.ToUniversalTime()
+  if ([Math]::Abs(($actualWatcherCreationUtc - $watcherCreationUtc).TotalMilliseconds) -gt 1) {
+    $watcherProcess.Dispose()
+    throw 'Old launcher watcher creation identity changed or was reused before activation'
+  }
+  $watcherStartTime = $watcherProcess.StartTime.ToFileTimeUtc()
+
   $legacyContract = Get-OriginalLauncherRemoteContract
-  $knownRemote = @(Get-ExactRemoteProcesses -WatcherPid $watcherPid -WatcherCreationUtc $watcherCreationUtc -Contract $legacyContract)
+  $knownRemote = @(Get-ExactRemoteProcesses -WatcherPid $watcherPid -WatcherCreationUtc $actualWatcherCreationUtc -Contract $legacyContract)
   if ($knownRemote.Count -ne 1) {
+    $watcherProcess.Dispose()
     throw "Activation requires exactly one exact live RDC remote child of the watcher; found $($knownRemote.Count)"
   }
 
@@ -223,13 +237,6 @@ try {
     $cmdPath = if ($env:SystemRoot) { Join-Path $env:SystemRoot 'System32\cmd.exe' } else { $null }
   }
   if (-not $cmdPath -or -not (Test-Path -LiteralPath $cmdPath -PathType Leaf)) { throw 'Windows command processor is unavailable' }
-
-  $watcherProcess = [Diagnostics.Process]::GetProcessById($watcherPid)
-  if (-not $watcherProcess.ProcessName.Equals('cmd', [StringComparison]::OrdinalIgnoreCase)) {
-    $watcherProcess.Dispose()
-    throw 'Old launcher watcher changed before activation'
-  }
-  $watcherStartTime = $watcherProcess.StartTime.ToFileTimeUtc()
 
   $argumentLine = '/d /s /c ""' + $launcher + '""'
   $startedWrapper = $null

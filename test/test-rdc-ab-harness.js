@@ -138,6 +138,16 @@ const prototypeRepo = path.join(tempRoot, 'prototype', 'repo');
 function git(cwd, ...args) {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 }
+function windowsProcessCreationIso(pid) {
+  const script = [
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"`,
+    `if ($null -eq $p) { exit 2 }`,
+    `$p.CreationDate.ToUniversalTime().ToString('o')`,
+  ].join('; ');
+  return execFileSync('powershell.exe', ['-NoProfile', '-Command', script], {
+    encoding: 'utf8', windowsHide: true,
+  }).trim();
+}
 async function makeRepo(repoPath, marker) {
   await fs.mkdir(path.join(repoPath, 'dist'), { recursive: true });
   execFileSync('git', ['init', repoPath]);
@@ -983,8 +993,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     ], { encoding: 'utf8' });
     assert.equal(installHandoff.status, 0, `${installHandoff.stdout}\n${installHandoff.stderr}`);
     assert.equal(await fs.readFile(`${handoffLauncher}.rdc-ab-original`, 'utf8'), originalWatcher);
-    const watcherCreation = new Date(Date.now() - 2_000).toISOString();
-    const remoteCreation = new Date(Date.now() - 1_000).toISOString();
+    const watcherCreation = windowsProcessCreationIso(oldWatcher.child.pid);
+    const remoteCreation = windowsProcessCreationIso(originalChildPid);
     const exactWatcherInventory = {
       Name: 'cmd.exe',
       ProcessId: oldWatcher.child.pid,
@@ -1106,6 +1116,22 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     }
     await fs.writeFile(remoteInventoryPath, JSON.stringify([exactRemoteInventory]));
     console.log('PASS RDC A/B activation requires the exact old-watcher remote child');
+
+    // A recycled PID must not let activation reacquire a different cmd.exe than
+    // the watcher selected from the process inventory. Creation time binds them.
+    await fs.writeFile(inventoryPath, JSON.stringify([{
+      ...exactWatcherInventory,
+      CreationDate: '2000-01-01T00:00:00.000Z',
+    }]));
+    const recycledWatcherActivation = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+    assert.notEqual(recycledWatcherActivation.status, 0);
+    assert.match(
+      `${recycledWatcherActivation.stdout}\n${recycledWatcherActivation.stderr}`,
+      /watcher.+(creation|changed|identity|reused)/i,
+    );
+    assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    await fs.writeFile(inventoryPath, JSON.stringify([exactWatcherInventory]));
+    console.log('PASS RDC A/B activation rejects recycled watcher PID identity');
 
     // The existing hold is reached only after ValidateOnly. Mutating here makes
     // validation-to-launch integrity deterministic rather than timing-sensitive.
