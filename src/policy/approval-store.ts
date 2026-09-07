@@ -54,29 +54,9 @@ export const APPROVAL_FILE = path.join(
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 const LOCK_RETRY_MS = 25;
 const LOCK_ATTEMPTS = 200;
-const STALE_LOCK_MS = 30_000;
 
 function resolveApprovalFile(approvalPath?: string): string {
     return approvalPath ?? process.env.DESKTOP_COMMANDER_APPROVAL_FILE ?? APPROVAL_FILE;
-}
-
-async function recoverStaleApprovalLock(lockPath: string): Promise<boolean> {
-    const stat = await fs.stat(lockPath).catch((error) => {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-        throw error;
-    });
-    if (!stat) return true;
-    if (Date.now() - stat.mtimeMs <= STALE_LOCK_MS) return false;
-
-    const reclaimedPath = `${lockPath}.stale-${process.pid}-${crypto.randomUUID()}`;
-    try {
-        await fs.rename(lockPath, reclaimedPath);
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
-        throw error;
-    }
-    await fs.rm(reclaimedPath, { recursive: true, force: true }).catch(() => undefined);
-    return true;
 }
 
 async function withApprovalStoreLock<T>(
@@ -95,14 +75,6 @@ async function withApprovalStoreLock<T>(
             break;
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-            try {
-                const stat = await fs.stat(lockPath);
-                if (Date.now() - stat.mtimeMs > STALE_LOCK_MS) {
-                    if (await recoverStaleApprovalLock(lockPath)) continue;
-                }
-            } catch (statError) {
-                if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') throw statError;
-            }
             await delay(LOCK_RETRY_MS);
         }
     }
