@@ -9,6 +9,7 @@ import { startControlCenterHost } from './host.js';
 import { createMemoryControlCenterExtension } from './memory-extension.js';
 import { createProControlCenterExtension } from './pro-extension.js';
 import { createTeamControlCenterExtension } from './team-extension.js';
+import { createUsageControlCenterExtension } from './usage-extension.js';
 
 export type ControlCenterOptions = Pick<
     ControlCenterHostOptionsV1,
@@ -29,6 +30,7 @@ export async function startControlCenter(
             createTeamControlCenterExtension(),
             createDemoControlCenterExtension(),
             createMemoryControlCenterExtension(),
+            createUsageControlCenterExtension(),
         ],
     });
 }
