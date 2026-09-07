@@ -45,7 +45,7 @@ export function createUsageControlCenterExtension(): ControlCenterExtensionV1 {
 const USAGE_UI_HTML = `
 <section id="usage-root">
   <h2>Usage</h2>
-  <p>Application payload only. This does not include local disk I/O or protocol/WebSocket overhead.</p>
+  <p>Application payload only. Local disk I/O and protocol/WebSocket overhead are not counted.</p>
   <dl>
     <dt>Total data usage</dt><dd data-usage-metric="total">—</dd>
     <dt>Returned to AI</dt><dd data-usage-metric="returned">—</dd>

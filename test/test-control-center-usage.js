@@ -36,6 +36,8 @@ try {
   assert.equal(home.status, 200);
   const html = await home.text();
   assert.match(html, />Usage</);
+  assert.match(html, /data-dc-target="usage"/);
+  assert.match(html, /data-dc-view="usage"/);
   assert.match(html, /id="usage-root"/);
   assert.match(html, /Total data usage/);
   assert.match(html, /Returned to AI/);
