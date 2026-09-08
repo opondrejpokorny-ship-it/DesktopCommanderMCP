@@ -9,6 +9,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { resolveNpmInvocation } = require('./npm-invocation.cjs');
 
 const root = path.resolve(__dirname, '..');
 const artifactRoot = path.join(root, '.artifacts', 'free');
@@ -16,10 +17,6 @@ const buildDir = path.join(artifactRoot, 'build');
 const packageDir = path.join(artifactRoot, 'package');
 const distDir = path.join(packageDir, 'dist');
 const rootPackage = require(path.join(root, 'package.json'));
-
-function command(name) {
-  return process.platform === 'win32' ? name + '.cmd' : name;
-}
 
 function run(executable, args, options = {}) {
   return execFileSync(executable, args, {
@@ -135,11 +132,10 @@ async function main() {
     }
   }
 
-  const packedRaw = run(
-    command('npm'),
-    ['pack', packageDir, '--json', '--pack-destination', artifactRoot],
-    { capture: true },
-  );
+  const npmPack = resolveNpmInvocation([
+    'pack', packageDir, '--json', '--pack-destination', artifactRoot,
+  ]);
+  const packedRaw = run(npmPack.executable, npmPack.args, { capture: true });
   const packed = JSON.parse(String(packedRaw));
   if (!Array.isArray(packed) || packed.length !== 1) {
     throw new Error('Unexpected npm pack output');
