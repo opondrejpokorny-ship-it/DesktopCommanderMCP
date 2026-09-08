@@ -16,7 +16,7 @@ function shouldStubNpmPack(executable, args) {
   if (['npm', 'npm.cmd', 'npm.exe'].includes(base)) {
     return hasExpectedPackArgs(args);
   }
-  if (!['node', 'node.exe'].includes(base) || !hasExpectedPackArgs(args, 1)) return false;
+  if (!hasExpectedPackArgs(args, 1)) return false;
   const npmCli = String(args[0]).replaceAll('\\', '/').toLowerCase();
   return npmCli.endsWith('/node_modules/npm/bin/npm-cli.js');
 }

@@ -18,6 +18,7 @@ assert.equal(shouldStubNpmPack('npm', exactArgs), true);
 assert.equal(shouldStubNpmPack('npm.cmd', exactArgs), true);
 assert.equal(shouldStubNpmPack('npm.exe', exactArgs), true);
 assert.equal(shouldStubNpmPack('node.exe', [npmCli, ...exactArgs]), true);
+assert.equal(shouldStubNpmPack('custom-node-runtime.exe', [npmCli, ...exactArgs]), true);
 assert.equal(shouldStubNpmPack('node.exe', [path.join(root, 'other-cli.js'), ...exactArgs]), false);
 assert.equal(shouldStubNpmPack('npm.cmd', ['pack', path.join(root, 'other'), '--json', '--pack-destination', artifactRoot]), false);
 assert.equal(shouldStubNpmPack('npm.cmd', ['pack', packageDir, '--json', '--pack-destination', path.join(root, 'other')]), false);
