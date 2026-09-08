@@ -414,12 +414,28 @@ function Set-RdcAbNamespaceSealJournal($Journal) {
     if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
   }
 }
-function Test-RdcAbJournalRemoteChildAlive($Journal) {
+function Test-RdcAbJournalRemoteChildAlive($Journal, $ConfirmedExitedChild = $null) {
   $entrypoint = [string]$Journal.Entrypoint
   $expectedPid = [int]$Journal.ChildPid
   $expectedStart = [string]$Journal.ChildStartUtc
+  $confirmedExitedPid = 0
+  $confirmedExitedStartUtc = $null
+  if ($null -ne $ConfirmedExitedChild) {
+    $confirmedExitedPid = [int]$ConfirmedExitedChild.ProcessId
+    if ($confirmedExitedPid -le 0 -or $ConfirmedExitedChild.StartUtc -isnot [DateTime]) {
+      throw 'RDC A/B confirmed-exited child identity is incomplete; refusing recovery'
+    }
+    $confirmedExitedStartUtc = ([DateTime]$ConfirmedExitedChild.StartUtc).ToUniversalTime()
+  }
   foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop)) {
     if ($expectedPid -ne 0 -and $process.ProcessId -ne $expectedPid) { continue }
+    if ($confirmedExitedPid -ne 0 -and [int]$process.ProcessId -eq $confirmedExitedPid) {
+      if ($process.CreationDate -isnot [DateTime]) {
+        throw 'RDC A/B confirmed-exited CIM creation identity is unavailable; refusing recovery'
+      }
+      $cimStartUtc = ([DateTime]$process.CreationDate).ToUniversalTime()
+      if ([Math]::Abs(($cimStartUtc - $confirmedExitedStartUtc).TotalMilliseconds) -le 1) { continue }
+    }
     # Before ChildPid is published, parent PID alone is not durable authority.
     # Conservatively block on any process using this runtime, including a local
     # MCP child that could have outlived its Remote or supervisor.
@@ -448,12 +464,25 @@ function Complete-RdcAbRuntimeSeal($Journal, $SealedRuntime, $Child) {
     throw 'RDC A/B child exit is not confirmed; preserving runtime seal and journal'
   }
   if ($null -eq $Journal) { Close-SealedRuntime $SealedRuntime; return }
+  $confirmedExitedChild = $null
+  if ($null -ne $Child -and $null -ne $Child.PSObject.Properties['Id'] -and $null -ne $Child.PSObject.Properties['StartTime']) {
+    if ([int]$Journal.ChildPid -le 0 -or [int]$Journal.ChildPid -ne [int]$Child.Id -or -not [string]$Journal.ChildStartUtc) {
+      throw 'RDC A/B confirmed-exited child does not match the journal identity; preserving runtime seal and journal'
+    }
+    try { $journalChildStartUtc = [DateTime]::Parse([string]$Journal.ChildStartUtc).ToUniversalTime() }
+    catch { throw 'RDC A/B journal child start identity is invalid; preserving runtime seal and journal' }
+    $childStartUtc = ([DateTime]$Child.StartTime).ToUniversalTime()
+    if ([Math]::Abs(($journalChildStartUtc - $childStartUtc).TotalMilliseconds) -gt 1) {
+      throw 'RDC A/B confirmed-exited child start identity does not match the journal; preserving runtime seal and journal'
+    }
+    $confirmedExitedChild = [pscustomobject]@{ ProcessId = [int]$Child.Id; StartUtc = $childStartUtc }
+  }
   $runtimeUse = [pscustomobject]@{
     Entrypoint = [string]$Journal.Entrypoint; ChildPid = 0; ChildStartUtc = ''
   }
   $runtimeUseDrained = $false
   for ($attempt = 0; $attempt -lt 50; $attempt++) {
-    if (-not (Test-RdcAbJournalRemoteChildAlive $runtimeUse)) {
+    if (-not (Test-RdcAbJournalRemoteChildAlive $runtimeUse $confirmedExitedChild)) {
       $runtimeUseDrained = $true
       break
     }
