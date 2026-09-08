@@ -16,6 +16,33 @@ interface McpConfig {
     env?: Record<string, string>;
 }
 
+const DESKTOP_COMMANDER_STATE_ENV_KEYS = [
+    'DESKTOP_COMMANDER_POLICY_FILE',
+    'DESKTOP_COMMANDER_APPROVAL_FILE',
+    'DESKTOP_COMMANDER_AUDIT_FILE',
+    'DESKTOP_COMMANDER_USAGE_FILE',
+    'DESKTOP_COMMANDER_WORKFLOW_STATE_DIR'
+] as const;
+
+export function buildDesktopCommanderChildEnvironment(
+    defaultEnvironment: Record<string, string>,
+    parentEnvironment: NodeJS.ProcessEnv,
+    configEnvironment?: Record<string, string>
+): Record<string, string> {
+    const forwardedStateEnvironment: Record<string, string> = {};
+    for (const key of DESKTOP_COMMANDER_STATE_ENV_KEYS) {
+        const value = parentEnvironment[key];
+        if (value !== undefined) forwardedStateEnvironment[key] = value;
+    }
+
+    return {
+        ...defaultEnvironment,
+        ...forwardedStateEnvironment,
+        ...configEnvironment,
+        DC_REMOTE_DEVICE: 'true'
+    };
+}
+
 export class DesktopCommanderIntegration {
     private mcpClient: Client | null = null;
     private mcpTransport: StdioClientTransport | null = null;
@@ -85,7 +112,11 @@ export class DesktopCommanderIntegration {
         const generation = ++this.connectionGeneration;
         const transport = new StdioClientTransport({
             ...config,
-            env: { ...getDefaultEnvironment(), ...config.env, DC_REMOTE_DEVICE: 'true' }
+            env: buildDesktopCommanderChildEnvironment(
+                getDefaultEnvironment(),
+                process.env,
+                config.env
+            )
         });
         const client = new Client({ name: 'desktop-commander-client', version: '1.0.0' }, { capabilities: {} });
         this.mcpTransport = transport;
