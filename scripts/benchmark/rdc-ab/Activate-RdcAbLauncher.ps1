@@ -224,6 +224,17 @@ function ConvertTo-ProcessCreationUtc($Value) {
   } catch { return $null }
 }
 
+function Test-ExactProcessRecordIdentity($Expected, $Actual) {
+  if ($null -eq $Expected -or $null -eq $Actual -or
+      [int64]$Expected.ProcessId -ne [int64]$Actual.ProcessId) {
+    return $false
+  }
+  $expectedCreationUtc = ConvertTo-ProcessCreationUtc $Expected.CreationDate
+  $actualCreationUtc = ConvertTo-ProcessCreationUtc $Actual.CreationDate
+  return $null -ne $expectedCreationUtc -and $null -ne $actualCreationUtc -and
+    [Math]::Abs(($expectedCreationUtc - $actualCreationUtc).TotalMilliseconds) -le 1
+}
+
 function Get-TrustedWindowsPowerShellPath {
   $systemRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
   if ([string]::IsNullOrWhiteSpace($systemRoot)) {
@@ -490,11 +501,20 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
 
     $freshInventory = Get-SystemTaskHostInventory $Contract
     $freshHost = Assert-ExactSystemTaskHostIdentity -TaskInventory $freshInventory.Tasks -ProcessInventory $freshInventory.Processes -Contract $Contract
-    $freshLocal = @($freshHost.LocalMcpProcesses | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
-    $expectedLocal = @($localRecords | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
-    if ([int]$freshHost.WrapperProcess.ProcessId -ne [int]$wrapperRecord.ProcessId -or
-        [int]$freshHost.RemoteProcess.ProcessId -ne [int]$remoteRecord.ProcessId -or
-        ($freshLocal -join ',') -ne ($expectedLocal -join ',')) {
+    $freshLocal = @($freshHost.LocalMcpProcesses | Sort-Object { [int64]$_.ProcessId })
+    $expectedLocal = @($localRecords | Sort-Object { [int64]$_.ProcessId })
+    $sameLocalIdentity = $freshLocal.Count -eq $expectedLocal.Count
+    if ($sameLocalIdentity) {
+      for ($index = 0; $index -lt $expectedLocal.Count; $index++) {
+        if (-not (Test-ExactProcessRecordIdentity $expectedLocal[$index] $freshLocal[$index])) {
+          $sameLocalIdentity = $false
+          break
+        }
+      }
+    }
+    if (-not (Test-ExactProcessRecordIdentity $wrapperRecord $freshHost.WrapperProcess) -or
+        -not (Test-ExactProcessRecordIdentity $remoteRecord $freshHost.RemoteProcess) -or
+        -not $sameLocalIdentity) {
       throw 'SYSTEM host identity changed immediately before authenticated shutdown handoff'
     }
 
@@ -527,21 +547,37 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
       throw "SYSTEM PowerShell wrapper exited non-zero after Remote shutdown ($($wrapperProcess.ExitCode)); replacement launch refused"
     }
 
+    # A single Ready snapshot is not enough: scheduler state and restarted
+    # processes can be published on different ticks. Require a continuous
+    # quiescence window. Wrapper result 0 rules out configured RestartOnFailure;
+    # the stability window covers delayed state/process observation without
+    # mutating the task definition.
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    $stableSince = $null
+    $stableQuiescence = $false
     $lastQuiescenceError = $null
     do {
       try {
         $postInventory = Get-SystemTaskHostInventory $Contract
         Assert-SystemTaskHostQuiesced -TaskInventory $postInventory.Tasks -ProcessInventory $postInventory.Processes -Contract $Contract
+        if ($null -eq $stableSince) { $stableSince = [DateTime]::UtcNow }
+        if ($testControl) {
+          [IO.File]::WriteAllText((Join-Path $testControl 'system-quiescence-observed'), '')
+        }
         $lastQuiescenceError = $null
-        break
+        if (([DateTime]::UtcNow - $stableSince).TotalMilliseconds -ge 1000) {
+          $stableQuiescence = $true
+          break
+        }
       } catch {
         $lastQuiescenceError = $_
-        Start-Sleep -Milliseconds 100
+        $stableSince = $null
       }
+      if (-not $stableQuiescence) { Start-Sleep -Milliseconds 100 }
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($null -ne $lastQuiescenceError) {
-      throw "SYSTEM task host did not become quiescent after graceful shutdown: $($lastQuiescenceError.Exception.Message)"
+    if (-not $stableQuiescence) {
+      $detail = if ($null -ne $lastQuiescenceError) { $lastQuiescenceError.Exception.Message } else { 'stable interval was not sustained' }
+      throw "SYSTEM task host did not become stably quiescent after graceful shutdown: $detail"
     }
   } finally {
     foreach ($localProcess in $localProcesses) { if ($null -ne $localProcess) { $localProcess.Dispose() } }
@@ -696,6 +732,16 @@ try {
         throw 'RDC A/B selected runtime changed during SYSTEM authenticated shutdown handoff'
       }
       Assert-VerifiedLauncherStream $launcherReadLock
+
+      # This is the final scheduler/process boundary before replacement launch.
+      # The task has only a boot trigger and recorded wrapper result 0, so its
+      # configured RestartOnFailure cannot fire. A separate administrator
+      # manually starting the task after this check is outside an atomic task
+      # coordination contract; the harness deliberately does not disable or
+      # rewrite the task to cover that external authority.
+      $finalSystemInventory = Get-SystemTaskHostInventory $systemContract
+      Assert-SystemTaskHostQuiesced -TaskInventory $finalSystemInventory.Tasks -ProcessInventory $finalSystemInventory.Processes -Contract $systemContract
+      Assert-NoCompetingHostOrchestrator $legacyContract $systemContract.TaskPath $systemContract.TaskName
 
       $startedWrapper = Start-Process -FilePath $cmdPath -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
       if ($null -eq $startedWrapper) { throw 'Unable to start installed RDC A/B launcher after SYSTEM authenticated shutdown' }

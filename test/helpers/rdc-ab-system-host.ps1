@@ -13,7 +13,7 @@ function Get-FunctionAst([string]$Name) {
 }
 
 # Load only the pure identity helpers under test; no top-level activation code runs.
-foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity', 'Assert-SystemTaskHostQuiesced')) {
+foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Test-ExactProcessRecordIdentity', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity', 'Assert-SystemTaskHostQuiesced')) {
   . ([scriptblock]::Create((Get-FunctionAst $name).Extent.Text))
 }
 
@@ -72,6 +72,17 @@ $processes = @(
 $hostInfo = Assert-ExactSystemTaskHostIdentity -TaskInventory @($task) -ProcessInventory $processes -Contract $contract
 if ($hostInfo.WrapperProcess.ProcessId -ne 401 -or $hostInfo.RemoteProcess.ProcessId -ne 402 -or @($hostInfo.LocalMcpProcesses).Count -ne 1) {
   throw 'SYSTEM task-host matcher did not return the exact wrapper, Remote, and local MCP chain'
+}
+
+$identityA = [pscustomobject]@{ ProcessId=501; CreationDate='2026-01-01T00:00:00.000Z' }
+if (-not (Test-ExactProcessRecordIdentity $identityA ([pscustomobject]@{ ProcessId=501; CreationDate='2026-01-01T00:00:00.000Z' }))) {
+  throw 'Exact process identity rejected equal PID and creation time'
+}
+if (Test-ExactProcessRecordIdentity $identityA ([pscustomobject]@{ ProcessId=501; CreationDate='2026-01-01T00:00:01.000Z' })) {
+  throw 'Exact process identity accepted same PID with different creation time'
+}
+if (Test-ExactProcessRecordIdentity $identityA ([pscustomobject]@{ ProcessId=501 })) {
+  throw 'Exact process identity accepted missing creation time'
 }
 
 $readyTask = [pscustomobject]@{
