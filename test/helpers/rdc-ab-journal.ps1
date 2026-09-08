@@ -64,6 +64,48 @@ Assert-Throws {
   Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child ([pscustomobject]@{ HasExited = $false })
 } 'A live child must prevent cleanup'
 if ($script:cleanup.Count) { throw 'Cleanup mutated protection while child was alive' }
+# Windows can briefly retain the exact exited Remote in Win32_Process after the
+# owned process handle has confirmed exit, with CommandLine already unavailable.
+# Only that exact PID + creation identity may be ignored; unrelated unknown
+# processes must remain fail-closed.
+$script:cleanup = @()
+$journal.ChildPid = 42
+$journal.ChildStartUtc = '2026-09-08T00:00:00.0000000Z'
+function Get-CimInstance { @([pscustomobject]@{
+  ProcessId = 42; ParentProcessId = 21
+  CreationDate = [DateTime]::Parse('2026-09-08T00:00:00.0000000Z').ToUniversalTime()
+  CommandLine = $null
+}) }
+$exitedChild = [pscustomobject]@{
+  HasExited = $true
+  Id = 42
+  StartTime = [DateTime]::Parse('2026-09-08T00:00:00.0000000Z').ToUniversalTime()
+}
+Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child $exitedChild
+if (($script:cleanup -join ',') -ne 'close,unseal,baseline,delete') { throw 'Exact post-exit CIM residue blocked protected cleanup' }
+Write-Output 'PASS RDC A/B journal cleanup ignores only exact confirmed-exited CIM residue'
+$script:cleanup = @()
+function Get-CimInstance { @([pscustomobject]@{
+  ProcessId = 42; ParentProcessId = 21
+  CreationDate = [DateTime]::Parse('2026-09-08T00:00:01.0000000Z').ToUniversalTime()
+  CommandLine = $null
+}) }
+Assert-Throws {
+  Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child $exitedChild
+} 'Reused PID with a different creation identity must remain fail-closed'
+if ($script:cleanup.Count) { throw 'Mismatched post-exit CIM identity mutated protection' }
+Write-Output 'PASS RDC A/B journal cleanup rejects mismatched post-exit CIM identity'
+$script:cleanup = @()
+function Get-CimInstance { @([pscustomobject]@{
+  ProcessId = 42; ParentProcessId = 21
+  CommandLine = $null
+}) }
+Assert-Throws {
+  Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child $exitedChild
+} 'Missing CIM creation identity must remain fail-closed'
+if ($script:cleanup.Count) { throw 'Missing post-exit CIM creation identity mutated protection' }
+Write-Output 'PASS RDC A/B journal cleanup rejects missing post-exit CIM creation identity'
+$script:cleanup = @()
 
 # A real Remote can exit before its local MCP child has fully drained. Cleanup
 # must keep the seal/journal while that exact runtime is still in use, wait for
