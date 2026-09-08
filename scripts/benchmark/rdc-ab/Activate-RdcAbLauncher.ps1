@@ -137,16 +137,29 @@ function Assert-NoCompetingHostOrchestrator($Contract, [string]$AllowedTaskPath 
     $instanceRunning = $taskState -eq 'Running'
     if (-not ($definitionEnabled -or $instanceRunning)) { continue }
     foreach ($action in @($task.Actions)) {
-      $text = ([string]$action.Execute) + ' ' + ([string]$action.Arguments)
-      $fileMatch = [regex]::Match([string]$action.Arguments, '(?i)(?:^|\s)-File\s+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^\s"\r\n]+))')
+      $execute = [string]$action.Execute
+      $arguments = [string]$action.Arguments
+      $text = $execute + ' ' + $arguments
+      $fileMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-File\s+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^\s"\r\n]+))')
       if ($fileMatch.Success) {
-        $scriptPath = if ($fileMatch.Groups['quoted'].Success) { $fileMatch.Groups['quoted'].Value } else { $fileMatch.Groups['bare'].Value }
+        try { $executeName = [IO.Path]::GetFileName($execute) }
+        catch { $executeName = $null }
+        $isPowerShellFileAction = $executeName -and
+          ($executeName.Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase) -or
+           $executeName.Equals('pwsh.exe', [StringComparison]::OrdinalIgnoreCase))
+        $scriptText = $null
         try {
+          if (-not $isPowerShellFileAction) { throw 'not a PowerShell file action' }
+          $scriptPath = if ($fileMatch.Groups['quoted'].Success) { $fileMatch.Groups['quoted'].Value } else { $fileMatch.Groups['bare'].Value }
           $scriptPath = [IO.Path]::GetFullPath($scriptPath)
-          if (Test-Path -LiteralPath $scriptPath -PathType Leaf) {
-            $text += "`n" + [IO.File]::ReadAllText($scriptPath)
+          if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw 'script target is not a file' }
+          $scriptText = [IO.File]::ReadAllText($scriptPath)
+        } catch {
+          if ($isPowerShellFileAction) {
+            throw "Enabled PowerShell host orchestrator '$([string]$task.TaskName)' has an unverifiable script target; activation stopped without changes"
           }
-        } catch { }
+        }
+        if ($null -ne $scriptText) { $text += "`n" + $scriptText }
       }
       $normalized = $text.Replace('/', '\')
       if ($normalized.IndexOf($entrypoint, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
