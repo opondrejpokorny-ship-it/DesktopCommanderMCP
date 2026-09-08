@@ -65,6 +65,12 @@ import { fileURLToPath } from 'node:url';
 const benchmarkScriptsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../scripts/benchmark/rdc-ab');
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
+const testTempRoot = process.platform === 'win32' ? (() => {
+  const run = spawnSync('powershell.exe', ['-NoProfile', '-Command', '[IO.Path]::GetTempPath()'], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  return run.stdout.trim();
+})() : os.tmpdir();
+
 if (process.platform === 'win32') {
   const orchestratorFocused = spawnSync('powershell.exe', [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -147,7 +153,7 @@ async function snapshotTree(root) {
 }
 
 const { verifyVariant } = await import('../scripts/benchmark/rdc-ab/lib.mjs');
-const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-'));
+const tempRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-'));
 const cleanRepo = path.join(tempRoot, 'clean', 'repo');
 const prototypeRepo = path.join(tempRoot, 'prototype', 'repo');
 
@@ -294,7 +300,7 @@ await fs.rm(path.join(cleanRepo, 'dist', 'index.js'));
 await assert.rejects(() => verifyVariant(exactManifest, 'clean'), /entrypoint/i);
 await fs.writeFile(path.join(cleanRepo, 'dist', 'index.js'), 'clean');
 
-const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-runtime-'));
+const runtimeRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-runtime-'));
 try {
   const runtimeCleanRepo = path.join(runtimeRoot, 'clean', 'repo');
   const runtimePrototypeRepo = path.join(runtimeRoot, 'prototype', 'repo');
@@ -368,8 +374,8 @@ console.log('PASS RDC A/B exact runtime-identity verification');
 const escaped = structuredClone(exactManifest);
 escaped.variants.clean.repoPath = path.dirname(tempRoot);
 await assert.rejects(() => verifyVariant(escaped, 'clean'), /benchmark root/i);
-const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-realpath-'));
-const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-outside-'));
+const realRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-realpath-'));
+const outsideRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-outside-'));
 const outsideRepo = path.join(outsideRoot, 'repo');
 const outsideSha = await makeRepo(outsideRepo, 'outside-repo');
 const linkedRepo = path.join(realRoot, 'clean', 'repo');
@@ -399,7 +405,7 @@ await fs.rm(tempRoot, { recursive: true, force: true });
 const publishModule = await import('../scripts/benchmark/rdc-ab/lib.mjs');
 assert.equal(typeof publishModule.publishNewBenchmarkFiles, 'function',
   'benchmark initialization needs a no-clobber publish helper');
-const publishHelperRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-init-publish-'));
+const publishHelperRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-init-publish-'));
 const foreignActiveBytes = Buffer.from([0x46, 0x4f, 0x52, 0x45, 0x49, 0x47, 0x4e, 0x00, 0xff]);
 await fs.writeFile(path.join(publishHelperRoot, 'active-variant.txt'), foreignActiveBytes);
 await assert.rejects(
@@ -421,7 +427,7 @@ await assert.rejects(() => fs.access(path.join(publishHelperRoot, 'manifest.json
 await fs.rm(publishHelperRoot, { recursive: true, force: true });
 console.log('PASS RDC A/B init-manifest no-clobber publish contract');
 
-const publishReplacementRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-init-replacement-'));
+const publishReplacementRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-init-replacement-'));
 const replacementManifestPath = path.join(publishReplacementRoot, 'manifest.json');
 const replacementActivePath = path.join(publishReplacementRoot, 'active-variant.txt');
 const replacementBytes = Buffer.from('replacement written after publication');
@@ -452,7 +458,7 @@ assert.deepEqual(
 await fs.rm(publishReplacementRoot, { recursive: true, force: true });
 console.log('PASS RDC A/B init-manifest replacement-safe rollback');
 const { selectVariant, readActiveVariant } = await import('../scripts/benchmark/rdc-ab/lib.mjs');
-const selectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-select-'));
+const selectRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-select-'));
 const selectClean = path.join(selectRoot, 'clean', 'repo');
 const selectPrototype = path.join(selectRoot, 'prototype', 'repo');
 const selectCleanSha = await makeRepo(selectClean, 'select-clean');
@@ -496,7 +502,7 @@ if (process.env.RDC_AB_TEST_CASE === 'build-digest') {
 }
 
 const { resetFixture, safeRunMetadata } = await import('../scripts/benchmark/rdc-ab/lib.mjs');
-const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-fixture-'));
+const fixtureRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-fixture-'));
 const template = path.join(fixtureRoot, 'fixtures', 'coding-01');
 await fs.mkdir(template, { recursive: true });
 await fs.writeFile(path.join(template, 'README.md'), 'immutable template');
@@ -507,8 +513,8 @@ assert.equal(await fs.readFile(path.join(template, 'README.md'), 'utf8'), 'immut
 await assert.rejects(() => resetFixture(fixtureRoot, '../escape', 'run-002'), /fixture/i);
 await assert.rejects(() => resetFixture(fixtureRoot, 'coding-01', '../escape'), /runId/i);
 await assert.rejects(() => resetFixture(fixtureRoot, 'coding-01', 'run-001'), /already exists/i);
-const fixtureEscapeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-fixture-escape-'));
-const fixtureEscapeOutside = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-fixture-outside-'));
+const fixtureEscapeRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-fixture-escape-'));
+const fixtureEscapeOutside = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-fixture-outside-'));
 const escapedFixture = path.join(fixtureEscapeRoot, 'fixtures', 'escaped');
 await fs.mkdir(path.dirname(escapedFixture), { recursive: true });
 await fs.writeFile(path.join(fixtureEscapeOutside, 'outside.txt'), 'do not copy');
@@ -518,8 +524,8 @@ await assert.rejects(
   /symlink|reparse|fixture|outside/i,
 );
 await assert.rejects(() => fs.access(path.join(fixtureEscapeRoot, 'runs', 'source-escape')), /ENOENT|no such file/i);
-const fixtureAncestorRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-fixture-ancestor-'));
-const fixtureAncestorOutside = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-fixture-ancestor-outside-'));
+const fixtureAncestorRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-fixture-ancestor-'));
+const fixtureAncestorOutside = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-fixture-ancestor-outside-'));
 await fs.mkdir(path.join(fixtureAncestorOutside, 'ancestor'));
 await fs.writeFile(path.join(fixtureAncestorOutside, 'ancestor', 'outside.txt'), 'do not copy');
 await fs.symlink(
@@ -559,7 +565,7 @@ assert.equal(JSON.stringify(safe).includes('secret'), false);
 console.log('PASS RDC A/B fixture reset and privacy-safe metadata');
 await fs.rm(fixtureRoot, { recursive: true, force: true });
 
-const cliRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-cli-'));
+const cliRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-cli-'));
 const cliClean = path.join(cliRoot, 'clean', 'repo');
 const cliPrototype = path.join(cliRoot, 'prototype', 'repo');
 const cliCleanSha = await makeRepo(cliClean, 'cli-clean');
@@ -591,7 +597,7 @@ console.log('PASS RDC A/B CLI contract');
 await fs.rm(cliRoot, { recursive: true, force: true });
 
 if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-only') {
-  const setupSandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-setup-'));
+  const setupSandbox = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-setup-'));
   try {
     const sourceClean = path.join(setupSandbox, 'source-clean');
     const sourcePrototype = path.join(setupSandbox, 'source-prototype');
@@ -766,7 +772,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
 }
 
 if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-only') {
-  const hostSandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-host-'));
+  const hostSandbox = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-host-'));
   const hostRoot = path.join(hostSandbox, 'benchmark');
   const hostClean = path.join(hostRoot, 'clean', 'repo');
   const hostPrototype = path.join(hostRoot, 'prototype', 'repo');
@@ -962,7 +968,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
   assert.equal(validationJson.variant, 'clean');
   assert.equal(validationJson.actualSha, hostCleanSha);
   assert.equal(validationJson.prototypeStateInjected, false);
-  const outsideStateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-outside-state-'));
+  const outsideStateRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-outside-state-'));
   await fs.rm(path.join(hostRoot, 'state'), { recursive: true, force: true });
   await fs.symlink(
     outsideStateRoot,
@@ -1307,7 +1313,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
 }
 
 if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
-  const handoffSandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-handoff-'));
+  const handoffSandbox = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-handoff-'));
   const handoffRoot = path.join(handoffSandbox, 'RDC-Benchmark-test');
   const handoffClean = path.join(handoffRoot, 'clean', 'repo');
   const handoffPrototype = path.join(handoffRoot, 'prototype', 'repo');
@@ -1809,7 +1815,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
   console.log('SKIP RDC A/B canonical watcher activation handoff (non-Windows)');
 }
 
-const cliExtraRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-cli-extra-'));
+const cliExtraRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-cli-extra-'));
 const extraClean = path.join(cliExtraRoot, 'clean', 'repo');
 const extraPrototype = path.join(cliExtraRoot, 'prototype', 'repo');
 const extraCleanSha = await makeRepo(extraClean, 'extra-clean');
@@ -1835,7 +1841,7 @@ const resetRun = spawnSync(process.execPath, [
 ], { encoding: 'utf8' });
 assert.equal(resetRun.status, 0, resetRun.stderr);
 assert.equal(await fs.readFile(path.join(cliExtraRoot, 'runs', 'extra-run', 'workspace', 'README.md'), 'utf8'), 'tiny fixture');
-const invalidCliRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-cli-invalid-'));
+const invalidCliRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-cli-invalid-'));
 await fs.writeFile(path.join(invalidCliRoot, 'manifest.json'), JSON.stringify({ schemaVersion: 2 }));
 await fs.writeFile(path.join(invalidCliRoot, 'active-variant.txt'), 'prototype\n');
 const invalidStatus = spawnSync(process.execPath, [
@@ -1867,7 +1873,7 @@ assert.throws(
   /toolCalls/i,
 );
 console.log('PASS RDC A/B metadata value validation');
-const gitFixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-git-fixture-'));
+const gitFixtureRoot = await fs.mkdtemp(path.join(testTempRoot, 'rdc-ab-git-fixture-'));
 const gitFixture = path.join(gitFixtureRoot, 'fixtures', 'git-01');
 await fs.mkdir(gitFixture, { recursive: true });
 execFileSync('git', ['init', gitFixture]);

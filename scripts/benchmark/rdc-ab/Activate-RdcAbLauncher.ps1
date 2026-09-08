@@ -126,7 +126,10 @@ function Get-HostOrchestratorInventory {
 function Assert-NoCompetingHostOrchestrator($Contract) {
   $entrypoint = [IO.Path]::GetFullPath([string]$Contract.Entrypoint).Replace('/', '\')
   foreach ($task in @(Get-HostOrchestratorInventory)) {
-    if (-not [bool]$task.Enabled -or ([string]$task.State -eq 'Disabled')) { continue }
+    $taskState = [string]$task.State
+    $definitionEnabled = [bool]$task.Enabled -and ($taskState -ne 'Disabled')
+    $instanceRunning = $taskState -eq 'Running'
+    if (-not ($definitionEnabled -or $instanceRunning)) { continue }
     foreach ($action in @($task.Actions)) {
       $text = ([string]$action.Execute) + ' ' + ([string]$action.Arguments)
       $fileMatch = [regex]::Match([string]$action.Arguments, '(?i)(?:^|\s)-File\s+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^\s"\r\n]+))')

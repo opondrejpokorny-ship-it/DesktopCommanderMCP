@@ -1,4 +1,4 @@
-﻿$source = Join-Path $PSScriptRoot '..\..\scripts\benchmark\rdc-ab\Activate-RdcAbLauncher.ps1'
+$source = Join-Path $PSScriptRoot '..\..\scripts\benchmark\rdc-ab\Activate-RdcAbLauncher.ps1'
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'Activation script has parser errors' }
@@ -19,4 +19,9 @@ try {
   if (-not $threw) { throw 'Enabled competing orchestrator was accepted' }
   if ($message -notmatch 'competing.+host.+orchestrator|enabled.+orchestrator') { throw "Unexpected rejection: $message" }
   Write-Output 'PASS RDC A/B orchestrator preflight rejects enabled external launcher'
+  function Get-HostOrchestratorInventory { @([pscustomobject]@{ TaskName='Synthetic disabled-but-running RDC watchdog'; Enabled=$false; State='Running'; Actions=@([pscustomobject]@{ Execute='powershell.exe'; Arguments=(' -File "' + $scriptPath + '"') }) }) }
+  $threw = $false; $message = ''
+  try { Assert-NoCompetingHostOrchestrator $contract } catch { $threw=$true; $message=$_.Exception.Message }
+  if (-not $threw) { throw 'Disabled but still-running competing orchestrator was accepted' }
+  Write-Output 'PASS RDC A/B orchestrator preflight rejects disabled but running external launcher'
 } finally { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue }
