@@ -257,10 +257,12 @@ function Get-SystemTaskHostInventory($Contract) {
   $tasks = @(Get-ScheduledTask -TaskName ([string]$Contract.TaskName) -ErrorAction Stop |
     Where-Object { ([string]$_.TaskPath).Equals([string]$Contract.TaskPath, [StringComparison]::OrdinalIgnoreCase) } |
     ForEach-Object {
+      $taskInfo = Get-ScheduledTaskInfo -TaskName ([string]$_.TaskName) -TaskPath ([string]$_.TaskPath) -ErrorAction Stop
       [pscustomobject]@{
         TaskPath = [string]$_.TaskPath
         TaskName = [string]$_.TaskName
         State = [string]$_.State
+        LastTaskResult = [int64]$taskInfo.LastTaskResult
         Principal = [pscustomobject]@{
           UserId = [string]$_.Principal.UserId
           LogonType = [string]$_.Principal.LogonType
@@ -424,7 +426,10 @@ function Assert-ExactSystemTaskHostIdentity($TaskInventory, $ProcessInventory, $
 }
 
 function Assert-SystemTaskHostQuiesced($TaskInventory, $ProcessInventory, $Contract) {
-  [void](Assert-ExactSystemTaskDefinition -TaskInventory $TaskInventory -Contract $Contract -AllowedStates @('Ready'))
+  $task = Assert-ExactSystemTaskDefinition -TaskInventory $TaskInventory -Contract $Contract -AllowedStates @('Ready')
+  if ($null -eq $task.LastTaskResult -or [int64]$task.LastTaskResult -ne 0) {
+    throw "SYSTEM RDC task did not record a successful wrapper exit ($([string]$task.LastTaskResult))"
+  }
   $wrapperPath = [IO.Path]::GetFullPath([string]$Contract.WrapperPath)
   $entrypoint = [IO.Path]::GetFullPath([string]$Contract.Entrypoint)
   foreach ($process in @($ProcessInventory)) {
@@ -513,7 +518,12 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
     if (-not $wrapperProcess.WaitForExit(5000)) {
       throw 'SYSTEM PowerShell wrapper did not exit cleanly after the Remote completed'
     }
-    if ($wrapperProcess.ExitCode -ne 0) {
+    # A Process object attached with GetProcessById can wait for an externally
+    # owned process on Windows but may not expose ExitCode. When it does, retain
+    # this early negative; the authoritative Task Scheduler result is required
+    # below at the Ready/quiescence boundary in every case.
+    $attachedWrapperExitCode = $wrapperProcess.ExitCode
+    if ($null -ne $attachedWrapperExitCode -and $attachedWrapperExitCode -ne 0) {
       throw "SYSTEM PowerShell wrapper exited non-zero after Remote shutdown ($($wrapperProcess.ExitCode)); replacement launch refused"
     }
 
@@ -628,6 +638,17 @@ try {
       WrapperPath = 'C:\Codebase44\system\rdc-system\Start-RemoteDesktopCommanderSystem.ps1'
       NodePath = [string]$legacyContract.Node
       Entrypoint = [string]$legacyContract.Entrypoint
+    }
+    if ($testControl) {
+      $testContractPath = Join-Path $testControl 'system-host-contract.json'
+      if (Test-Path -LiteralPath $testContractPath -PathType Leaf) {
+        try { $testContract = Get-Content -Raw -LiteralPath $testContractPath | ConvertFrom-Json }
+        catch { throw 'Activation test SYSTEM host contract is invalid' }
+        if ([string]::IsNullOrWhiteSpace([string]$testContract.WrapperPath)) {
+          throw 'Activation test SYSTEM host wrapper path is missing'
+        }
+        $systemContract.WrapperPath = [IO.Path]::GetFullPath([string]$testContract.WrapperPath)
+      }
     }
     try {
       $systemInventory = Get-SystemTaskHostInventory $systemContract

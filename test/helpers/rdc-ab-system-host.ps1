@@ -13,7 +13,7 @@ function Get-FunctionAst([string]$Name) {
 }
 
 # Load only the pure identity helpers under test; no top-level activation code runs.
-foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity')) {
+foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity', 'Assert-SystemTaskHostQuiesced')) {
   . ([scriptblock]::Create((Get-FunctionAst $name).Extent.Text))
 }
 
@@ -24,9 +24,6 @@ if ($handoffText -match '(?i)\b(Set|Register|Unregister|Start|Stop)-ScheduledTas
 }
 if ($handoffText -match '(?i)\.(Kill|CloseMainWindow)\(') {
   throw 'SYSTEM host handoff must not terminate the wrapper, Remote, or local MCP process'
-}
-if ($handoffText -notmatch '(?i)wrapperProcess\.ExitCode\s*-ne\s*0') {
-  throw 'SYSTEM host handoff must fail closed unless the wrapper exits with code 0'
 }
 foreach ($required in @('awaiting-authenticated-shutdown', 'remoteProcess.WaitForExit', 'localProcess.WaitForExit', 'wrapperProcess.WaitForExit')) {
   if ($handoffText -notmatch [regex]::Escape($required)) {
@@ -75,6 +72,22 @@ $processes = @(
 $hostInfo = Assert-ExactSystemTaskHostIdentity -TaskInventory @($task) -ProcessInventory $processes -Contract $contract
 if ($hostInfo.WrapperProcess.ProcessId -ne 401 -or $hostInfo.RemoteProcess.ProcessId -ne 402 -or @($hostInfo.LocalMcpProcesses).Count -ne 1) {
   throw 'SYSTEM task-host matcher did not return the exact wrapper, Remote, and local MCP chain'
+}
+
+$readyTask = [pscustomobject]@{
+  TaskPath=$task.TaskPath; TaskName=$task.TaskName; State='Ready'; LastTaskResult=0
+  Principal=$task.Principal; Actions=$task.Actions; Settings=$task.Settings; Triggers=$task.Triggers
+}
+Assert-SystemTaskHostQuiesced -TaskInventory @($readyTask) -ProcessInventory @() -Contract $contract
+foreach ($badResult in @(17, $null)) {
+  $badReadyTask = [pscustomobject]@{
+    TaskPath=$task.TaskPath; TaskName=$task.TaskName; State='Ready'; LastTaskResult=$badResult
+    Principal=$task.Principal; Actions=$task.Actions; Settings=$task.Settings; Triggers=$task.Triggers
+  }
+  $rejected = $false
+  try { Assert-SystemTaskHostQuiesced -TaskInventory @($badReadyTask) -ProcessInventory @() -Contract $contract }
+  catch { $rejected = $true }
+  if (-not $rejected) { throw "SYSTEM task quiescence accepted wrapper result: $badResult" }
 }
 
 # Representative identity drift: every case must fail closed before any handoff.
