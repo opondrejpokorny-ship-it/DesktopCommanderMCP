@@ -78,6 +78,15 @@ if (process.platform === 'win32') {
   ], { encoding: 'utf8' });
   assert.equal(orchestratorFocused.status, 0, orchestratorFocused.stdout + '\\n' + orchestratorFocused.stderr);
   assert.match(orchestratorFocused.stdout, /PASS RDC A\/B orchestrator preflight/);
+
+  // This is an inventory-only contract test.  It neither queries nor changes a
+  // scheduled task; the helper supplies synthetic task/process records.
+  const systemHostFocused = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'helpers/rdc-ab-system-host.ps1'),
+  ], { encoding: 'utf8' });
+  assert.equal(systemHostFocused.status, 0, systemHostFocused.stdout + '\\n' + systemHostFocused.stderr);
+  assert.match(systemHostFocused.stdout, /PASS RDC A\/B SYSTEM task-host contract/);
 }
 
 function spawnCaptured(file, args, options = {}) {
@@ -1504,9 +1513,74 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     );
     assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
     console.log('PASS RDC A/B activation accepts observed production /c watcher shape');
-    const externalHostScript = path.join(handoffSandbox, 'external-rdc-host.ps1');
-    await fs.writeFile(externalHostScript, `$bundle = '${canonicalEntrypoint.replaceAll("'", "''")}'\nStart-Process -FilePath '${process.execPath.replaceAll("'", "''")}' -ArgumentList @($bundle,'remote','--persist-session')\n`);
+
+    // The real dogfood host is Task Scheduler -> SYSTEM PowerShell wrapper ->
+    // `node dist/index.js remote --persist-session` -> local MCP, not a cmd watcher.
+    // This synthetic inventory proves activation recognizes that exact topology
+    // and reaches the pre-handoff replacement boundary without touching a task
+    // definition or any real process.
+    const systemWrapperPath = 'C:\\Codebase44\\system\\rdc-system\\Start-RemoteDesktopCommanderSystem.ps1';
+    const systemTaskInventoryPath = path.join(signals, 'system-task-inventory.json');
+    const systemProcessInventoryPath = path.join(signals, 'system-process-inventory.json');
+    const systemTask = {
+      TaskPath: '\\', TaskName: 'Codebase44 Remote Desktop Commander SYSTEM', State: 'Running',
+      Principal: { UserId: 'SYSTEM', LogonType: 'ServiceAccount', RunLevel: 'Highest' },
+      Actions: [{
+        Execute: 'powershell.exe',
+        Arguments: `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
+      }],
+      Settings: { MultipleInstances: 'IgnoreNew', RestartCount: 999, RestartInterval: 'PT1M' },
+      Triggers: [{ Class: 'MSFT_TaskBootTrigger', Enabled: true }],
+    };
+    const schedulerPid = 2147479001;
+    const systemWrapperPid = 2147479002;
+    const systemRemotePid = 2147479003;
+    const systemLocalMcpPid = 2147479004;
+    const systemProcesses = [
+      {
+        Name: 'svchost.exe', ProcessId: schedulerPid, ParentProcessId: 4,
+        CreationDate: '2026-01-01T00:00:00.000Z',
+        CommandLine: 'C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s Schedule',
+      },
+      {
+        Name: 'powershell.exe', ProcessId: systemWrapperPid, ParentProcessId: schedulerPid,
+        CreationDate: '2026-01-01T00:01:00.000Z',
+        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
+      },
+      {
+        Name: 'node.exe', ProcessId: systemRemotePid, ParentProcessId: systemWrapperPid,
+        CreationDate: '2026-01-01T00:02:00.000Z',
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint} remote --persist-session`,
+      },
+      {
+        Name: 'node.exe', ProcessId: systemLocalMcpPid, ParentProcessId: systemRemotePid,
+        CreationDate: '2026-01-01T00:03:00.000Z',
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint}`,
+      },
+    ];
+    await fs.writeFile(inventoryPath, JSON.stringify([]));
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([systemTask]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify(systemProcesses));
     const hostOrchestratorInventory = path.join(signals, 'host-orchestrator-inventory.json');
+    await fs.writeFile(hostOrchestratorInventory, JSON.stringify([{
+      TaskPath: '\\', TaskName: systemTask.TaskName, Enabled: true, State: 'Running',
+      Actions: systemTask.Actions,
+    }]));
+    await fs.writeFile(path.join(signals, 'fail-replacement-launch'), '');
+    const systemHostPreflight = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+    await fs.rm(path.join(signals, 'fail-replacement-launch'), { force: true });
+    assert.notEqual(systemHostPreflight.status, 0);
+    assert.match(
+      `${systemHostPreflight.stdout}\n${systemHostPreflight.stderr}`,
+      /test-controlled replacement launcher failure/i,
+      'exact SYSTEM task-host topology must reach the pre-handoff replacement boundary',
+    );
+    await fs.rm(systemTaskInventoryPath, { force: true });
+    await fs.rm(systemProcessInventoryPath, { force: true });
+    await fs.rm(hostOrchestratorInventory, { force: true });
+    await fs.writeFile(inventoryPath, JSON.stringify([exactWatcherInventory]));
+    console.log('PASS RDC A/B activation recognizes exact SYSTEM task-host topology');    const externalHostScript = path.join(handoffSandbox, 'external-rdc-host.ps1');
+    await fs.writeFile(externalHostScript, `$bundle = '${canonicalEntrypoint.replaceAll("'", "''")}'\nStart-Process -FilePath '${process.execPath.replaceAll("'", "''")}' -ArgumentList @($bundle,'remote','--persist-session')\n`);
     await fs.writeFile(hostOrchestratorInventory, JSON.stringify([{
       TaskName: 'Codebase44 Remote Desktop Commander SYSTEM', Enabled: true, State: 'Ready',
       Actions: [{ Execute: 'powershell.exe', Arguments: `-NoProfile -File "${externalHostScript}"` }],
