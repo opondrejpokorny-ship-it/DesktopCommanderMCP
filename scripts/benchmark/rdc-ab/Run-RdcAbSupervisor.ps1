@@ -451,8 +451,16 @@ function Complete-RdcAbRuntimeSeal($Journal, $SealedRuntime, $Child) {
   $runtimeUse = [pscustomobject]@{
     Entrypoint = [string]$Journal.Entrypoint; ChildPid = 0; ChildStartUtc = ''
   }
-  if (Test-RdcAbJournalRemoteChildAlive $runtimeUse) {
-    throw 'RDC A/B runtime is still in use; preserving runtime seal and journal'
+  $runtimeUseDrained = $false
+  for ($attempt = 0; $attempt -lt 50; $attempt++) {
+    if (-not (Test-RdcAbJournalRemoteChildAlive $runtimeUse)) {
+      $runtimeUseDrained = $true
+      break
+    }
+    if ($attempt -lt 49) { Start-Sleep -Milliseconds 100 }
+  }
+  if (-not $runtimeUseDrained) {
+    throw 'RDC A/B runtime is still in use after bounded drain wait; preserving runtime seal and journal'
   }
   Close-SealedRuntime $SealedRuntime
   try {

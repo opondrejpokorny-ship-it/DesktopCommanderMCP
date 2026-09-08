@@ -64,6 +64,43 @@ Assert-Throws {
   Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child ([pscustomobject]@{ HasExited = $false })
 } 'A live child must prevent cleanup'
 if ($script:cleanup.Count) { throw 'Cleanup mutated protection while child was alive' }
+
+# A real Remote can exit before its local MCP child has fully drained. Cleanup
+# must keep the seal/journal while that exact runtime is still in use, wait for
+# a bounded transient drain, and only then restore the ACL baseline.
+$script:runtimeUseChecks = 0
+function Get-CimInstance {
+  $script:runtimeUseChecks++
+  if ($script:runtimeUseChecks -lt 3) {
+    return @([pscustomobject]@{
+      ProcessId = 77; ParentProcessId = 42
+      CommandLine = 'node "C:\synthetic-runtime\dist\index.js"'
+    })
+  }
+  return @()
+}
+function Start-Sleep { param([int]$Milliseconds) }
+Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child ([pscustomobject]@{ HasExited = $true })
+if ($script:runtimeUseChecks -lt 3) { throw 'Cleanup did not wait for transient runtime use to drain' }
+if (($script:cleanup -join ',') -ne 'close,unseal,baseline,delete') { throw 'Transient runtime drain did not complete protected cleanup' }
+Write-Output 'PASS RDC A/B journal cleanup waits for transient local-MCP drain'
+Microsoft.PowerShell.Management\Remove-Item Function:\Start-Sleep
+$script:cleanup = @()
+$script:runtimeUseChecks = 0
+function Get-CimInstance {
+  $script:runtimeUseChecks++
+  return @([pscustomobject]@{ ProcessId=88; ParentProcessId=42; CommandLine='node \"C:\synthetic-runtime\dist\index.js\"' })
+}
+function Start-Sleep { param([int]$Milliseconds) }
+Assert-Throws {
+  Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child ([pscustomobject]@{ HasExited=$true })
+} 'Persistent runtime use must remain fail-closed after bounded drain wait'
+if ($script:runtimeUseChecks -ne 50) { throw 'Persistent runtime use did not exhaust the bounded drain checks' }
+if ($script:cleanup.Count) { throw 'Persistent runtime use mutated the seal or journal' }
+Write-Output 'PASS RDC A/B journal cleanup preserves protection after bounded drain timeout'
+Microsoft.PowerShell.Management\Remove-Item Function:\Start-Sleep
+function Get-CimInstance { @() }
+$script:cleanup = @()
 Complete-RdcAbRuntimeSeal -Journal $journal -SealedRuntime @{} -Child ([pscustomobject]@{ HasExited = $true })
 if (($script:cleanup -join ',') -ne 'close,unseal,baseline,delete') { throw 'Cleanup requires baseline verification before journal deletion' }
 $script:cleanup = @()
