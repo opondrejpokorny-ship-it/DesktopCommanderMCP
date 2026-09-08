@@ -35,8 +35,9 @@ $stage = Join-Path $parent ('.' + (Split-Path -Leaf $root) + '.stage-' + [guid]:
 function Invoke-Checked([string]$File, [string[]]$Arguments, [string]$WorkingDirectory) {
   Push-Location $WorkingDirectory
   try {
-    & $File @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "$File failed with exit code $LASTEXITCODE" }
+    & $File @Arguments | Out-Host
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) { throw "$File failed with exit code $exitCode" }
   } finally { Pop-Location }
 }
 function Write-AtomicUtf8([string]$Path, [string]$Content) {

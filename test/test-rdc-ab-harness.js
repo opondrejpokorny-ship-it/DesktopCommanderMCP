@@ -221,6 +221,25 @@ async function makeRepo(repoPath, marker) {
   git(repoPath, 'commit', '-m', marker);
   return git(repoPath, 'rev-parse', 'HEAD');
 }
+async function makeSetupBuildRepo(repoPath, marker) {
+  await fs.mkdir(path.join(repoPath, 'dist'), { recursive: true });
+  execFileSync('git', ['init', repoPath]);
+  git(repoPath, 'config', 'user.email', 'benchmark@example.invalid');
+  git(repoPath, 'config', 'user.name', 'RDC Benchmark');
+  const packageName = `rdc-ab-${marker}`;
+  await fs.writeFile(path.join(repoPath, 'dist', 'index.js'), marker);
+  await fs.writeFile(path.join(repoPath, 'build.cjs'), "console.log('SETUP_BUILD_STDOUT');\n");
+  await fs.writeFile(path.join(repoPath, 'package.json'), JSON.stringify({
+    name: packageName, version: '1.0.0', scripts: { build: 'node build.cjs' },
+  }));
+  await fs.writeFile(path.join(repoPath, 'package-lock.json'), JSON.stringify({
+    name: packageName, version: '1.0.0', lockfileVersion: 3, requires: true,
+    packages: { '': { name: packageName, version: '1.0.0' } },
+  }));
+  git(repoPath, 'add', '.');
+  git(repoPath, 'commit', '-m', marker);
+  return git(repoPath, 'rev-parse', 'HEAD');
+}
 async function makeRuntimeRepo(repoPath, marker) {
   await fs.mkdir(repoPath, { recursive: true });
   execFileSync('git', ['init', repoPath]);
@@ -581,6 +600,29 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
     const setupEnvironment = { ...process.env };
     delete setupEnvironment.RDC_AB_ENABLE_TEST_CONTROL;
     delete setupEnvironment.RDC_AB_TEST_CONTROL_DIRECTORY;
+
+    const buildSourceClean = path.join(setupSandbox, 'build-source-clean');
+    const buildSourcePrototype = path.join(setupSandbox, 'build-source-prototype');
+    const buildSourceCleanSha = await makeSetupBuildRepo(buildSourceClean, 'setup-build-clean');
+    const buildSourcePrototypeSha = await makeSetupBuildRepo(buildSourcePrototype, 'setup-build-prototype');
+    const buildPreparedRoot = path.join(setupSandbox, 'build-prepared');
+    const buildSetupArgs = [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', setupScript,
+      '-BenchmarkRoot', buildPreparedRoot,
+      '-CleanSource', buildSourceClean, '-CleanSha', buildSourceCleanSha,
+      '-PrototypeSource', buildSourcePrototype, '-PrototypeSha', buildSourcePrototypeSha,
+      '-UpstreamLatestObserved', buildSourceCleanSha,
+    ];
+    const buildSetupRun = spawnSync('powershell.exe', buildSetupArgs, {
+      encoding: 'utf8', env: setupEnvironment,
+    });
+    assert.equal(buildSetupRun.status, 0, `${buildSetupRun.stdout}\n${buildSetupRun.stderr}`);
+    assert.match(buildSetupRun.stdout, /SETUP_BUILD_STDOUT/,
+      'setup fixture must prove native build stdout was emitted');
+    assert.equal(JSON.parse(buildSetupRun.stdout.trim().split(/\r?\n/).at(-1)).schemaVersion, 1);
+    await fs.rm(buildPreparedRoot, { recursive: true, force: true });
+    console.log('PASS RDC A/B setup keeps native command stdout out of structured return values');
+
     const setupRun = spawnSync('powershell.exe', setupArgs, {
       encoding: 'utf8', env: setupEnvironment,
     });
