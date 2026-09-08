@@ -7,21 +7,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($BenchmarkRoot).TrimEnd('\')
 $launcher = [IO.Path]::GetFullPath($LauncherPath)
-$activePath = Join-Path $root 'active-variant.txt'
-if (-not (Test-Path -LiteralPath $activePath -PathType Leaf)) { throw 'Active variant pointer is missing' }
-$active = (Get-Content -Raw -LiteralPath $activePath).Trim()
-if ($active -ne 'prototype') { throw 'Rollback requires prototype to be selected' }
-
-$installedSupervisor = Join-Path $root 'host\Run-RdcAbSupervisor.ps1'
-$supervisor = if (Test-Path -LiteralPath $installedSupervisor -PathType Leaf) { $installedSupervisor } else { Join-Path $PSScriptRoot 'Run-RdcAbSupervisor.ps1' }
-$output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $supervisor -BenchmarkRoot $root -ValidateOnly 2>&1
-if ($LASTEXITCODE -ne 0) { throw "Prototype validation failed: $($output -join ' ')" }
-try { $validated = ($output -join "`n") | ConvertFrom-Json }
-catch { throw 'Prototype validation did not return JSON' }
-if ($validated.variant -ne 'prototype') { throw 'Rollback validation did not resolve prototype' }
-$backup = "$launcher.rdc-ab-original"
-if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) { throw "Original launcher backup is missing: $backup" }
-
 $testControl = $env:RDC_AB_TEST_CONTROL_DIRECTORY
 if ($testControl) {
   if ($env:RDC_AB_ENABLE_TEST_CONTROL -ne '1') { throw 'Restore test control is disabled' }
@@ -48,12 +33,75 @@ function Get-IdentityScopedMutexName([string]$Prefix) {
   return "Global\$name"
 }
 
+function Read-AllStreamBytes([IO.Stream]$Stream) {
+  $Stream.Position = 0
+  $buffer = New-Object byte[] $Stream.Length
+  $offset = 0
+  while ($offset -lt $buffer.Length) {
+    $read = $Stream.Read($buffer, $offset, $buffer.Length - $offset)
+    if ($read -le 0) { throw 'Unexpected end of stream while reading launcher backup' }
+    $offset += $read
+  }
+  $Stream.Position = 0
+  return $buffer
+}
+
+function Get-BytesSha256([byte[]]$Bytes) {
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($hasher.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
+  finally { $hasher.Dispose() }
+}
+
+$hostDir = Join-Path $root 'host'
+$installedSupervisor = Join-Path $hostDir 'Run-RdcAbSupervisor.ps1'
+$installedAclHelper = Join-Path $hostDir 'RdcAbAcl.ps1'
+$metadataPath = Join-Path $hostDir 'launcher-install.json'
+$sourceAclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
+$backup = "$launcher.rdc-ab-original"
+if (-not (Test-Path -LiteralPath $sourceAclHelper -PathType Leaf)) { throw 'Trusted ACL helper is missing' }
+if (-not (Test-Path -LiteralPath $installedSupervisor -PathType Leaf)) { throw 'Installed RDC A/B supervisor is missing' }
+if (-not (Test-Path -LiteralPath $installedAclHelper -PathType Leaf)) { throw 'Installed RDC A/B ACL helper is missing' }
+if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw 'Launcher install metadata is missing' }
+if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) { throw "Original launcher backup is missing: $backup" }
+if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Installed launcher is missing' }
+. $sourceAclHelper
+
 $mutationMutex = [Threading.Mutex]::new($false, (Get-IdentityScopedMutexName 'OpenAI.DesktopCommander.RdcAbLauncherMutation.'))
 $ownsMutationMutex = $false
 try {
   try { $ownsMutationMutex = $mutationMutex.WaitOne(0) }
   catch [Threading.AbandonedMutexException] { $ownsMutationMutex = $true }
   if (-not $ownsMutationMutex) { throw 'RDC A/B launcher mutation is already active' }
+
+  [void](Assert-RdcAbProtectedRootAcl $root)
+  [void](Assert-RdcAbInheritedChildAcl $root $hostDir 'RDC A/B host directory')
+  [void](Assert-RdcAbInheritedChildAcl $root $installedAclHelper 'RDC A/B installed ACL helper')
+  [void](Assert-RdcAbInheritedChildAcl $root $installedSupervisor 'RDC A/B installed supervisor')
+  [void](Assert-RdcAbInheritedChildAcl $root $metadataPath 'RDC A/B launcher install metadata')
+
+  $activePath = Join-Path $root 'active-variant.txt'
+  if (-not (Test-Path -LiteralPath $activePath -PathType Leaf)) { throw 'Active variant pointer is missing' }
+  $active = (Get-Content -Raw -LiteralPath $activePath).Trim()
+  if ($active -ne 'prototype') { throw 'Rollback requires prototype to be selected' }
+
+  $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installedSupervisor -BenchmarkRoot $root -ValidateOnly 2>&1
+  if ($LASTEXITCODE -ne 0) { throw "Prototype validation failed: $($output -join ' ')" }
+  try { $validated = ($output -join "`n") | ConvertFrom-Json }
+  catch { throw 'Prototype validation did not return JSON' }
+  if ($validated.variant -ne 'prototype') { throw 'Rollback validation did not resolve prototype' }
+
+  try { $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json }
+  catch { throw 'Launcher install metadata is invalid' }
+  if ([int]$metadata.schemaVersion -ne 1 -or -not ([string]$metadata.launcherPath).Equals($launcher, [StringComparison]::OrdinalIgnoreCase) -or
+      [string]$metadata.backupSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'Launcher install metadata does not authenticate this launcher backup'
+  }
+  $backupStream = [IO.File]::Open($backup, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  try { $backupBytes = Read-AllStreamBytes $backupStream }
+  finally { $backupStream.Dispose() }
+  if (-not (Get-BytesSha256 $backupBytes).Equals([string]$metadata.backupSha256, [StringComparison]::Ordinal)) {
+    throw 'Launcher backup digest does not match protected install metadata'
+  }
 
   $supervisorMutex = [Threading.Mutex]::new($false, (Get-IdentityScopedMutexName 'OpenAI.DesktopCommander.RdcAbSupervisor.'))
   $ownsSupervisorMutex = $false
@@ -62,11 +110,10 @@ try {
     catch [Threading.AbandonedMutexException] { $ownsSupervisorMutex = $true }
     if (-not $ownsSupervisorMutex) { throw 'RDC A/B supervisor is active; restore stopped without changes' }
 
-    $installedDelegatorSupervisor = Join-Path $root 'host\Run-RdcAbSupervisor.ps1'
     $expectedDelegator = @(
       '@echo off',
       'setlocal',
-      ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $installedDelegatorSupervisor + '" -BenchmarkRoot "' + $root + '"'),
+      ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $installedSupervisor + '" -BenchmarkRoot "' + $root + '"'),
       'exit /b %errorlevel%'
     ) -join "`r`n"
     $expectedDelegator += "`r`n"
@@ -78,7 +125,7 @@ try {
     }
 
     $temp = "$launcher.restore-$PID-$([guid]::NewGuid().ToString('N'))"
-    [IO.File]::WriteAllBytes($temp, [IO.File]::ReadAllBytes($backup))
+    [IO.File]::WriteAllBytes($temp, $backupBytes)
     try { Move-Item -LiteralPath $temp -Destination $launcher -Force }
     finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
   } finally {

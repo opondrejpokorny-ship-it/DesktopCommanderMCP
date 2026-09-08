@@ -353,33 +353,119 @@ function Get-PrototypeStateEnvironment($Selection, [switch]$EnsureDirectories) {
 }
 
 $namespaceSealJournal = Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
+function Assert-RdcAbNamespaceSealJournal($Journal) {
+  if ($null -eq $Journal -or $Journal -is [Array] -or $Journal.SchemaVersion -ne 1) {
+    throw 'RDC A/B runtime namespace seal journal schema is invalid; refusing recovery'
+  }
+  foreach ($field in @('Repository','CanonicalRepository','Entrypoint','CanonicalEntrypoint','OwnerSid','SupervisorStartUtc')) {
+    if ($Journal.$field -isnot [string] -or [string]::IsNullOrWhiteSpace($Journal.$field)) {
+      throw "RDC A/B runtime namespace seal journal field $field is invalid"
+    }
+  }
+  foreach ($field in @('SupervisorPid','ChildPid','Rights')) {
+    if ($null -eq $Journal.$field -or $Journal.$field -is [string] -or
+        [int64]$Journal.$field -ne $Journal.$field -or [int64]$Journal.$field -gt [int]::MaxValue -or [int64]$Journal.$field -lt 0) {
+      throw "RDC A/B runtime namespace seal journal field $field is invalid"
+    }
+  }
+  if ($Journal.SupervisorPid -eq 0 -or $Journal.Rights -eq 0 -or $Journal.ChildStartUtc -isnot [string]) {
+    throw 'RDC A/B runtime namespace seal journal identity is incomplete'
+  }
+  foreach ($field in @('SupervisorStartUtc','ChildStartUtc')) {
+    if ($field -eq 'ChildStartUtc' -and $Journal.ChildPid -eq 0) {
+      if ($Journal.ChildStartUtc -ne '') { throw 'Unpublished child must not have a start time' }
+      continue
+    }
+    $parsed = [DateTime]::MinValue
+    if (-not [DateTime]::TryParseExact($Journal.$field, 'o', [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed) -or $parsed.Kind -ne [DateTimeKind]::Utc) {
+      throw 'RDC A/B runtime namespace seal journal start time is invalid'
+    }
+  }
+}
 function Get-RdcAbNamespaceSealJournal {
-  if (-not (Test-Path -LiteralPath $namespaceSealJournal -PathType Leaf)) { return $null }
-  try { return Get-Content -Raw -LiteralPath $namespaceSealJournal | ConvertFrom-Json }
+  if (-not (Test-Path -LiteralPath $namespaceSealJournal)) { return $null }
+  Assert-RdcAbInheritedChildAcl $root $namespaceSealJournal 'Runtime namespace seal journal'
+  if ((Get-Item -LiteralPath $namespaceSealJournal).Length -gt 16384) { throw 'RDC A/B runtime namespace seal journal is oversized' }
+  try { $journal = Get-Content -Raw -LiteralPath $namespaceSealJournal | ConvertFrom-Json }
   catch { throw 'RDC A/B runtime namespace seal journal is malformed; refusing to mutate it' }
+  Assert-RdcAbNamespaceSealJournal $journal
+  return $journal
 }
 function Set-RdcAbNamespaceSealJournal($Journal) {
-  [IO.File]::WriteAllText($namespaceSealJournal, ($Journal | ConvertTo-Json -Compress), [Text.Encoding]::UTF8)
+  Assert-RdcAbNamespaceSealJournal $Journal
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Journal | ConvertTo-Json -Compress))
+  $temporary = $namespaceSealJournal + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+  $stream = $null
+  try {
+    $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+    $stream.Dispose()
+    $stream = $null
+    if (Test-Path -LiteralPath $namespaceSealJournal) {
+      Assert-RdcAbInheritedChildAcl $root $namespaceSealJournal 'Runtime namespace seal journal'
+      [IO.File]::Replace($temporary, $namespaceSealJournal, [NullString]::Value)
+    } else {
+      [IO.File]::Move($temporary, $namespaceSealJournal)
+    }
+  } finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+    if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+  }
 }
 function Test-RdcAbJournalRemoteChildAlive($Journal) {
   $entrypoint = [string]$Journal.Entrypoint
   $expectedPid = [int]$Journal.ChildPid
   $expectedStart = [string]$Journal.ChildStartUtc
-  $expectedParent = [int]$Journal.SupervisorPid
-  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='node.exe'")) {
+  foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction Stop)) {
     if ($expectedPid -ne 0 -and $process.ProcessId -ne $expectedPid) { continue }
-    if ($expectedPid -eq 0 -and $process.ParentProcessId -ne $expectedParent) { continue }
+    # Before ChildPid is published, parent PID alone is not durable authority.
+    # Conservatively block on any process using this runtime, including a local
+    # MCP child that could have outlived its Remote or supervisor.
     $cmd = [string]$process.CommandLine
-    if ($cmd.IndexOf($entrypoint, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or $cmd -notmatch '(?:^|\s)remote(?:\s|$)') { continue }
+    if (-not $cmd) { throw 'RDC A/B child command line is unavailable; refusing recovery' }
+    if ($expectedPid -eq 0) {
+      if ($cmd.Replace('/', '\').IndexOf($entrypoint.Replace('/', '\'), [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+      continue
+    }
     if ($expectedStart) {
+      $candidate = $null
       try {
-        $start = (Get-Process -Id $process.ProcessId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')
+        $candidate = Get-Process -Id $process.ProcessId -ErrorAction Stop
+        [void]$candidate.Handle
+        $start = $candidate.StartTime.ToUniversalTime().ToString('o')
         if (-not $start.Equals($expectedStart, [StringComparison]::Ordinal)) { continue }
-      } catch { continue }
+      } catch { throw 'RDC A/B child identity is uncertain; refusing recovery' }
+      finally { if ($null -ne $candidate) { $candidate.Dispose() } }
     }
     return $true
   }
   return $false
+}
+function Complete-RdcAbRuntimeSeal($Journal, $SealedRuntime, $Child) {
+  if ($null -ne $Child -and -not $Child.HasExited) {
+    throw 'RDC A/B child exit is not confirmed; preserving runtime seal and journal'
+  }
+  if ($null -eq $Journal) { Close-SealedRuntime $SealedRuntime; return }
+  $runtimeUse = [pscustomobject]@{
+    Entrypoint = [string]$Journal.Entrypoint; ChildPid = 0; ChildStartUtc = ''
+  }
+  if (Test-RdcAbJournalRemoteChildAlive $runtimeUse) {
+    throw 'RDC A/B runtime is still in use; preserving runtime seal and journal'
+  }
+  Close-SealedRuntime $SealedRuntime
+  try {
+    # The journal is written before ACL installation. Attempt recovery even if
+    # installation threw before returning its seal object.
+    Remove-RdcAbRuntimeNamespaceSeal $root ([string]$Journal.Repository) ([string]$Journal.OwnerSid)
+  } catch {
+    Assert-RdcAbRuntimeTreeAcl $root ([string]$Journal.Repository) 'Runtime tree after incomplete namespace seal operation'
+  }
+  Assert-RdcAbRuntimeTreeAcl $root ([string]$Journal.Repository) 'Runtime tree before namespace seal journal deletion'
+  if (Test-Path -LiteralPath $namespaceSealJournal -PathType Leaf) {
+    Remove-Item -LiteralPath $namespaceSealJournal -Force
+  }
 }
 function Recover-RdcAbRuntimeNamespaceSeal {
   $journal = Get-RdcAbNamespaceSealJournal
@@ -387,7 +473,8 @@ function Recover-RdcAbRuntimeNamespaceSeal {
   if ([int]$journal.Rights -ne [int](Get-RdcAbRuntimeNamespaceSealRights)) {
     throw 'RDC A/B runtime namespace seal journal has an unexpected ACE mask; refusing recovery'
   }
-  if (Test-RdcAbJournalRemoteChildAlive $journal) {
+  if ((Test-RdcAbJournalRemoteChildAlive $journal) -or
+      (Test-RdcAbJournalRemoteChildAlive ([pscustomobject]@{ Entrypoint=$journal.Entrypoint; ChildPid=0; ChildStartUtc='' }))) {
     throw 'RDC A/B runtime namespace seal journal belongs to a live exact remote child; refusing recovery'
   }
   $repo = [IO.Path]::GetFullPath([string]$journal.Repository).TrimEnd('\')
@@ -408,8 +495,8 @@ function Recover-RdcAbRuntimeNamespaceSeal {
     # already restored; otherwise preserve the journal and fail closed.
     Assert-RdcAbRuntimeTreeAcl $root $repo 'Runtime tree during stale namespace seal recovery'
   }
-  Remove-Item -LiteralPath $namespaceSealJournal -Force
   Assert-RdcAbRuntimeTreeAcl $root $repo 'Runtime tree after stale namespace seal recovery'
+  Remove-Item -LiteralPath $namespaceSealJournal -Force
 }
 $staleNamespaceSeal = Get-RdcAbNamespaceSealJournal
 if ($ValidateOnly) {
@@ -565,6 +652,7 @@ while ($true) {
   $sealedRuntime = $null
   $namespaceSeal = $null
   $namespaceSealJournalRecord = $null
+  $child = $null
   try {
     $existing = @(Get-KnownRemoteProcesses)
     if ($existing.Count -gt 0) {
@@ -575,6 +663,7 @@ while ($true) {
       # Journal before installing the ACE: if this process dies at any later
       # point, recovery can identify a direct node child by parent/PID/start.
       $namespaceSealJournalRecord = [ordered]@{
+        SchemaVersion = 1
         Repository = $selection.Repo
         CanonicalRepository = ConvertTo-CanonicalExistingPath $selection.Repo 'Runtime namespace seal repository'
         Entrypoint = $selection.Entrypoint
@@ -582,6 +671,7 @@ while ($true) {
         OwnerSid = $identitySid
         Rights = [int](Get-RdcAbRuntimeNamespaceSealRights)
         SupervisorPid = $PID
+        SupervisorStartUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
         ChildPid = 0
         ChildStartUtc = ''
       }
@@ -606,12 +696,15 @@ while ($true) {
       $startInfo.Arguments = '"' + $selection.Entrypoint.Replace('"', '\"') + '" remote'
       $startInfo.UseShellExecute = $false
       $child = [Diagnostics.Process]::Start($startInfo)
+      [void]$child.Handle
       $namespaceSealJournalRecord.ChildPid = $child.Id
       $namespaceSealJournalRecord.ChildStartUtc = $child.StartTime.ToUniversalTime().ToString('o')
+      if ($testControl -and (Test-Path -LiteralPath (Join-Path $testControl 'fail-child-journal-publication') -PathType Leaf)) {
+        throw 'Test-controlled child journal publication failure'
+      }
       Set-RdcAbNamespaceSealJournal $namespaceSealJournalRecord
       $child.WaitForExit()
       $exitCode = $child.ExitCode
-      $child.Dispose()
     }
   } finally {
     try {
@@ -621,16 +714,13 @@ while ($true) {
         }
       }
     } finally {
+      # Publication or identity-read errors after Start must not release the
+      # runtime while its child is alive. Keep the retained handle and wait for
+      # natural/graceful exit; there is deliberately no termination fallback.
       try {
-        Close-SealedRuntime $sealedRuntime
-      } finally {
-        if ($null -ne $namespaceSeal) {
-          Remove-RdcAbRuntimeNamespaceSeal $root $selection.Repo $namespaceSeal.OwnerSid
-        }
-        if ($null -ne $namespaceSealJournalRecord -and (Test-Path -LiteralPath $namespaceSealJournal -PathType Leaf)) {
-          Remove-Item -LiteralPath $namespaceSealJournal -Force
-        }
-      }
+        if ($null -ne $child) { $child.WaitForExit() }
+        Complete-RdcAbRuntimeSeal $namespaceSealJournalRecord $sealedRuntime $child
+      } finally { if ($null -ne $child) { $child.Dispose() } }
     }
   }
   if ($launchBlocked) {

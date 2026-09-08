@@ -32,8 +32,8 @@ const valid = {
   schemaVersion: 1,
   benchmarkRoot: 'C:/RDC-Benchmark',
   variants: {
-    clean: { repoPath: 'C:/RDC-Benchmark/clean/repo', expectedSha: 'a'.repeat(40) },
-    prototype: { repoPath: 'C:/RDC-Benchmark/prototype/repo', expectedSha: 'b'.repeat(40) },
+    clean: { repoPath: 'C:/RDC-Benchmark/clean/repo', expectedSha: 'a'.repeat(40), runtimeDigest: 'c'.repeat(64) },
+    prototype: { repoPath: 'C:/RDC-Benchmark/prototype/repo', expectedSha: 'b'.repeat(40), runtimeDigest: 'd'.repeat(64) },
   },
 };
 
@@ -50,12 +50,19 @@ assert.throws(
   () => validateManifest({ ...valid, variants: { ...valid.variants, evil: valid.variants.clean } }),
   /variant/i,
 );
+assert.throws(
+  () => validateManifest({ ...valid, variants: { ...valid.variants, clean: { ...valid.variants.clean, runtimeDigest: undefined } } }),
+  /runtimeDigest/i,
+);
 console.log('PASS RDC A/B manifest validation');
 
 import fs from 'node:fs/promises';
 import { watch } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const benchmarkScriptsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../scripts/benchmark/rdc-ab');
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 function spawnCaptured(file, args, options = {}) {
@@ -239,8 +246,8 @@ const exactManifest = validateManifest({
   schemaVersion: 1,
   benchmarkRoot: tempRoot,
   variants: {
-    clean: { repoPath: cleanRepo, expectedSha: cleanSha, buildDigest: sha256('clean') },
-    prototype: { repoPath: prototypeRepo, expectedSha: prototypeSha, buildDigest: sha256('prototype') },
+    clean: { repoPath: cleanRepo, expectedSha: cleanSha, buildDigest: sha256('clean'), runtimeDigest: await runtimeDigest(cleanRepo) },
+    prototype: { repoPath: prototypeRepo, expectedSha: prototypeSha, buildDigest: sha256('prototype'), runtimeDigest: await runtimeDigest(prototypeRepo) },
   },
 });
 
@@ -346,8 +353,8 @@ const reparseManifest = {
   schemaVersion: 1,
   benchmarkRoot: realRoot,
   variants: {
-    clean: { repoPath: linkedRepo, expectedSha: outsideSha },
-    prototype: { repoPath: linkedPrototype, expectedSha: linkedPrototypeSha },
+    clean: { repoPath: linkedRepo, expectedSha: outsideSha, runtimeDigest: 'e'.repeat(64) },
+    prototype: { repoPath: linkedPrototype, expectedSha: linkedPrototypeSha, runtimeDigest: 'f'.repeat(64) },
   },
 };
 await assert.rejects(
@@ -426,11 +433,12 @@ const selectManifest = {
   schemaVersion: 1,
   benchmarkRoot: selectRoot,
   variants: {
-    clean: { repoPath: selectClean, expectedSha: selectCleanSha, buildDigest: sha256('select-clean') },
+    clean: { repoPath: selectClean, expectedSha: selectCleanSha, buildDigest: sha256('select-clean'), runtimeDigest: await runtimeDigest(selectClean) },
     prototype: {
       repoPath: selectPrototype,
       expectedSha: selectPrototypeSha,
       buildDigest: sha256('select-prototype'),
+      runtimeDigest: await runtimeDigest(selectPrototype),
     },
   },
 };
@@ -531,12 +539,12 @@ const cliPrototypeSha = await makeRepo(cliPrototype, 'cli-prototype');
 await fs.writeFile(path.join(cliRoot, 'manifest.json'), JSON.stringify({
   schemaVersion: 1, benchmarkRoot: cliRoot,
   variants: {
-    clean: { repoPath: cliClean, expectedSha: cliCleanSha },
-    prototype: { repoPath: cliPrototype, expectedSha: cliPrototypeSha },
+    clean: { repoPath: cliClean, expectedSha: cliCleanSha, runtimeDigest: await runtimeDigest(cliClean) },
+    prototype: { repoPath: cliPrototype, expectedSha: cliPrototypeSha, runtimeDigest: await runtimeDigest(cliPrototype) },
   },
 }));
 await fs.writeFile(path.join(cliRoot, 'active-variant.txt'), 'prototype\n');
-const cliPath = path.resolve('scripts/benchmark/rdc-ab/cli.mjs');
+const cliPath = path.join(benchmarkScriptsDir, 'cli.mjs');
 const unknown = spawnSync(process.execPath, [cliPath, 'unknown', '--root', cliRoot], { encoding: 'utf8' });
 assert.notEqual(unknown.status, 0);
 assert.match(unknown.stderr, /unknown command/i);
@@ -554,7 +562,7 @@ assert.equal(JSON.parse(verifyRun.stdout).actualSha, cliCleanSha);
 console.log('PASS RDC A/B CLI contract');
 await fs.rm(cliRoot, { recursive: true, force: true });
 
-if (process.platform === 'win32') {
+if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-only') {
   const setupSandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-setup-'));
   try {
     const sourceClean = path.join(setupSandbox, 'source-clean');
@@ -562,7 +570,7 @@ if (process.platform === 'win32') {
     const sourceCleanSha = await makeRepo(sourceClean, 'setup-clean');
     const sourcePrototypeSha = await makeRepo(sourcePrototype, 'setup-prototype');
     const preparedRoot = path.join(setupSandbox, 'prepared');
-    const setupScript = path.resolve('scripts/benchmark/rdc-ab/Setup-RdcAb.ps1');
+    const setupScript = path.join(benchmarkScriptsDir, 'Setup-RdcAb.ps1');
     const setupArgs = [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', setupScript,
       '-BenchmarkRoot', preparedRoot,
@@ -580,7 +588,7 @@ if (process.platform === 'win32') {
     const preparedAcl = windowsAclSummary(preparedRoot);
     assert.equal(preparedAcl.protected, true, 'setup must publish a protected benchmark-root DACL');
     assert.deepEqual(preparedAcl.unsafeWriteSids, [], 'setup must remove untrusted benchmark-root write grants');
-    const setupSupervisor = path.resolve('scripts/benchmark/rdc-ab/Run-RdcAbSupervisor.ps1');
+    const setupSupervisor = path.join(benchmarkScriptsDir, 'Run-RdcAbSupervisor.ps1');
     const validatePrepared = () => spawnSync('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', setupSupervisor,
       '-BenchmarkRoot', preparedRoot, '-ValidateOnly',
@@ -706,7 +714,7 @@ if (process.platform === 'win32') {
   console.log('SKIP RDC A/B Windows provisioning contract (non-Windows)');
 }
 
-if (process.platform === 'win32') {
+if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-only') {
   const hostSandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'rdc-ab-host-'));
   const hostRoot = path.join(hostSandbox, 'benchmark');
   const hostClean = path.join(hostRoot, 'clean', 'repo');
@@ -737,7 +745,7 @@ if (process.platform === 'win32') {
   const launcher = path.join(hostSandbox, 'start-remote.cmd');
   const originalLauncher = '@echo off\r\necho ORIGINAL\r\n';
   await fs.writeFile(launcher, originalLauncher);
-  const installer = path.resolve('scripts/benchmark/rdc-ab/Install-RdcAbLauncher.ps1');
+  const installer = path.join(benchmarkScriptsDir, 'Install-RdcAbLauncher.ps1');
   const installArgs = [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer,
     '-BenchmarkRoot', hostRoot, '-LauncherPath', launcher,
@@ -751,6 +759,22 @@ if (process.platform === 'win32') {
   assert.equal(await fs.readFile(launcher, 'utf8'), originalLauncher);
   await assert.rejects(() => fs.access(`${launcher}.rdc-ab-original`));
 
+  const poisonedLauncher = path.join(hostSandbox, 'poisoned-start-remote.cmd');
+  const poisonedOriginal = '@echo off\r\necho POISON-TARGET\r\n';
+  const poisonedBackup = '@echo off\r\necho ATTACKER-BACKUP\r\n';
+  await fs.writeFile(poisonedLauncher, poisonedOriginal);
+  await fs.writeFile(`${poisonedLauncher}.rdc-ab-original`, poisonedBackup);
+  const poisonedInstall = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer,
+    '-BenchmarkRoot', hostRoot, '-LauncherPath', poisonedLauncher,
+  ], { encoding: 'utf8' });
+  assert.notEqual(poisonedInstall.status, 0, 'install must reject an unrecorded pre-existing launcher backup');
+  assert.equal(await fs.readFile(poisonedLauncher, 'utf8'), poisonedOriginal);
+  assert.equal(await fs.readFile(`${poisonedLauncher}.rdc-ab-original`, 'utf8'), poisonedBackup);
+  await fs.rm(poisonedLauncher, { force: true });
+  await fs.rm(`${poisonedLauncher}.rdc-ab-original`, { force: true });
+  console.log('PASS RDC A/B install rejects attacker-supplied original backup');
+
   const installRun = spawnSync('powershell.exe', installArgs, { encoding: 'utf8' });
   assert.equal(installRun.status, 0, `${installRun.stdout}\n${installRun.stderr}`);
   assert.equal(await fs.readFile(`${launcher}.rdc-ab-original`, 'utf8'), originalLauncher);
@@ -763,6 +787,68 @@ if (process.platform === 'win32') {
   assert.equal(await fs.readFile(`${launcher}.rdc-ab-original`, 'utf8'), originalLauncher);
   assert.match(await fs.readFile(launcher, 'utf8'), /Run-RdcAbSupervisor\.ps1/i);
   console.log('PASS RDC A/B launcher installer contract');
+
+  const installedSupervisorPath = path.join(hostRoot, 'host', 'Run-RdcAbSupervisor.ps1');
+  const trustedInstalledSupervisor = await fs.readFile(installedSupervisorPath);
+  const aclExecutionSentinel = path.join(hostSandbox, 'unsafe-host-script-executed.txt');
+  const maliciousInstalledSupervisor = [
+    '$ErrorActionPreference = "Stop"',
+    '[IO.File]::WriteAllText($env:RDC_AB_ACL_SENTINEL, "executed")',
+    `Write-Output '{"variant":"prototype"}'`,
+    'exit 0',
+  ].join('\r\n');
+  await fs.writeFile(installedSupervisorPath, maliciousInstalledSupervisor);
+  grantAuthenticatedUsersModify(installedSupervisorPath);
+  const activationPreflight = path.join(benchmarkScriptsDir, 'Activate-RdcAbLauncher.ps1');
+  const unsafeHostActivation = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activationPreflight,
+    '-BenchmarkRoot', hostRoot, '-LauncherPath', launcher,
+  ], { encoding: 'utf8', env: { ...process.env, RDC_AB_ACL_SENTINEL: aclExecutionSentinel } });
+  assert.notEqual(unsafeHostActivation.status, 0);
+  await assert.rejects(() => fs.access(aclExecutionSentinel), /ENOENT|no such file/i,
+    'activation must reject an unsafe installed-host ACL before executing that script');
+  const unsafeHostRestore = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(benchmarkScriptsDir, 'Restore-RdcAbLauncher.ps1'),
+    '-BenchmarkRoot', hostRoot, '-LauncherPath', launcher,
+  ], { encoding: 'utf8', env: { ...process.env, RDC_AB_ACL_SENTINEL: aclExecutionSentinel } });
+  assert.notEqual(unsafeHostRestore.status, 0);
+  await assert.rejects(() => fs.access(aclExecutionSentinel), /ENOENT|no such file/i,
+    'restore must reject an unsafe installed-host ACL before executing that script');
+  await fs.writeFile(installedSupervisorPath, trustedInstalledSupervisor);
+  protectBenchmarkRootForTest(hostRoot);
+  console.log('PASS RDC A/B activation/restore preflight installed-host ACL before execution');
+
+  const installRaceControl = path.join(hostSandbox, 'install-host-race-control');
+  await fs.mkdir(installRaceControl);
+  await fs.writeFile(path.join(installRaceControl, 'hold-activation'), '');
+  const installRaceEnv = { ...process.env, RDC_AB_ENABLE_TEST_CONTROL: '1', RDC_AB_TEST_CONTROL_DIRECTORY: installRaceControl };
+  const heldPreflightActivation = spawnCaptured('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activationPreflight,
+    '-BenchmarkRoot', hostRoot, '-LauncherPath', launcher,
+  ], { env: installRaceEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  await waitForDirectoryCondition(installRaceControl,
+    async () => fs.access(path.join(installRaceControl, 'activation-ready')).then(() => true, () => false)
+      || heldPreflightActivation.child.exitCode !== null,
+    [heldPreflightActivation], 'activation host-script race hold');
+  assert.equal(heldPreflightActivation.child.exitCode, null, 'activation exited before host-script race hold');
+  const alternateScripts = path.join(hostSandbox, 'alternate-installer');
+  await fs.mkdir(alternateScripts);
+  await fs.copyFile(installer, path.join(alternateScripts, 'Install-RdcAbLauncher.ps1'));
+  await fs.copyFile(path.join(benchmarkScriptsDir, 'RdcAbAcl.ps1'), path.join(alternateScripts, 'RdcAbAcl.ps1'));
+  const alternateSupervisor = Buffer.concat([trustedInstalledSupervisor, Buffer.from('\r\n# alternate-version-b\r\n')]);
+  await fs.writeFile(path.join(alternateScripts, 'Run-RdcAbSupervisor.ps1'), alternateSupervisor);
+  const racedHostInstall = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(alternateScripts, 'Install-RdcAbLauncher.ps1'),
+    '-BenchmarkRoot', hostRoot, '-LauncherPath', launcher,
+  ], { encoding: 'utf8', env: installRaceEnv });
+  assert.notEqual(racedHostInstall.status, 0);
+  assert.deepEqual(await fs.readFile(installedSupervisorPath), trustedInstalledSupervisor,
+    'a losing install must not replace host scripts before acquiring the launcher mutation mutex');
+  await fs.writeFile(path.join(installRaceControl, 'activation-release'), '');
+  await heldPreflightActivation.completed;
+  await fs.rm(installRaceControl, { recursive: true, force: true });
+  await fs.rm(alternateScripts, { recursive: true, force: true });
+  console.log('PASS RDC A/B host-script replacement is inside launcher mutation mutex');
 
   const installMutationControl = path.join(hostSandbox, 'install-mutation-control');
   await fs.mkdir(installMutationControl);
@@ -788,7 +874,7 @@ if (process.platform === 'win32') {
   assert.notEqual(racedInstall.status, 0);
   assert.match(`${racedInstall.stdout}\n${racedInstall.stderr}`, /launcher mutation.+active/i);
   const racedInstallRestore = spawnSync('powershell.exe', [
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.resolve('scripts/benchmark/rdc-ab/Restore-RdcAbLauncher.ps1'),
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(benchmarkScriptsDir, 'Restore-RdcAbLauncher.ps1'),
     '-BenchmarkRoot', hostRoot, '-LauncherPath', launcher,
   ], { encoding: 'utf8', env: installMutationEnvironment });
   assert.notEqual(racedInstallRestore.status, 0);
@@ -799,7 +885,7 @@ if (process.platform === 'win32') {
   assert.equal(await fs.readFile(`${launcher}.rdc-ab-original`, 'utf8'), originalLauncher);
   console.log('PASS RDC A/B install mutation serialization and backup preservation');
 
-  const supervisor = path.resolve('scripts/benchmark/rdc-ab/Run-RdcAbSupervisor.ps1');
+  const supervisor = path.join(benchmarkScriptsDir, 'Run-RdcAbSupervisor.ps1');
   const validate = (root) => spawnSync('powershell.exe', [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', supervisor,
     '-BenchmarkRoot', root, '-ValidateOnly',
@@ -992,6 +1078,61 @@ if (process.platform === 'win32') {
     await fs.rm(sealControl, { recursive: true, force: true }).catch(() => {});
   }
   console.log('PASS RDC A/B supervisor seals the final validation-to-node selection');
+
+  // A persistence error after Start must retain the seal until the owned child
+  // exits. This uses an inert temporary fixture, never the installed Remote.
+  const journalRoot = path.join(hostSandbox, 'journal-failure-benchmark');
+  const journalRepo = path.join(journalRoot, 'clean', 'repo');
+  const journalControl = path.join(hostSandbox, 'journal-failure-control');
+  await fs.mkdir(journalControl);
+  const childReady = path.join(journalControl, 'child-ready');
+  const childRelease = path.join(journalControl, 'child-release');
+  const childSource = [
+    "const fs = require('node:fs');",
+    `fs.writeFileSync(${JSON.stringify(childReady)}, String(process.pid));`,
+    `setInterval(() => { if (fs.existsSync(${JSON.stringify(childRelease)})) process.exit(0); }, 25);`,
+  ].join('\n');
+  const journalRuntime = await makeRuntimeRepo(journalRepo, childSource);
+  const journalVariant = { repoPath: journalRepo, expectedSha: journalRuntime.sha, runtimeDigest: journalRuntime.runtimeDigest };
+  await fs.writeFile(path.join(journalRoot, 'manifest.json'), JSON.stringify({
+    schemaVersion: 1, benchmarkRoot: journalRoot, variants: { clean: journalVariant, prototype: journalVariant },
+  }));
+  await fs.writeFile(path.join(journalRoot, 'active-variant.txt'), 'clean\n');
+  protectBenchmarkRootForTest(journalRoot);
+  for (const marker of ['release', 'hold-post-validation-seal', 'post-validation-seal-release', 'fail-child-journal-publication']) {
+    await fs.writeFile(path.join(journalControl, marker), '');
+  }
+  const journalSupervisor = spawnCaptured('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', supervisor,
+    '-BenchmarkRoot', journalRoot, '-TestControlDirectory', journalControl,
+  ], { env: { ...process.env, RDC_AB_ENABLE_TEST_CONTROL: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    await waitForDirectoryCondition(journalControl,
+      () => fs.access(childReady).then(() => true, () => false), [journalSupervisor], 'inert journal fixture child');
+    const journalPath = path.join(journalRoot, '.rdc-ab-runtime-namespace-seal.json');
+    assert.equal(JSON.parse(await fs.readFile(journalPath, 'utf8')).ChildPid, 0,
+      'failed second publication must preserve the complete prelaunch record');
+    assert.equal(journalSupervisor.child.exitCode, null, 'supervisor must retain ownership until child exit');
+    await assert.rejects(async () => {
+      const handle = await fs.open(path.join(journalRepo, 'dist', 'index.js'), 'r+');
+      await handle.close();
+    }, /EPERM|EACCES|EBUSY|permission|busy/i, 'live fixture runtime must remain sealed');
+    await fs.writeFile(childRelease, '');
+    const failure = await journalSupervisor.completed;
+    assert.notEqual(failure.status, 0);
+    assert.match(failure.stderr, /Test-controlled child journal publication failure/);
+    await assert.rejects(() => fs.access(journalPath), /ENOENT|no such file/i);
+    const reopened = await fs.open(path.join(journalRepo, 'dist', 'index.js'), 'r+');
+    await reopened.close();
+  } finally {
+    await fs.writeFile(childRelease, '').catch(() => {});
+    await journalSupervisor.completed;
+    await fs.rm(journalRoot, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(journalControl, { recursive: true, force: true }).catch(() => {});
+  }
+  await assert.rejects(() => fs.access(journalRoot), /ENOENT|no such file/i,
+    'journal fixture cleanup must not leave a sealed runtime behind');
+  console.log('PASS RDC A/B journal publication failure retains protection until child exit');
   if (process.env.RDC_AB_TEST_CASE === 'supervisor-runtime-toctou') process.exit(0);
 
   if (process.env.RDC_AB_TEST_CASE !== 'handoff') {
@@ -1051,7 +1192,7 @@ if (process.platform === 'win32') {
     console.log('PASS RDC A/B concurrent ValidateOnly is side-effect-free');
   }
 
-  const restore = path.resolve('scripts/benchmark/rdc-ab/Restore-RdcAbLauncher.ps1');
+  const restore = path.join(benchmarkScriptsDir, 'Restore-RdcAbLauncher.ps1');
   const restoreArgs = [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', restore,
     '-BenchmarkRoot', hostRoot, '-LauncherPath', launcher,
@@ -1160,11 +1301,17 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     `const signals = ${JSON.stringify(signals)};`,
     "fs.appendFileSync(instances, `${process.pid}\\n`);",
     "const instance = fs.readFileSync(instances, 'utf8').trim().split(/\\r?\\n/).length;",
-    "const release = `${signals}\\\\release-old-${instance}`;",
-    "const sleeper = new Int32Array(new SharedArrayBuffer(4));",
-    "while (!fs.existsSync(release)) Atomics.wait(sleeper, 0, 0, 25);",
-    "if (instance === 1) fs.rmSync(`${signals}\\\\known-remote`, { force: true });",
-    "fs.writeFileSync(`${signals}\\\\old-exit-${instance}`, '');",
+    "const authenticatedShutdown = `${signals}\\\\authenticated-shutdown-${instance}`;",
+    "let closing = false;",
+    "const close = () => {",
+    "  if (closing) return;",
+    "  closing = true;",
+    "  if (instance === 1) fs.rmSync(`${signals}\\\\known-remote`, { force: true });",
+    "  fs.writeFileSync(`${signals}\\\\old-exit-${instance}`, '');",
+    "  process.exit(0);",
+    "};",
+    "process.on('SIGINT', () => fs.writeFileSync(`${signals}\\\\unexpected-sigint-${instance}`, ''));",
+    "setInterval(() => { if (fs.existsSync(authenticatedShutdown)) close(); }, 25);",
   ].join('\r\n');
   await fs.writeFile(canonicalEntrypoint, oldChildSource);
   const handoffLauncher = path.join(handoffSandbox, 'start-remote.cmd');
@@ -1184,7 +1331,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
 
   const oldWatcher = spawnCaptured(process.env.ComSpec ?? 'cmd.exe', [
     '/d', '/s', '/c', handoffLauncher,
-  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  ], { detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const decoyWatcher = spawnCaptured(process.env.ComSpec ?? 'cmd.exe', [
     '/d', '/q', '/k',
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -1194,14 +1341,17 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
   try {
     await waitForDirectoryCondition(
       signals,
-      async () => fs.access(oldInstancesPath).then(() => true, () => false),
+      async () => fs.readFile(oldInstancesPath, 'utf8').then((value) => {
+        const pid = Number(value.trim());
+        return Number.isInteger(pid) && pid > 0;
+      }, () => false),
       [oldWatcher],
-      'the fake canonical RDC child',
+      'the fake canonical RDC child PID',
     );
     originalChildPid = Number((await fs.readFile(oldInstancesPath, 'utf8')).trim());
     assert.ok(Number.isInteger(originalChildPid) && originalChildPid > 0);
 
-    const handoffInstaller = path.resolve('scripts/benchmark/rdc-ab/Install-RdcAbLauncher.ps1');
+    const handoffInstaller = path.join(benchmarkScriptsDir, 'Install-RdcAbLauncher.ps1');
     const installHandoff = spawnSync('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', handoffInstaller,
       '-BenchmarkRoot', handoffRoot, '-LauncherPath', handoffLauncher,
@@ -1237,7 +1387,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       decoyWatcherInventory,
     ]));
 
-    const activation = path.resolve('scripts/benchmark/rdc-ab/Activate-RdcAbLauncher.ps1');
+    const activation = path.join(benchmarkScriptsDir, 'Activate-RdcAbLauncher.ps1');
     const activationArgs = [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activation,
       '-BenchmarkRoot', handoffRoot, '-LauncherPath', handoffLauncher,
@@ -1252,14 +1402,10 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     };
 
     // A launcher path embedded in /k, or followed by a cmd operator, is not an
-    // exact watcher invocation. This is RED until activation rejects all of them.
-    // Use a real executable that deterministically exits on cmd.exe-only flags,
-    // so this proves watcher acceptance reaches replacement launch without a live handoff.
-    const failingCommandProcessor = process.execPath;
-    const prelaunchActivationOptions = {
-      ...activationOptions,
-      env: { ...activationOptions.env, ComSpec: failingCommandProcessor },
-    };
+    // exact watcher invocation. These cases must fail before replacement launch.
+    // A dedicated temp-only test hook below proves the observed production shape
+    // reaches the replacement-launch boundary without trusting ComSpec.
+    const prelaunchActivationOptions = activationOptions;
     for (const unsafeCommandLine of [
       `cmd.exe /d /q /k ""${handoffLauncher}""`,
       `cmd.exe /d /c ""${handoffLauncher}""`,
@@ -1290,11 +1436,13 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       ...exactWatcherInventory,
       CommandLine: `cmd.exe /c ""${handoffLauncher}" "`,
     }]));
+    await fs.writeFile(path.join(signals, 'fail-replacement-launch'), '');
     const productionShapeActivation = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
-    assert.notEqual(productionShapeActivation.status, 0);
+    await fs.rm(path.join(signals, 'fail-replacement-launch'), { force: true });
+    assert.notEqual(productionShapeActivation.status, 0, 'production shape unexpectedly succeeded: ' + productionShapeActivation.stdout + '\n' + productionShapeActivation.stderr);
     assert.match(
       `${productionShapeActivation.stdout}\n${productionShapeActivation.stderr}`,
-      /launcher|handoff|start|process|executable|application/i,
+      /test-controlled replacement launcher failure/i,
       'observed production /c watcher shape must reach replacement launch rather than fail watcher matching',
     );
     assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
@@ -1417,14 +1565,11 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     await fs.rm(path.join(signals, 'hold-install'));
     console.log('PASS RDC A/B install and activation are mutation-serialized');
 
-    const invalidCommandProcessor = path.join(signals, 'invalid-cmd.exe');
-    await fs.writeFile(invalidCommandProcessor, 'not a Windows executable');
-    const failedStartActivation = spawnSync('powershell.exe', activationArgs, {
-      ...activationOptions,
-      env: { ...activationOptions.env, ComSpec: invalidCommandProcessor },
-    });
+    await fs.writeFile(path.join(signals, 'fail-replacement-launch'), '');
+    const failedStartActivation = spawnSync('powershell.exe', activationArgs, activationOptions);
+    await fs.rm(path.join(signals, 'fail-replacement-launch'), { force: true });
     assert.notEqual(failedStartActivation.status, 0);
-    assert.match(`${failedStartActivation.stdout}\n${failedStartActivation.stderr}`, /start|process|executable|application/i);
+    assert.match(`${failedStartActivation.stdout}\n${failedStartActivation.stderr}`, /test-controlled replacement launcher failure/i);
     assert.doesNotThrow(
       () => process.kill(oldWatcher.child.pid, 0),
       'old watcher must survive replacement-launch failure',
@@ -1445,7 +1590,33 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     await fs.rm(path.join(signals, 'watcher-exit-or-change-before-retirement'));
     console.log('PASS RDC A/B stale watcher identity fails closed');
 
-    const handoffRestore = path.resolve('scripts/benchmark/rdc-ab/Restore-RdcAbLauncher.ps1');
+    const handoffRestore = path.join(benchmarkScriptsDir, 'Restore-RdcAbLauncher.ps1');
+    const liveShapeLocalMcpPid = 2147480000;
+    const liveShapeLocalMcpInventory = {
+      Name: 'node.exe',
+      ProcessId: liveShapeLocalMcpPid,
+      ParentProcessId: originalChildPid,
+      CreationDate: new Date(Date.parse(remoteCreation) + 1000).toISOString(),
+      CommandLine: `"${process.execPath}" ${canonicalEntrypoint}`,
+    };
+    // Match the observed live Windows StdioClientTransport shape: Node is quoted
+    // because its path contains spaces, while dist/index.js is not quoted.
+    await fs.writeFile(remoteInventoryPath, JSON.stringify([
+      exactRemoteInventory,
+      { ...liveShapeLocalMcpInventory, CommandLine: `"${process.execPath}" ${canonicalEntrypoint} --unexpected` },
+    ]));
+    const trailingLocalArgActivation = spawnSync('powershell.exe', activationArgs, activationOptions);
+    assert.notEqual(trailingLocalArgActivation.status, 0);
+    assert.match(
+      `${trailingLocalArgActivation.stdout}\n${trailingLocalArgActivation.stderr}`,
+      /unexpected direct Node child|local MCP child/i,
+    );
+    assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    await fs.writeFile(remoteInventoryPath, JSON.stringify([
+      exactRemoteInventory,
+      liveShapeLocalMcpInventory,
+    ]));
+    console.log('PASS RDC A/B local MCP parser rejects trailing arguments');
     const launchMarkersBeforeFinalHandoff = new Set(
       (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
     );
@@ -1475,13 +1646,23 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     assert.match(`${racedRestore.stdout}\n${racedRestore.stderr}`, /launcher mutation.+active/i);
     assert.match(await fs.readFile(handoffLauncher, 'utf8'), /Run-RdcAbSupervisor\.ps1/i);
     await fs.writeFile(path.join(signals, 'activation-release'), '');
-    const activateRun = await heldActivation.completed;
-    assert.equal(activateRun.status, 0, `${activateRun.stdout}\n${activateRun.stderr}`);
-    const activationResult = JSON.parse(activateRun.stdout.trim());
+    try {
+      await waitForDirectoryCondition(
+        signals,
+        async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false)
+          || heldActivation.child.exitCode !== null,
+        [heldActivation],
+        'activation to retire the watcher and await authenticated Remote shutdown',
+      );
+    } catch (error) {
+      const earlyActivation = await heldActivation.completed;
+      throw new Error(`${error.message}\nEARLY_ACTIVATION_STATUS=${earlyActivation.status}\n${earlyActivation.stdout}\n${earlyActivation.stderr}`);
+    }
+    if (heldActivation.child.exitCode !== null) {
+      const earlyActivation = await heldActivation.completed;
+      assert.fail(`activation exited before authenticated shutdown handoff\n${earlyActivation.stdout}\n${earlyActivation.stderr}`);
+    }
     console.log('PASS RDC A/B activation and restore are mutation-serialized');
-    activatedWrapperPid = activationResult.startedWrapperPid;
-    assert.equal(activationResult.stoppedWatcherPid, oldWatcher.child.pid);
-    assert.equal(activationResult.variant, 'prototype');
     assert.equal(decoyWatcher.child.exitCode, null);
     await waitForDirectoryCondition(
       signals,
@@ -1494,20 +1675,29 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
         }
       },
       [oldWatcher],
-      'the exact old watcher to exit',
+      'the exact old watcher to exit before authenticated shutdown',
     );
-    assert.doesNotThrow(() => process.kill(originalChildPid, 0));
-    const signalsBeforeOldChildExit = await fs.readdir(signals);
-    const newLaunchMarkersBeforeOldChildExit = signalsBeforeOldChildExit.filter(
-      (name) => name.startsWith('launch-') && !launchMarkersBeforeFinalHandoff.has(name),
-    );
+    assert.doesNotThrow(() => process.kill(originalChildPid, 0),
+      'old Remote must remain alive until authenticated shutdown is requested');
+    const signalsBeforeAuthenticatedShutdown = await fs.readdir(signals);
+    assert.ok(!signalsBeforeAuthenticatedShutdown.includes('unexpected-sigint-1'),
+      'activation must not signal the old Remote through the Windows console');
     assert.deepEqual(
-      newLaunchMarkersBeforeOldChildExit,
+      signalsBeforeAuthenticatedShutdown.filter(
+        (name) => name.startsWith('launch-') && !launchMarkersBeforeFinalHandoff.has(name),
+      ),
       [],
-      signalsBeforeOldChildExit.join(','),
+      'replacement launch authority must wait for authenticated old-Remote shutdown',
     );
 
-    await fs.writeFile(path.join(signals, 'release-old-1'), '');
+    await fs.writeFile(path.join(signals, 'authenticated-shutdown-1'), '');
+    const activateRun = await heldActivation.completed;
+    assert.equal(activateRun.status, 0, `${activateRun.stdout}\n${activateRun.stderr}`);
+    const activationLines = activateRun.stdout.trim().split(/\r?\n/).filter(Boolean);
+    const activationResult = JSON.parse(activationLines.at(-1));
+    activatedWrapperPid = activationResult.startedWrapperPid;
+    assert.equal(activationResult.stoppedWatcherPid, oldWatcher.child.pid);
+    assert.equal(activationResult.variant, 'prototype');
     await waitForDirectoryCondition(
       signals,
       async () => {
@@ -1517,13 +1707,17 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
         );
       },
       [],
-      'the old child exit and installed supervisor launch authority',
+      'authenticated old-Remote exit and replacement supervisor launch authority',
     );
+    const signalsAfterAuthenticatedShutdown = await fs.readdir(signals);
+    assert.ok(!signalsAfterAuthenticatedShutdown.includes('unexpected-sigint-1'));
+    assert.throws(() => process.kill(originalChildPid, 0), /ESRCH|no such process/i,
+      'activation must not return with the exact old Remote child still alive');
     assert.equal((await fs.readFile(oldInstancesPath, 'utf8')).trim().split(/\r?\n/).length, 1);
-    console.log('PASS RDC A/B canonical watcher activation handoff');
+    console.log('PASS RDC A/B authenticated graceful watcher activation handoff');
   } finally {
-    await fs.writeFile(path.join(signals, 'release-old-1'), '').catch(() => {});
-    await fs.writeFile(path.join(signals, 'release-old-2'), '').catch(() => {});
+    await fs.writeFile(path.join(signals, 'authenticated-shutdown-1'), '').catch(() => {});
+    await fs.writeFile(path.join(signals, 'authenticated-shutdown-2'), '').catch(() => {});
     if (oldWatcher.child.exitCode === null) oldWatcher.child.kill();
     if (decoyWatcher.child.exitCode === null) decoyWatcher.child.kill();
     if (Number.isInteger(activatedWrapperPid)) {
@@ -1562,6 +1756,8 @@ const initRun = spawnSync(process.execPath, [
 assert.equal(initRun.status, 0, initRun.stderr);
 const initialized = JSON.parse(await fs.readFile(path.join(cliExtraRoot, 'manifest.json'), 'utf8'));
 assert.equal(initialized.variants.clean.expectedSha, extraCleanSha);
+assert.equal(initialized.variants.clean.runtimeDigest, await runtimeDigest(extraClean));
+assert.equal(initialized.variants.prototype.runtimeDigest, await runtimeDigest(extraPrototype));
 assert.equal((await fs.readFile(path.join(cliExtraRoot, 'active-variant.txt'), 'utf8')).trim(), 'prototype');
 
 const extraFixture = path.join(cliExtraRoot, 'fixtures', 'tiny');

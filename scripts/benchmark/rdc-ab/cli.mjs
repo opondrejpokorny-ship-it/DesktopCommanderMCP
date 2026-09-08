@@ -8,6 +8,7 @@ import {
   selectVariant,
   validateManifest,
   verifyVariant,
+  runtimeDigest,
 } from './lib.mjs';
 
 function getOption(args, name, required = true) {
@@ -41,18 +42,29 @@ async function initManifest(root, args) {
   }
   const latest = getOption(args, '--upstream-latest');
   if (!/^[0-9a-f]{40}$/i.test(latest)) throw new Error('--upstream-latest must be a full Git SHA');
+  const cleanRepo = path.resolve(getOption(args, '--clean-repo'));
+  const prototypeRepo = path.resolve(getOption(args, '--prototype-repo'));
+  for (const [label, repo] of [['clean', cleanRepo], ['prototype', prototypeRepo]]) {
+    const [canonicalRoot, canonicalRepo] = await Promise.all([fs.realpath(root), fs.realpath(repo)]);
+    const relative = path.relative(canonicalRoot, canonicalRepo);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`${label} repoPath real path must stay within benchmark root`);
+    }
+  }
   const manifest = validateManifest({
     schemaVersion: 1,
     benchmarkRoot: root,
     upstreamLatestObserved: latest.toLowerCase(),
     variants: {
       clean: {
-        repoPath: path.resolve(getOption(args, '--clean-repo')),
+        repoPath: cleanRepo,
         expectedSha: getOption(args, '--clean-sha').toLowerCase(),
+        runtimeDigest: await runtimeDigest(cleanRepo),
       },
       prototype: {
-        repoPath: path.resolve(getOption(args, '--prototype-repo')),
+        repoPath: prototypeRepo,
         expectedSha: getOption(args, '--prototype-sha').toLowerCase(),
+        runtimeDigest: await runtimeDigest(prototypeRepo),
       },
     },
   });

@@ -28,8 +28,8 @@ export function validateManifest(manifest) {
     if (entry.buildDigest !== undefined && !/^[0-9a-f]{64}$/i.test(entry.buildDigest)) {
       throw new Error(`${variant} buildDigest must be SHA-256 hex`);
     }
-    if (entry.runtimeDigest !== undefined && !/^[0-9a-f]{64}$/.test(entry.runtimeDigest)) {
-      throw new Error(`${variant} runtimeDigest must be lowercase SHA-256 hex`);
+    if (!/^[0-9a-f]{64}$/.test(entry.runtimeDigest ?? '')) {
+      throw new Error(`${variant} runtimeDigest is required and must be lowercase SHA-256 hex`);
     }
   }
   return manifest;
@@ -86,7 +86,7 @@ async function assertNoReparsePath(root, target, label) {
   }
 }
 
-async function runtimeDigest(repoPath) {
+export async function runtimeDigest(repoPath) {
   const files = [];
   async function visit(directory, relative = '') {
     const entries = await fs.readdir(directory, { withFileTypes: true });

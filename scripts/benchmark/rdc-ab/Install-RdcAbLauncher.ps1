@@ -33,11 +33,24 @@ function Get-IdentityScopedMutexName([string]$Prefix) {
   return "Global\$name"
 }
 
-$sourceSupervisor = Join-Path $PSScriptRoot 'Run-RdcAbSupervisor.ps1'
-$sourceAclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
-if (-not (Test-Path -LiteralPath $sourceSupervisor -PathType Leaf)) { throw 'Supervisor source script is missing' }
-if (-not (Test-Path -LiteralPath $sourceAclHelper -PathType Leaf)) { throw 'ACL helper source script is missing' }
-if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "Launcher is missing: $launcher" }
+function Read-AllStreamBytes([IO.Stream]$Stream) {
+  $Stream.Position = 0
+  $buffer = New-Object byte[] $Stream.Length
+  $offset = 0
+  while ($offset -lt $buffer.Length) {
+    $read = $Stream.Read($buffer, $offset, $buffer.Length - $offset)
+    if ($read -le 0) { throw 'Unexpected end of stream while reading launcher bytes' }
+    $offset += $read
+  }
+  $Stream.Position = 0
+  return $buffer
+}
+
+function Get-BytesSha256([byte[]]$Bytes) {
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($hasher.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
+  finally { $hasher.Dispose() }
+}
 
 function Test-Supervisor([string]$ScriptPath) {
   $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath -BenchmarkRoot $root -ValidateOnly 2>&1
@@ -46,21 +59,13 @@ function Test-Supervisor([string]$ScriptPath) {
   catch { throw 'Supervisor validation did not return JSON' }
 }
 
-$validated = Test-Supervisor $sourceSupervisor
-if ($validated.variant -notin @('clean','prototype')) { throw 'Supervisor returned an invalid variant' }
-$hostDir = Join-Path $root 'host'
-New-Item -ItemType Directory -Path $hostDir -Force | Out-Null
-$installedSupervisor = Join-Path $hostDir 'Run-RdcAbSupervisor.ps1'
-$installedAclHelper = Join-Path $hostDir 'RdcAbAcl.ps1'
-$aclTemp = "$installedAclHelper.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
-Copy-Item -LiteralPath $sourceAclHelper -Destination $aclTemp -Force
-try { Move-Item -LiteralPath $aclTemp -Destination $installedAclHelper -Force }
-finally { Remove-Item -LiteralPath $aclTemp -Force -ErrorAction SilentlyContinue }
-$supervisorTemp = "$installedSupervisor.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
-Copy-Item -LiteralPath $sourceSupervisor -Destination $supervisorTemp -Force
-try { Move-Item -LiteralPath $supervisorTemp -Destination $installedSupervisor -Force }
-finally { Remove-Item -LiteralPath $supervisorTemp -Force -ErrorAction SilentlyContinue }
-$null = Test-Supervisor $installedSupervisor
+$sourceSupervisor = Join-Path $PSScriptRoot 'Run-RdcAbSupervisor.ps1'
+$sourceAclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
+if (-not (Test-Path -LiteralPath $sourceSupervisor -PathType Leaf)) { throw 'Supervisor source script is missing' }
+if (-not (Test-Path -LiteralPath $sourceAclHelper -PathType Leaf)) { throw 'ACL helper source script is missing' }
+if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "Launcher is missing: $launcher" }
+. $sourceAclHelper
+[void](Assert-RdcAbProtectedRootAcl $root)
 
 $mutationMutex = [Threading.Mutex]::new($false, (Get-IdentityScopedMutexName 'OpenAI.DesktopCommander.RdcAbLauncherMutation.'))
 $ownsMutationMutex = $false
@@ -74,10 +79,75 @@ try {
     while (-not (Test-Path -LiteralPath (Join-Path $testControl 'install-release') -PathType Leaf)) { Start-Sleep -Milliseconds 25 }
   }
 
+  $validated = Test-Supervisor $sourceSupervisor
+  if ($validated.variant -notin @('clean','prototype')) { throw 'Supervisor returned an invalid variant' }
+
+  $hostDir = Join-Path $root 'host'
+  $installedSupervisor = Join-Path $hostDir 'Run-RdcAbSupervisor.ps1'
+  $installedAclHelper = Join-Path $hostDir 'RdcAbAcl.ps1'
+  $metadataPath = Join-Path $hostDir 'launcher-install.json'
   $backup = "$launcher.rdc-ab-original"
-  if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
-    [IO.File]::WriteAllBytes($backup, [IO.File]::ReadAllBytes($launcher))
+  $backupExists = Test-Path -LiteralPath $backup -PathType Leaf
+  $metadataExists = Test-Path -LiteralPath $metadataPath -PathType Leaf
+  if ($backupExists -ne $metadataExists) {
+    throw 'Launcher backup is not authenticated by benchmark install metadata'
   }
+
+  if ($backupExists) {
+    [void](Assert-RdcAbInheritedChildAcl $root $metadataPath 'RDC A/B launcher install metadata')
+    try { $metadata = Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json }
+    catch { throw 'Launcher install metadata is invalid' }
+    if ([int]$metadata.schemaVersion -ne 1 -or -not ([string]$metadata.launcherPath).Equals($launcher, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$metadata.backupSha256 -cnotmatch '^[0-9a-f]{64}$') {
+      throw 'Launcher install metadata does not authenticate this launcher backup'
+    }
+    $backupStream = [IO.File]::Open($backup, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { $backupBytes = Read-AllStreamBytes $backupStream }
+    finally { $backupStream.Dispose() }
+    if (-not (Get-BytesSha256 $backupBytes).Equals([string]$metadata.backupSha256, [StringComparison]::Ordinal)) {
+      throw 'Launcher backup digest does not match protected install metadata'
+    }
+  } else {
+    New-Item -ItemType Directory -Path $hostDir -Force | Out-Null
+    [void](Assert-RdcAbInheritedChildAcl $root $hostDir 'RDC A/B host directory')
+    $launcherStream = [IO.File]::Open($launcher, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { $backupBytes = Read-AllStreamBytes $launcherStream }
+    finally { $launcherStream.Dispose() }
+    $backupStream = [IO.File]::Open($backup, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+      $backupStream.Write($backupBytes, 0, $backupBytes.Length)
+      $backupStream.Flush($true)
+    } finally { $backupStream.Dispose() }
+    $metadata = [ordered]@{
+      schemaVersion = 1
+      launcherPath = $launcher
+      backupSha256 = Get-BytesSha256 $backupBytes
+    }
+    $metadataTemp = "$metadataPath.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
+    $metadataBytes = [Text.Encoding]::UTF8.GetBytes(($metadata | ConvertTo-Json -Compress))
+    $metadataStream = [IO.File]::Open($metadataTemp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+      $metadataStream.Write($metadataBytes, 0, $metadataBytes.Length)
+      $metadataStream.Flush($true)
+    } finally { $metadataStream.Dispose() }
+    try { [IO.File]::Move($metadataTemp, $metadataPath) }
+    finally { Remove-Item -LiteralPath $metadataTemp -Force -ErrorAction SilentlyContinue }
+    [void](Assert-RdcAbInheritedChildAcl $root $metadataPath 'RDC A/B launcher install metadata')
+  }
+
+  New-Item -ItemType Directory -Path $hostDir -Force | Out-Null
+  [void](Assert-RdcAbInheritedChildAcl $root $hostDir 'RDC A/B host directory')
+  $aclTemp = "$installedAclHelper.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
+  Copy-Item -LiteralPath $sourceAclHelper -Destination $aclTemp -Force
+  try { Move-Item -LiteralPath $aclTemp -Destination $installedAclHelper -Force }
+  finally { Remove-Item -LiteralPath $aclTemp -Force -ErrorAction SilentlyContinue }
+  $supervisorTemp = "$installedSupervisor.tmp-$PID-$([guid]::NewGuid().ToString('N'))"
+  Copy-Item -LiteralPath $sourceSupervisor -Destination $supervisorTemp -Force
+  try { Move-Item -LiteralPath $supervisorTemp -Destination $installedSupervisor -Force }
+  finally { Remove-Item -LiteralPath $supervisorTemp -Force -ErrorAction SilentlyContinue }
+  [void](Assert-RdcAbInheritedChildAcl $root $installedAclHelper 'RDC A/B installed ACL helper')
+  [void](Assert-RdcAbInheritedChildAcl $root $installedSupervisor 'RDC A/B installed supervisor')
+  $null = Test-Supervisor $installedSupervisor
 
   $delegator = @(
     '@echo off',
