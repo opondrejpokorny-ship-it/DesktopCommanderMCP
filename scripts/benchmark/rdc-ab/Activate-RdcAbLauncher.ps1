@@ -211,6 +211,22 @@ function ConvertTo-ProcessCreationUtc($Value) {
   } catch { return $null }
 }
 
+function Get-TrustedWindowsPowerShellPath {
+  $systemRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+  if ([string]::IsNullOrWhiteSpace($systemRoot)) {
+    throw 'Machine SystemRoot is unavailable'
+  }
+  try {
+    $trustedPowerShell = [IO.Path]::GetFullPath((Join-Path $systemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+  } catch {
+    throw 'Trusted Windows PowerShell path is invalid'
+  }
+  if (-not (Test-Path -LiteralPath $trustedPowerShell -PathType Leaf)) {
+    throw 'Trusted Windows PowerShell executable is unavailable'
+  }
+  return $trustedPowerShell
+}
+
 function Get-SystemTaskHostInventory($Contract) {
   if ($testControl) {
     $taskPath = Join-Path $testControl 'system-task-inventory.json'
@@ -275,9 +291,10 @@ function Assert-ExactSystemTaskDefinition($TaskInventory, $Contract, [string[]]$
 
   $actions = @($task.Actions)
   if ($actions.Count -ne 1) { throw 'SYSTEM RDC task must have exactly one action' }
-  try { $actionExe = [IO.Path]::GetFileName([string]$actions[0].Execute) } catch { throw 'SYSTEM RDC task action executable is invalid' }
-  if (-not $actionExe.Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'SYSTEM RDC task action executable is not PowerShell'
+  try { $actionExe = [IO.Path]::GetFullPath([string]$actions[0].Execute) } catch { throw 'SYSTEM RDC task action executable is invalid' }
+  $trustedPowerShell = Get-TrustedWindowsPowerShellPath
+  if (-not $actionExe.Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'SYSTEM RDC task action executable is not the trusted Windows PowerShell image'
   }
   $actionMatch = [regex]::Match(
     [string]$actions[0].Arguments,
@@ -308,6 +325,7 @@ function Assert-ExactSystemTaskHostIdentity($TaskInventory, $ProcessInventory, $
   $wrapperPath = [IO.Path]::GetFullPath([string]$Contract.WrapperPath)
   $nodePath = [IO.Path]::GetFullPath([string]$Contract.NodePath)
   $entrypoint = [IO.Path]::GetFullPath([string]$Contract.Entrypoint)
+  $trustedPowerShell = Get-TrustedWindowsPowerShellPath
 
   $wrappers = @($ProcessInventory | Where-Object {
     if (-not ([string]$_.Name).Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) { return $false }
@@ -319,8 +337,9 @@ function Assert-ExactSystemTaskHostIdentity($TaskInventory, $ProcessInventory, $
     $exeText = if ($match.Groups['exeQuoted'].Success) { $match.Groups['exeQuoted'].Value } else { $match.Groups['exeBare'].Value }
     $wrapperText = if ($match.Groups['wrapperQuoted'].Success) { $match.Groups['wrapperQuoted'].Value } else { $match.Groups['wrapperBare'].Value }
     try {
-      if (-not [IO.Path]::GetFileName($exeText).Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) { return $false }
-      return [IO.Path]::GetFullPath($wrapperText).Equals($wrapperPath, [StringComparison]::OrdinalIgnoreCase)
+      return [IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFullPath($exeText).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFullPath($wrapperText).Equals($wrapperPath, [StringComparison]::OrdinalIgnoreCase)
     } catch { return $false }
   })
   if ($wrappers.Count -ne 1) { throw "Expected exactly one exact SYSTEM PowerShell wrapper process; found $($wrappers.Count)" }

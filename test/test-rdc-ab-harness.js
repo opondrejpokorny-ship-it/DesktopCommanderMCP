@@ -1520,13 +1520,17 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     // and reaches the pre-handoff replacement boundary without touching a task
     // definition or any real process.
     const systemWrapperPath = 'C:\\Codebase44\\system\\rdc-system\\Start-RemoteDesktopCommanderSystem.ps1';
+    const trustedWindowsPowerShell = path.join(
+      process.env.SystemRoot ?? 'C:\\Windows',
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+    );
     const systemTaskInventoryPath = path.join(signals, 'system-task-inventory.json');
     const systemProcessInventoryPath = path.join(signals, 'system-process-inventory.json');
     const systemTask = {
       TaskPath: '\\', TaskName: 'Codebase44 Remote Desktop Commander SYSTEM', State: 'Running',
       Principal: { UserId: 'SYSTEM', LogonType: 'ServiceAccount', RunLevel: 'Highest' },
       Actions: [{
-        Execute: 'powershell.exe',
+        Execute: trustedWindowsPowerShell,
         Arguments: `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
       }],
       Settings: { MultipleInstances: 'IgnoreNew', RestartCount: 999, RestartInterval: 'PT1M' },
@@ -1545,7 +1549,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       {
         Name: 'powershell.exe', ProcessId: systemWrapperPid, ParentProcessId: schedulerPid,
         CreationDate: '2026-01-01T00:01:00.000Z',
-        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
+        ExecutablePath: trustedWindowsPowerShell,
+        CommandLine: `"${trustedWindowsPowerShell}" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
       },
       {
         Name: 'node.exe', ProcessId: systemRemotePid, ParentProcessId: systemWrapperPid,
@@ -1566,6 +1571,18 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       TaskPath: '\\', TaskName: systemTask.TaskName, Enabled: true, State: 'Running',
       Actions: systemTask.Actions,
     }]));
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...systemTask,
+      Actions: [{ ...systemTask.Actions[0], Execute: 'C:\\NotSystem\\powershell.exe' }],
+    }]));
+    const untrustedTaskImage = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+    assert.notEqual(untrustedTaskImage.status, 0);
+    assert.match(
+      `${untrustedTaskImage.stdout}\n${untrustedTaskImage.stderr}`,
+      /task action executable.+(trusted|exact|system)|no exact SYSTEM task host/i,
+      'SYSTEM task-host activation must reject a basename-matching PowerShell outside System32',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([systemTask]));
     await fs.writeFile(path.join(signals, 'fail-replacement-launch'), '');
     const systemHostPreflight = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
     await fs.rm(path.join(signals, 'fail-replacement-launch'), { force: true });

@@ -13,7 +13,7 @@ function Get-FunctionAst([string]$Name) {
 }
 
 # Load only the pure identity helpers under test; no top-level activation code runs.
-foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity')) {
+foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity')) {
   . ([scriptblock]::Create((Get-FunctionAst $name).Extent.Text))
 }
 
@@ -45,6 +45,7 @@ if ($phaseMarker -lt 0 -or $remoteExit -lt 0 -or $localMcpExit -lt 0 -or $wrappe
 $root = 'C:\RDC-System-Host-Test'
 $wrapper = Join-Path $root 'Start-RemoteDesktopCommanderSystem.ps1'
 $entry = Join-Path $root 'dist\index.js'
+$trustedPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $contract = [pscustomobject]@{
   TaskPath = '\'
   TaskName = 'Codebase44 Remote Desktop Commander SYSTEM'
@@ -58,7 +59,7 @@ $task = [pscustomobject]@{
   State = 'Running'
   Principal = [pscustomobject]@{ UserId = 'SYSTEM'; LogonType = 'ServiceAccount'; RunLevel = 'Highest' }
   Actions = @([pscustomobject]@{
-    Execute = 'powershell.exe'
+    Execute = $trustedPowerShell
     Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wrapper`""
   })
   Settings = [pscustomobject]@{ MultipleInstances='IgnoreNew'; RestartCount=999; RestartInterval='PT1M' }
@@ -66,7 +67,7 @@ $task = [pscustomobject]@{
 }
 $processes = @(
   [pscustomobject]@{ Name='svchost.exe'; ProcessId=40; ParentProcessId=4; CreationDate='2026-01-01T00:00:00.000Z'; CommandLine='C:\Windows\system32\svchost.exe -k netsvcs -p -s Schedule' },
-  [pscustomobject]@{ Name='powershell.exe'; ProcessId=401; ParentProcessId=40; CreationDate='2026-01-01T00:01:00.000Z'; CommandLine="`"powershell.exe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wrapper`"" },
+  [pscustomobject]@{ Name='powershell.exe'; ProcessId=401; ParentProcessId=40; CreationDate='2026-01-01T00:01:00.000Z'; ExecutablePath=$trustedPowerShell; CommandLine="`"$trustedPowerShell`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wrapper`"" },
   [pscustomobject]@{ Name='node.exe'; ProcessId=402; ParentProcessId=401; CreationDate='2026-01-01T00:02:00.000Z'; CommandLine="`"$($contract.NodePath)`" $entry remote --persist-session" },
   [pscustomobject]@{ Name='node.exe'; ProcessId=403; ParentProcessId=402; CreationDate='2026-01-01T00:03:00.000Z'; CommandLine="`"$($contract.NodePath)`" $entry" }
 )
@@ -79,6 +80,8 @@ if ($hostInfo.WrapperProcess.ProcessId -ne 401 -or $hostInfo.RemoteProcess.Proce
 # Representative identity drift: every case must fail closed before any handoff.
 $driftCases = @(
   @{ Name='non-SYSTEM principal'; Tasks=@([pscustomobject]@{ TaskPath=$task.TaskPath; TaskName=$task.TaskName; State='Running'; Principal=[pscustomobject]@{ UserId='S-1-5-21-evil'; LogonType='ServiceAccount'; RunLevel='Highest' }; Actions=$task.Actions; Settings=$task.Settings; Triggers=$task.Triggers }); Processes=$processes },
+  @{ Name='untrusted task PowerShell image'; Tasks=@([pscustomobject]@{ TaskPath=$task.TaskPath; TaskName=$task.TaskName; State='Running'; Principal=$task.Principal; Actions=@([pscustomobject]@{ Execute='C:\NotSystem\powershell.exe'; Arguments=$task.Actions[0].Arguments }); Settings=$task.Settings; Triggers=$task.Triggers }); Processes=$processes },
+  @{ Name='untrusted wrapper PowerShell image'; Tasks=@($task); Processes=@($processes | ForEach-Object { if ($_.ProcessId -eq 401) { [pscustomobject]@{ Name=$_.Name; ProcessId=$_.ProcessId; ParentProcessId=$_.ParentProcessId; CreationDate=$_.CreationDate; ExecutablePath='C:\NotSystem\powershell.exe'; CommandLine="`"C:\NotSystem\powershell.exe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$wrapper`"" } } else { $_ } }) },
   @{ Name='wrong task action'; Tasks=@([pscustomobject]@{ TaskPath=$task.TaskPath; TaskName=$task.TaskName; State='Running'; Principal=$task.Principal; Actions=@([pscustomobject]@{ Execute='cmd.exe'; Arguments='/c attacker.cmd' }); Settings=$task.Settings; Triggers=$task.Triggers }); Processes=$processes },
   @{ Name='wrong restart semantics'; Tasks=@([pscustomobject]@{ TaskPath=$task.TaskPath; TaskName=$task.TaskName; State='Running'; Principal=$task.Principal; Actions=$task.Actions; Settings=[pscustomobject]@{ MultipleInstances='Parallel'; RestartCount=999; RestartInterval='PT1M' }; Triggers=$task.Triggers }); Processes=$processes },
   @{ Name='wrong trigger'; Tasks=@([pscustomobject]@{ TaskPath=$task.TaskPath; TaskName=$task.TaskName; State='Running'; Principal=$task.Principal; Actions=$task.Actions; Settings=$task.Settings; Triggers=@([pscustomobject]@{ Class='MSFT_TaskLogonTrigger'; Enabled=$true }) }); Processes=$processes },
