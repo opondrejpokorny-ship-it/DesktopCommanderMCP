@@ -1,5 +1,6 @@
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +11,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const __filename = fileURLToPath(import.meta.url);
 const root = path.resolve(path.dirname(__filename), '..');
 const buildScript = path.join(root, 'scripts/build-free-package.cjs');
+const require = createRequire(import.meta.url);
+const { resolveNpmInvocation } = require('../scripts/npm-invocation.cjs');
 
 assert.ok(
   await fs.stat(buildScript).then(() => true, () => false),
@@ -67,11 +70,13 @@ await fs.writeFile(
 );
 
 try {
-  execFileSync(
-    process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    ['install', '--ignore-scripts', '--no-audit', '--no-fund', manifest.tarball],
-    { cwd: consumerDir, stdio: 'inherit' },
-  );
+  const npmInstall = resolveNpmInvocation([
+    'install', '--ignore-scripts', '--no-audit', '--no-fund', manifest.tarball,
+  ]);
+  execFileSync(npmInstall.executable, npmInstall.args, {
+    cwd: consumerDir,
+    stdio: 'inherit',
+  });
 
   const packageRoot = path.join(
     consumerDir,
@@ -213,5 +218,10 @@ try {
 
   console.log('✅ Installable Free package artifact tests passed');
 } finally {
-  await fs.rm(tempDir, { recursive: true, force: true });
+  await fs.rm(tempDir, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === 'win32' ? 10 : 0,
+    retryDelay: 100,
+  });
 }
