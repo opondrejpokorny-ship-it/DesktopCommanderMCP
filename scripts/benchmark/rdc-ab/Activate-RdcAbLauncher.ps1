@@ -107,6 +107,46 @@ function Get-CmdProcessInventory {
   return (Get-CimInstance Win32_Process -Filter "Name='cmd.exe'" -ErrorAction Stop)
 }
 
+function Get-HostOrchestratorInventory {
+  if ($testControl) {
+    $inventoryPath = Join-Path $testControl 'host-orchestrator-inventory.json'
+    if (-not (Test-Path -LiteralPath $inventoryPath -PathType Leaf)) { return @() }
+    return @((Get-Content -Raw -LiteralPath $inventoryPath | ConvertFrom-Json))
+  }
+  return @(Get-ScheduledTask -ErrorAction Stop | ForEach-Object {
+    [pscustomobject]@{
+      TaskName = [string]$_.TaskName
+      Enabled = [bool]$_.Settings.Enabled -and ([string]$_.State -ne 'Disabled')
+      State = [string]$_.State
+      Actions = @($_.Actions)
+    }
+  })
+}
+
+function Assert-NoCompetingHostOrchestrator($Contract) {
+  $entrypoint = [IO.Path]::GetFullPath([string]$Contract.Entrypoint).Replace('/', '\')
+  foreach ($task in @(Get-HostOrchestratorInventory)) {
+    if (-not [bool]$task.Enabled -or ([string]$task.State -eq 'Disabled')) { continue }
+    foreach ($action in @($task.Actions)) {
+      $text = ([string]$action.Execute) + ' ' + ([string]$action.Arguments)
+      $fileMatch = [regex]::Match([string]$action.Arguments, '(?i)(?:^|\s)-File\s+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^\s"\r\n]+))')
+      if ($fileMatch.Success) {
+        $scriptPath = if ($fileMatch.Groups['quoted'].Success) { $fileMatch.Groups['quoted'].Value } else { $fileMatch.Groups['bare'].Value }
+        try {
+          $scriptPath = [IO.Path]::GetFullPath($scriptPath)
+          if (Test-Path -LiteralPath $scriptPath -PathType Leaf) {
+            $text += "`n" + [IO.File]::ReadAllText($scriptPath)
+          }
+        } catch { }
+      }
+      $normalized = $text.Replace('/', '\')
+      if ($normalized.IndexOf($entrypoint, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+          [regex]::IsMatch($text, '(?i)(?:^|[^A-Za-z0-9_])remote(?:[^A-Za-z0-9_]|$)')) {
+        throw "Enabled competing host orchestrator '$([string]$task.TaskName)' can launch the canonical RDC Remote; activation stopped without changes"
+      }
+    }
+  }
+}
 function Get-OriginalLauncherRemoteContract {
   $backup = "$launcher.rdc-ab-original"
   $text = [IO.File]::ReadAllText($backup)
@@ -263,6 +303,7 @@ try {
   $watcherStartTime = $watcherProcess.StartTime.ToFileTimeUtc()
 
   $legacyContract = Get-OriginalLauncherRemoteContract
+  Assert-NoCompetingHostOrchestrator $legacyContract
   $knownRemote = @(Get-ExactRemoteProcesses -WatcherPid $watcherPid -WatcherCreationUtc $actualWatcherCreationUtc -Contract $legacyContract)
   if ($knownRemote.Count -ne 1) {
     $watcherProcess.Dispose()

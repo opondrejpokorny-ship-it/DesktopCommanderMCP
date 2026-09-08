@@ -65,6 +65,15 @@ import { fileURLToPath } from 'node:url';
 const benchmarkScriptsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../scripts/benchmark/rdc-ab');
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
+if (process.platform === 'win32') {
+  const orchestratorFocused = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'helpers/rdc-ab-orchestrator.ps1'),
+  ], { encoding: 'utf8' });
+  assert.equal(orchestratorFocused.status, 0, orchestratorFocused.stdout + '\\n' + orchestratorFocused.stderr);
+  assert.match(orchestratorFocused.stdout, /PASS RDC A\/B orchestrator preflight/);
+}
+
 function spawnCaptured(file, args, options = {}) {
   const child = spawn(file, args, { windowsHide: true, ...options });
   let stdout = '';
@@ -1489,6 +1498,22 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     );
     assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
     console.log('PASS RDC A/B activation accepts observed production /c watcher shape');
+    const externalHostScript = path.join(handoffSandbox, 'external-rdc-host.ps1');
+    await fs.writeFile(externalHostScript, `$bundle = '${canonicalEntrypoint.replaceAll("'", "''")}'\nStart-Process -FilePath '${process.execPath.replaceAll("'", "''")}' -ArgumentList @($bundle,'remote','--persist-session')\n`);
+    const hostOrchestratorInventory = path.join(signals, 'host-orchestrator-inventory.json');
+    await fs.writeFile(hostOrchestratorInventory, JSON.stringify([{
+      TaskName: 'Codebase44 Remote Desktop Commander SYSTEM', Enabled: true, State: 'Ready',
+      Actions: [{ Execute: 'powershell.exe', Arguments: `-NoProfile -File "${externalHostScript}"` }],
+    }]));
+    await fs.writeFile(path.join(signals, 'fail-replacement-launch'), '');
+    const competingOrchestratorActivation = spawnSync('powershell.exe', activationArgs, activationOptions);
+    await fs.rm(path.join(signals, 'fail-replacement-launch'), { force: true });
+    assert.notEqual(competingOrchestratorActivation.status, 0);
+    assert.match(`${competingOrchestratorActivation.stdout}\n${competingOrchestratorActivation.stderr}`, /competing.+host.+orchestrator|enabled.+orchestrator/i);
+    assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
+    await fs.rm(hostOrchestratorInventory, { force: true });
+    console.log('PASS RDC A/B activation rejects enabled competing host orchestrator');
+
     // Remote identity is fail-closed independently of watcher matching. Neither
     // an unrelated remote, a correct-looking command with the wrong parent, nor
     // a watcher child running the wrong entrypoint may authorize handoff.
