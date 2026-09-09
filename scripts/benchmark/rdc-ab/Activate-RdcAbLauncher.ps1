@@ -294,6 +294,23 @@ function Get-SystemTaskHostInventory($Contract) {
     })
   $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
     ([string]$_.Name) -in @('powershell.exe','node.exe','svchost.exe')
+  } | ForEach-Object {
+    $ownerSid = $null
+    if (([string]$_.Name).Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
+      try {
+        $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction Stop
+        if ([int]$owner.ReturnValue -eq 0) { $ownerSid = [string]$owner.Sid }
+      } catch { $ownerSid = $null }
+    }
+    [pscustomobject]@{
+      Name = [string]$_.Name
+      ProcessId = [int64]$_.ProcessId
+      ParentProcessId = [int64]$_.ParentProcessId
+      CreationDate = $_.CreationDate
+      ExecutablePath = [string]$_.ExecutablePath
+      CommandLine = [string]$_.CommandLine
+      OwnerSid = $ownerSid
+    }
   })
   return [pscustomobject]@{ Tasks = $tasks; Processes = $processes }
 }
@@ -317,9 +334,15 @@ function Assert-ExactSystemTaskDefinition($TaskInventory, $Contract, [string[]]$
 
   $actions = @($task.Actions)
   if ($actions.Count -ne 1) { throw 'SYSTEM RDC task must have exactly one action' }
-  try { $actionExe = [IO.Path]::GetFullPath([string]$actions[0].Execute) } catch { throw 'SYSTEM RDC task action executable is invalid' }
+  $actionText = [string]$actions[0].Execute
   $trustedPowerShell = Get-TrustedWindowsPowerShellPath
-  if (-not $actionExe.Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase)) {
+  $trustedAction = $actionText.Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)
+  if (-not $trustedAction -and [IO.Path]::IsPathRooted($actionText)) {
+    try {
+      $trustedAction = [IO.Path]::GetFullPath($actionText).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase)
+    } catch { $trustedAction = $false }
+  }
+  if (-not $trustedAction) {
     throw 'SYSTEM RDC task action executable is not the trusted Windows PowerShell image'
   }
   $actionMatch = [regex]::Match(
@@ -363,8 +386,13 @@ function Assert-ExactSystemTaskHostIdentity($TaskInventory, $ProcessInventory, $
     $exeText = if ($match.Groups['exeQuoted'].Success) { $match.Groups['exeQuoted'].Value } else { $match.Groups['exeBare'].Value }
     $wrapperText = if ($match.Groups['wrapperQuoted'].Success) { $match.Groups['wrapperQuoted'].Value } else { $match.Groups['wrapperBare'].Value }
     try {
-      return [IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase) -and
-        [IO.Path]::GetFullPath($exeText).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase) -and
+      $trustedCommandImage = $exeText.Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)
+      if (-not $trustedCommandImage -and [IO.Path]::IsPathRooted($exeText)) {
+        $trustedCommandImage = [IO.Path]::GetFullPath($exeText).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase)
+      }
+      return ([string]$_.OwnerSid).Equals('S-1-5-18', [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase) -and
+        $trustedCommandImage -and
         [IO.Path]::GetFullPath($wrapperText).Equals($wrapperPath, [StringComparison]::OrdinalIgnoreCase)
     } catch { return $false }
   })

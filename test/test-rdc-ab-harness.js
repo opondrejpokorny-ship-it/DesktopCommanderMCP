@@ -1552,7 +1552,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       LastTaskResult: 267009,
       Principal: { UserId: 'SYSTEM', LogonType: 'ServiceAccount', RunLevel: 'Highest' },
       Actions: [{
-        Execute: trustedWindowsPowerShell,
+        Execute: 'powershell.exe',
         Arguments: `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
       }],
       Settings: { MultipleInstances: 'IgnoreNew', RestartCount: 999, RestartInterval: 'PT1M' },
@@ -1572,7 +1572,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
         Name: 'powershell.exe', ProcessId: systemWrapperPid, ParentProcessId: schedulerPid,
         CreationDate: '2026-01-01T00:01:00.000Z',
         ExecutablePath: trustedWindowsPowerShell,
-        CommandLine: `"${trustedWindowsPowerShell}" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
+        OwnerSid: 'S-1-5-18',
+        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
       },
       {
         Name: 'node.exe', ProcessId: systemRemotePid, ParentProcessId: systemWrapperPid,
@@ -1678,7 +1679,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
         Name: 'powershell.exe', ProcessId: systemFixtureWrapper.child.pid, ParentProcessId: schedulerPid,
         CreationDate: windowsProcessCreationIso(systemFixtureWrapper.child.pid),
         ExecutablePath: trustedWindowsPowerShell,
-        CommandLine: `"${trustedWindowsPowerShell}" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
+        OwnerSid: 'S-1-5-18',
+        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
       },
       {
         Name: 'node.exe', ProcessId: systemFixtureRemotePid, ParentProcessId: systemFixtureWrapper.child.pid,
@@ -1823,7 +1825,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
         Name: 'powershell.exe', ProcessId: restartRaceWrapper.child.pid, ParentProcessId: schedulerPid,
         CreationDate: windowsProcessCreationIso(restartRaceWrapper.child.pid),
         ExecutablePath: trustedWindowsPowerShell,
-        CommandLine: `"${trustedWindowsPowerShell}" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
+        OwnerSid: 'S-1-5-18',
+        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
       },
       {
         Name: 'node.exe', ProcessId: restartRaceRemotePid, ParentProcessId: restartRaceWrapper.child.pid,
@@ -1922,7 +1925,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
           Name: 'powershell.exe', ProcessId: wrapper.child.pid, ParentProcessId: schedulerPid,
           CreationDate: windowsProcessCreationIso(wrapper.child.pid),
           ExecutablePath: trustedWindowsPowerShell,
-          CommandLine: `"${trustedWindowsPowerShell}" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
+          OwnerSid: 'S-1-5-18',
+          CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
         },
         {
           Name: 'node.exe', ProcessId: remotePid, ParentProcessId: wrapper.child.pid,
