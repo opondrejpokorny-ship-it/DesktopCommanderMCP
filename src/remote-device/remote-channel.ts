@@ -136,6 +136,8 @@ export class RemoteChannel {
     private statusWriteChain: Promise<void> = Promise.resolve();
     /** Tokens from the last setSession / TOKEN_REFRESHED, for setOffline(). */
     private lastKnownSession: { access_token: string; refresh_token: string | null } | null = null;
+    /** Device-level persistence hook for rotated auth sessions. */
+    private sessionRefreshListener: ((session: AuthSession) => void) | null = null;
     /** Set by unsubscribe(): suppresses status/heartbeat writes so they can't
      * land after setOffline()'s durable write. */
     private shuttingDown = false;
@@ -181,6 +183,9 @@ export class RemoteChannel {
     private _user: User | null = null;
     get user(): User | null { return this._user; }
 
+    setSessionRefreshListener(listener: (session: AuthSession) => void): void {
+        this.sessionRefreshListener = listener;
+    }
 
     initialize(url: string, key: string): void {
         // autoRefreshToken:false — we drive refresh ourselves (startTokenRefresh(),
@@ -266,10 +271,12 @@ export class RemoteChannel {
                 if (event === 'TOKEN_REFRESHED' && newSession?.access_token && this.client) {
                     console.debug('[DEBUG] Token refreshed — re-authorizing realtime socket');
                     this.client.realtime.setAuth(newSession.access_token);
-                    this.lastKnownSession = {
+                    const refreshedSession: AuthSession = {
                         access_token: newSession.access_token,
                         refresh_token: newSession.refresh_token ?? this.lastKnownSession?.refresh_token ?? null,
                     };
+                    this.lastKnownSession = refreshedSession;
+                    this.sessionRefreshListener?.(refreshedSession);
                 } else if (event === 'SIGNED_OUT') {
                     void this.handleSignedOut();
                 }
