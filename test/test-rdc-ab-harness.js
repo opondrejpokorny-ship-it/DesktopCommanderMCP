@@ -78,6 +78,15 @@ if (process.platform === 'win32') {
   ], { encoding: 'utf8' });
   assert.equal(orchestratorFocused.status, 0, orchestratorFocused.stdout + '\\n' + orchestratorFocused.stderr);
   assert.match(orchestratorFocused.stdout, /PASS RDC A\/B orchestrator preflight/);
+
+  // This is an inventory-only contract test.  It neither queries nor changes a
+  // scheduled task; the helper supplies synthetic task/process records.
+  const systemHostFocused = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'helpers/rdc-ab-system-host.ps1'),
+  ], { encoding: 'utf8' });
+  assert.equal(systemHostFocused.status, 0, systemHostFocused.stdout + '\\n' + systemHostFocused.stderr);
+  assert.match(systemHostFocused.stdout, /PASS RDC A\/B SYSTEM task-host contract/);
 }
 
 function spawnCaptured(file, args, options = {}) {
@@ -128,6 +137,19 @@ async function waitForDirectoryCondition(directory, predicate, processes, label,
     for (const emitter of emitters) emitter.on('exit', check);
     void check();
   });
+}
+
+async function waitForConditionOrProcessExit(predicate, process, label, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    if (process.child.exitCode !== null) {
+      const result = await process.completed;
+      throw new Error(`${label} exited early (${result.status})\n${result.stdout}\n${result.stderr}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
 }
 
 async function snapshotTree(root) {
@@ -1395,6 +1417,14 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
   let activatedWrapperPid;
   let originalChildPid;
   let unrelatedRemotePid;
+  let systemFixtureWrapper;
+  let systemFixtureRemotePid;
+  let systemFixtureLocalPid;
+  let restartRaceWrapper;
+  let restartRaceRemotePid;
+  let restartRaceLocalPid;
+  const extraSystemWrappers = [];
+  const extraSystemPids = [];
   try {
     await waitForDirectoryCondition(
       signals,
@@ -1504,9 +1534,542 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     );
     assert.doesNotThrow(() => process.kill(oldWatcher.child.pid, 0));
     console.log('PASS RDC A/B activation accepts observed production /c watcher shape');
-    const externalHostScript = path.join(handoffSandbox, 'external-rdc-host.ps1');
-    await fs.writeFile(externalHostScript, `$bundle = '${canonicalEntrypoint.replaceAll("'", "''")}'\nStart-Process -FilePath '${process.execPath.replaceAll("'", "''")}' -ArgumentList @($bundle,'remote','--persist-session')\n`);
+
+    // The real dogfood host is Task Scheduler -> SYSTEM PowerShell wrapper ->
+    // `node dist/index.js remote --persist-session` -> local MCP, not a cmd watcher.
+    // This synthetic inventory proves activation recognizes that exact topology
+    // and reaches the pre-handoff replacement boundary without touching a task
+    // definition or any real process.
+    const systemWrapperPath = 'C:\\Codebase44\\system\\rdc-system\\Start-RemoteDesktopCommanderSystem.ps1';
+    const trustedWindowsPowerShell = path.join(
+      process.env.SystemRoot ?? 'C:\\Windows',
+      'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+    );
+    const systemTaskInventoryPath = path.join(signals, 'system-task-inventory.json');
+    const systemProcessInventoryPath = path.join(signals, 'system-process-inventory.json');
+    const systemTask = {
+      TaskPath: '\\', TaskName: 'Codebase44 Remote Desktop Commander SYSTEM', State: 'Running',
+      LastTaskResult: 267009,
+      Principal: { UserId: 'SYSTEM', LogonType: 'ServiceAccount', RunLevel: 'Highest' },
+      Actions: [{
+        Execute: 'powershell.exe',
+        Arguments: `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
+      }],
+      Settings: { MultipleInstances: 'IgnoreNew', RestartCount: 999, RestartInterval: 'PT1M' },
+      Triggers: [{ Class: 'MSFT_TaskBootTrigger', Enabled: true }],
+    };
+    const schedulerPid = 2147479001;
+    const systemWrapperPid = 2147479002;
+    const systemRemotePid = 2147479003;
+    const systemLocalMcpPid = 2147479004;
+    const systemProcesses = [
+      {
+        Name: 'svchost.exe', ProcessId: schedulerPid, ParentProcessId: 4,
+        CreationDate: '2026-01-01T00:00:00.000Z',
+        CommandLine: 'C:\\Windows\\system32\\svchost.exe -k netsvcs -p -s Schedule',
+      },
+      {
+        Name: 'powershell.exe', ProcessId: systemWrapperPid, ParentProcessId: schedulerPid,
+        CreationDate: '2026-01-01T00:01:00.000Z',
+        ExecutablePath: trustedWindowsPowerShell,
+        OwnerSid: 'S-1-5-18',
+        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemWrapperPath}"`,
+      },
+      {
+        Name: 'node.exe', ProcessId: systemRemotePid, ParentProcessId: systemWrapperPid,
+        CreationDate: '2026-01-01T00:02:00.000Z',
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint} remote --persist-session`,
+      },
+      {
+        Name: 'node.exe', ProcessId: systemLocalMcpPid, ParentProcessId: systemRemotePid,
+        CreationDate: '2026-01-01T00:03:00.000Z',
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint}`,
+      },
+    ];
+    await fs.writeFile(inventoryPath, JSON.stringify([]));
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([systemTask]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify(systemProcesses));
     const hostOrchestratorInventory = path.join(signals, 'host-orchestrator-inventory.json');
+    await fs.writeFile(hostOrchestratorInventory, JSON.stringify([{
+      TaskPath: '\\', TaskName: systemTask.TaskName, Enabled: true, State: 'Running',
+      Actions: systemTask.Actions,
+    }]));
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...systemTask,
+      Actions: [{ ...systemTask.Actions[0], Execute: 'C:\\NotSystem\\powershell.exe' }],
+    }]));
+    const untrustedTaskImage = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+    assert.notEqual(untrustedTaskImage.status, 0);
+    assert.match(
+      `${untrustedTaskImage.stdout}\n${untrustedTaskImage.stderr}`,
+      /task action executable.+(trusted|exact|system)|no exact SYSTEM task host/i,
+      'SYSTEM task-host activation must reject a basename-matching PowerShell outside System32',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([systemTask]));
+    await fs.writeFile(path.join(signals, 'fail-replacement-launch'), '');
+    const systemHostPreflight = spawnSync('powershell.exe', activationArgs, prelaunchActivationOptions);
+    await fs.rm(path.join(signals, 'fail-replacement-launch'), { force: true });
+    assert.notEqual(systemHostPreflight.status, 0);
+    assert.match(
+      `${systemHostPreflight.stdout}\n${systemHostPreflight.stderr}`,
+      /test-controlled replacement launcher failure/i,
+      'exact SYSTEM task-host topology must reach the pre-handoff replacement boundary',
+    );
+
+    // Execute the real production SYSTEM handoff body against real local
+    // PowerShell/Node processes. Task Scheduler and its live definitions are
+    // represented only by synthetic JSON inventory.
+    const systemFixtureScript = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'helpers/rdc-ab-system-handoff-fixture.ps1',
+    );
+    const systemFixtureSource = [
+      "const fs = require('node:fs');",
+      "const { spawn } = require('node:child_process');",
+      "const path = require('node:path');",
+      "const signals = process.env.RDC_AB_FIXTURE_SIGNALS;",
+      "const shutdown = path.join(signals, 'authenticated-system-shutdown');",
+      "const write = (name) => fs.writeFileSync(path.join(signals, name), '');",
+      "if (process.argv.slice(2).join(' ') === 'remote --persist-session') {",
+      "  const local = spawn(process.execPath, [__filename], { windowsHide: true, stdio: 'ignore', env: process.env });",
+      "  fs.writeFileSync(path.join(signals, 'system-local-pid'), String(local.pid));",
+      "  write('system-remote-start');",
+      "  local.once('exit', (code) => { write('system-remote-exit'); process.exit(code ?? 1); });",
+      "} else {",
+      "  write('system-local-start');",
+      "  const timer = setInterval(() => {",
+      "    if (!fs.existsSync(shutdown)) return;",
+      "    clearInterval(timer); write('system-local-exit'); process.exit(0);",
+      "  }, 20);",
+      "}",
+    ].join('\r\n');
+    await fs.writeFile(canonicalEntrypoint, systemFixtureSource);
+    const systemFixtureEnv = {
+      ...activationOptions.env,
+      RDC_AB_FIXTURE_NODE: process.execPath,
+      RDC_AB_FIXTURE_ENTRYPOINT: canonicalEntrypoint,
+      RDC_AB_FIXTURE_SIGNALS: signals,
+    };
+    systemFixtureWrapper = spawnCaptured(trustedWindowsPowerShell, [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-ExecutionPolicy', 'Bypass', '-File', systemFixtureScript,
+    ], { env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    await waitForDirectoryCondition(
+      signals,
+      async () => Promise.all([
+        fs.readFile(path.join(signals, 'system-wrapper-pid'), 'utf8'),
+        fs.readFile(path.join(signals, 'system-remote-pid'), 'utf8'),
+        fs.readFile(path.join(signals, 'system-local-pid'), 'utf8'),
+      ]).then(() => true, () => false),
+      [systemFixtureWrapper],
+      'the real SYSTEM handoff fixture process chain',
+    );
+    systemFixtureRemotePid = Number(await fs.readFile(path.join(signals, 'system-remote-pid'), 'utf8'));
+    systemFixtureLocalPid = Number(await fs.readFile(path.join(signals, 'system-local-pid'), 'utf8'));
+    const realSystemTask = {
+      ...systemTask,
+      Actions: [{
+        Execute: trustedWindowsPowerShell,
+        Arguments: `-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
+      }],
+    };
+    const realSystemProcesses = [
+      systemProcesses[0],
+      {
+        Name: 'powershell.exe', ProcessId: systemFixtureWrapper.child.pid, ParentProcessId: schedulerPid,
+        CreationDate: windowsProcessCreationIso(systemFixtureWrapper.child.pid),
+        ExecutablePath: trustedWindowsPowerShell,
+        OwnerSid: 'S-1-5-18',
+        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
+      },
+      {
+        Name: 'node.exe', ProcessId: systemFixtureRemotePid, ParentProcessId: systemFixtureWrapper.child.pid,
+        CreationDate: windowsProcessCreationIso(systemFixtureRemotePid),
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint} remote --persist-session`,
+      },
+      {
+        Name: 'node.exe', ProcessId: systemFixtureLocalPid, ParentProcessId: systemFixtureRemotePid,
+        CreationDate: windowsProcessCreationIso(systemFixtureLocalPid),
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint}`,
+      },
+    ];
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([realSystemTask]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify(realSystemProcesses));
+    await fs.writeFile(path.join(signals, 'system-host-contract.json'), JSON.stringify({
+      WrapperPath: systemFixtureScript,
+    }));
+    await fs.writeFile(hostOrchestratorInventory, JSON.stringify([{
+      TaskPath: '\\', TaskName: realSystemTask.TaskName, Enabled: true, State: 'Running',
+      Actions: realSystemTask.Actions,
+    }]));
+    await fs.rm(path.join(signals, 'known-remote'), { force: true });
+    for (const negative of [
+      {
+        name: 'Remote PID reuse / creation mismatch',
+        task: realSystemTask,
+        processes: realSystemProcesses.map((record) => record.ProcessId === systemFixtureRemotePid
+          ? { ...record, CreationDate: '2000-01-01T00:00:00.000Z' }
+          : record),
+        pattern: /Remote|creation|identity|exact SYSTEM task host/i,
+      },
+      {
+        name: 'local MCP creation mismatch',
+        task: realSystemTask,
+        processes: realSystemProcesses.map((record) => record.ProcessId === systemFixtureLocalPid
+          ? { ...record, CreationDate: '2000-01-01T00:00:00.000Z' }
+          : record),
+        pattern: /local MCP|creation|identity|exact SYSTEM task host/i,
+      },
+      {
+        name: 'task definition drift',
+        task: {
+          ...realSystemTask,
+          Settings: { ...realSystemTask.Settings, RestartCount: 998 },
+        },
+        processes: realSystemProcesses,
+        pattern: /task.+(restart|semantics)|exact SYSTEM task host/i,
+      },
+    ]) {
+      await fs.writeFile(systemTaskInventoryPath, JSON.stringify([negative.task]));
+      await fs.writeFile(systemProcessInventoryPath, JSON.stringify(negative.processes));
+      await fs.rm(path.join(signals, 'authenticated-shutdown-ready'), { force: true });
+      const rejected = spawnSync('powershell.exe', activationArgs, { ...activationOptions, env: systemFixtureEnv });
+      assert.notEqual(rejected.status, 0, `${negative.name} unexpectedly passed`);
+      assert.match(`${rejected.stdout}\n${rejected.stderr}`, negative.pattern, negative.name);
+      assert.doesNotThrow(() => process.kill(systemFixtureWrapper.child.pid, 0), negative.name);
+    }
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([realSystemTask]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify(realSystemProcesses));
+    console.log('PASS RDC A/B production SYSTEM preflight rejects identity and task drift');
+    const launchMarkersBeforeSystemHandoff = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    const realSystemActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: systemFixtureEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false)
+        || false,
+      realSystemActivation,
+      'the production SYSTEM handoff body to request authenticated shutdown',
+    );
+    assert.equal(
+      realSystemActivation.child.exitCode,
+      null,
+      'production SYSTEM handoff must execute against the real temp process chain',
+    );
+    assert.deepEqual(
+      (await fs.readdir(signals)).filter(
+        (name) => name.startsWith('launch-') && !launchMarkersBeforeSystemHandoff.has(name),
+      ),
+      [],
+      'replacement launcher must not run before authenticated SYSTEM shutdown',
+    );
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
+    await waitForDirectoryCondition(
+      signals,
+      async () => fs.access(path.join(signals, 'system-wrapper-exit')).then(() => true, () => false),
+      [realSystemActivation, systemFixtureWrapper],
+      'the real SYSTEM fixture chain to exit gracefully',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...realSystemTask, State: 'Ready', LastTaskResult: 0,
+    }]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([]));
+    const realSystemResult = await realSystemActivation.completed;
+    assert.equal(realSystemResult.status, 0, `${realSystemResult.stdout}\n${realSystemResult.stderr}`);
+    await waitForDirectoryCondition(
+      signals,
+      async () => (await fs.readdir(signals)).some(
+        (name) => name.startsWith('launch-') && !launchMarkersBeforeSystemHandoff.has(name),
+      ),
+      [],
+      'replacement launcher after the real SYSTEM fixture exits',
+    );
+    const orderedExitMarkers = await fs.readdir(signals);
+    assert.ok(orderedExitMarkers.includes('system-local-exit'));
+    assert.ok(orderedExitMarkers.includes('system-remote-exit'));
+    assert.ok(orderedExitMarkers.includes('system-wrapper-exit'));
+    assert.ok(orderedExitMarkers.some(
+      (name) => name.startsWith('launch-') && !launchMarkersBeforeSystemHandoff.has(name),
+    ),
+      'replacement launcher must run after the real SYSTEM fixture exits');
+    console.log('PASS RDC A/B executes the production SYSTEM handoff body end to end');
+
+    for (const marker of [
+      'authenticated-system-shutdown', 'authenticated-shutdown-ready',
+      'system-wrapper-pid', 'system-remote-pid', 'system-local-pid',
+      'system-wrapper-exit', 'system-remote-exit', 'system-local-exit',
+      'system-remote-start', 'system-local-start', 'system-quiescence-observed',
+    ]) await fs.rm(path.join(signals, marker), { force: true });
+    restartRaceWrapper = spawnCaptured(trustedWindowsPowerShell, [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-ExecutionPolicy', 'Bypass', '-File', systemFixtureScript,
+    ], { env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    await waitForDirectoryCondition(
+      signals,
+      async () => Promise.all([
+        fs.readFile(path.join(signals, 'system-wrapper-pid'), 'utf8'),
+        fs.readFile(path.join(signals, 'system-remote-pid'), 'utf8'),
+        fs.readFile(path.join(signals, 'system-local-pid'), 'utf8'),
+      ]).then(() => true, () => false),
+      [restartRaceWrapper],
+      'the restart-race SYSTEM fixture process chain',
+    );
+    restartRaceRemotePid = Number(await fs.readFile(path.join(signals, 'system-remote-pid'), 'utf8'));
+    restartRaceLocalPid = Number(await fs.readFile(path.join(signals, 'system-local-pid'), 'utf8'));
+    const restartRaceProcesses = [
+      systemProcesses[0],
+      {
+        Name: 'powershell.exe', ProcessId: restartRaceWrapper.child.pid, ParentProcessId: schedulerPid,
+        CreationDate: windowsProcessCreationIso(restartRaceWrapper.child.pid),
+        ExecutablePath: trustedWindowsPowerShell,
+        OwnerSid: 'S-1-5-18',
+        CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
+      },
+      {
+        Name: 'node.exe', ProcessId: restartRaceRemotePid, ParentProcessId: restartRaceWrapper.child.pid,
+        CreationDate: windowsProcessCreationIso(restartRaceRemotePid),
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint} remote --persist-session`,
+      },
+      {
+        Name: 'node.exe', ProcessId: restartRaceLocalPid, ParentProcessId: restartRaceRemotePid,
+        CreationDate: windowsProcessCreationIso(restartRaceLocalPid),
+        CommandLine: `"${process.execPath}" ${canonicalEntrypoint}`,
+      },
+    ];
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([realSystemTask]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify(restartRaceProcesses));
+    const restartRaceLaunchMarkers = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    const restartRaceActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: systemFixtureEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false),
+      restartRaceActivation,
+      'the restart-race handoff to request authenticated shutdown',
+    );
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
+    await waitForDirectoryCondition(
+      signals,
+      async () => fs.access(path.join(signals, 'system-wrapper-exit')).then(() => true, () => false),
+      [restartRaceActivation, restartRaceWrapper],
+      'the restart-race fixture chain to exit gracefully',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...realSystemTask, State: 'Ready', LastTaskResult: 0,
+    }]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([]));
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'system-quiescence-observed')).then(() => true, () => false),
+      restartRaceActivation,
+      'the first momentary SYSTEM quiescence snapshot',
+    );
+    const restartedTask = { ...realSystemTask, State: 'Running', LastTaskResult: 267009 };
+    const restartedProcesses = [
+      systemProcesses[0],
+      { ...restartRaceProcesses[1], ProcessId: 2147469002, CreationDate: '2026-01-02T00:01:00.000Z' },
+      { ...restartRaceProcesses[2], ProcessId: 2147469003, ParentProcessId: 2147469002, CreationDate: '2026-01-02T00:02:00.000Z' },
+      { ...restartRaceProcesses[3], ProcessId: 2147469004, ParentProcessId: 2147469003, CreationDate: '2026-01-02T00:03:00.000Z' },
+    ];
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([restartedTask]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify(restartedProcesses));
+    const restartRaceResult = await restartRaceActivation.completed;
+    assert.notEqual(restartRaceResult.status, 0,
+      'a SYSTEM wrapper restart after one Ready snapshot must block replacement launch');
+    assert.match(`${restartRaceResult.stdout}\n${restartRaceResult.stderr}`, /restart|quiescen|state/i);
+    assert.deepEqual(
+      (await fs.readdir(signals)).filter(
+        (name) => name.startsWith('launch-') && !restartRaceLaunchMarkers.has(name),
+      ),
+      [],
+      'replacement launcher must not run after post-quiescence SYSTEM restart',
+    );
+    console.log('PASS RDC A/B rejects a SYSTEM restart after momentary quiescence');
+
+    const startExtraSystemScenario = async (label, { wrapperNonzero = false } = {}) => {
+      for (const marker of [
+        'authenticated-system-shutdown', 'authenticated-shutdown-ready',
+        'system-wrapper-pid', 'system-remote-pid', 'system-local-pid',
+        'system-wrapper-exit', 'system-remote-exit', 'system-local-exit',
+        'system-remote-start', 'system-local-start', 'system-quiescence-observed',
+        'system-wrapper-nonzero',
+      ]) await fs.rm(path.join(signals, marker), { force: true });
+      if (wrapperNonzero) await fs.writeFile(path.join(signals, 'system-wrapper-nonzero'), '');
+      const wrapper = spawnCaptured(trustedWindowsPowerShell, [
+        '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+        '-ExecutionPolicy', 'Bypass', '-File', systemFixtureScript,
+      ], { env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+      extraSystemWrappers.push(wrapper);
+      await waitForDirectoryCondition(
+        signals,
+        async () => Promise.all([
+          fs.readFile(path.join(signals, 'system-wrapper-pid'), 'utf8'),
+          fs.readFile(path.join(signals, 'system-remote-pid'), 'utf8'),
+          fs.readFile(path.join(signals, 'system-local-pid'), 'utf8'),
+        ]).then(() => true, () => false),
+        [wrapper],
+        `${label} fixture process chain`,
+      );
+      const remotePid = Number(await fs.readFile(path.join(signals, 'system-remote-pid'), 'utf8'));
+      const localPid = Number(await fs.readFile(path.join(signals, 'system-local-pid'), 'utf8'));
+      extraSystemPids.push(remotePid, localPid);
+      const task = { ...realSystemTask, State: 'Running', LastTaskResult: 267009 };
+      const processes = [
+        systemProcesses[0],
+        {
+          Name: 'powershell.exe', ProcessId: wrapper.child.pid, ParentProcessId: schedulerPid,
+          CreationDate: windowsProcessCreationIso(wrapper.child.pid),
+          ExecutablePath: trustedWindowsPowerShell,
+          OwnerSid: 'S-1-5-18',
+          CommandLine: `"powershell.exe" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "${systemFixtureScript}"`,
+        },
+        {
+          Name: 'node.exe', ProcessId: remotePid, ParentProcessId: wrapper.child.pid,
+          CreationDate: windowsProcessCreationIso(remotePid),
+          CommandLine: `"${process.execPath}" ${canonicalEntrypoint} remote --persist-session`,
+        },
+        {
+          Name: 'node.exe', ProcessId: localPid, ParentProcessId: remotePid,
+          CreationDate: windowsProcessCreationIso(localPid),
+          CommandLine: `"${process.execPath}" ${canonicalEntrypoint}`,
+        },
+      ];
+      await fs.writeFile(systemTaskInventoryPath, JSON.stringify([task]));
+      await fs.writeFile(systemProcessInventoryPath, JSON.stringify(processes));
+      await fs.writeFile(hostOrchestratorInventory, JSON.stringify([{
+        TaskPath: '\\', TaskName: task.TaskName, Enabled: true, State: 'Running',
+        Actions: task.Actions,
+      }]));
+      return { wrapper, task, processes, remotePid, localPid };
+    };
+
+    const assertNoScenarioLaunch = async (before, message) => assert.deepEqual(
+      (await fs.readdir(signals)).filter(
+        (name) => name.startsWith('launch-') && !before.has(name),
+      ),
+      [],
+      message,
+    );
+
+    const selectionScenario = await startExtraSystemScenario('selection-drift');
+    const selectionLaunches = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    const selectionActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false),
+      selectionActivation,
+      'selection-drift handoff shutdown boundary',
+    );
+    await fs.writeFile(path.join(handoffRoot, 'active-variant.txt'), 'clean\n');
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
+    await waitForDirectoryCondition(
+      signals,
+      async () => fs.access(path.join(signals, 'system-wrapper-exit')).then(() => true, () => false),
+      [selectionActivation, selectionScenario.wrapper],
+      'selection-drift fixture exit',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...selectionScenario.task, State: 'Ready', LastTaskResult: 0,
+    }]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([]));
+    const selectionResult = await selectionActivation.completed;
+    assert.notEqual(selectionResult.status, 0);
+    assert.match(`${selectionResult.stdout}\n${selectionResult.stderr}`, /selected runtime changed/i);
+    await assertNoScenarioLaunch(selectionLaunches,
+      'replacement launcher must not run after SYSTEM handoff selection drift');
+    await fs.writeFile(path.join(handoffRoot, 'active-variant.txt'), 'prototype\n');
+    console.log('PASS RDC A/B SYSTEM handoff rejects post-shutdown selection drift');
+
+    const competitorScript = path.join(handoffSandbox, 'late-system-competitor.ps1');
+    await fs.writeFile(competitorScript,
+      `$entry = '${canonicalEntrypoint.replaceAll("'", "''")}'\nStart-Process node.exe -ArgumentList @($entry,'remote','--persist-session')\n`);
+    const competitorScenario = await startExtraSystemScenario('late-competitor');
+    const competitorLaunches = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    const competitorActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false),
+      competitorActivation,
+      'late-competitor handoff shutdown boundary',
+    );
+    await fs.writeFile(hostOrchestratorInventory, JSON.stringify([
+      {
+        TaskPath: '\\', TaskName: competitorScenario.task.TaskName, Enabled: true, State: 'Running',
+        Actions: competitorScenario.task.Actions,
+      },
+      {
+        TaskPath: '\\', TaskName: 'Synthetic late competing RDC host', Enabled: true, State: 'Ready',
+        Actions: [{ Execute: trustedWindowsPowerShell, Arguments: `-NoProfile -File "${competitorScript}"` }],
+      },
+    ]));
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
+    await waitForDirectoryCondition(
+      signals,
+      async () => fs.access(path.join(signals, 'system-wrapper-exit')).then(() => true, () => false),
+      [competitorActivation, competitorScenario.wrapper],
+      'late-competitor fixture exit',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...competitorScenario.task, State: 'Ready', LastTaskResult: 0,
+    }]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([]));
+    const competitorResult = await competitorActivation.completed;
+    assert.notEqual(competitorResult.status, 0);
+    assert.match(`${competitorResult.stdout}\n${competitorResult.stderr}`, /competing.+host.+orchestrator/i);
+    await assertNoScenarioLaunch(competitorLaunches,
+      'replacement launcher must not run when a competing host appears during SYSTEM handoff');
+    console.log('PASS RDC A/B SYSTEM handoff rejects a late competing orchestrator');
+
+    const nonzeroScenario = await startExtraSystemScenario('nonzero-wrapper', { wrapperNonzero: true });
+    const nonzeroLaunches = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    const nonzeroActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false),
+      nonzeroActivation,
+      'nonzero-wrapper handoff shutdown boundary',
+    );
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
+    await waitForDirectoryCondition(
+      signals,
+      async () => fs.access(path.join(signals, 'system-wrapper-exit')).then(() => true, () => false),
+      [nonzeroActivation, nonzeroScenario.wrapper],
+      'nonzero-wrapper fixture exit',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...nonzeroScenario.task, State: 'Ready', LastTaskResult: 17,
+    }]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([]));
+    const nonzeroResult = await nonzeroActivation.completed;
+    assert.notEqual(nonzeroResult.status, 0);
+    assert.match(`${nonzeroResult.stdout}\n${nonzeroResult.stderr}`, /successful wrapper exit|result|non-zero|quiescen/i);
+    await assertNoScenarioLaunch(nonzeroLaunches,
+      'replacement launcher must not run after a non-zero SYSTEM wrapper result');
+    console.log('PASS RDC A/B SYSTEM handoff rejects non-zero wrapper result');
+
+    await fs.writeFile(canonicalEntrypoint, oldChildSource);
+    await fs.writeFile(path.join(signals, 'known-remote'), '');
+    await fs.rm(path.join(signals, 'system-host-contract.json'), { force: true });
+    await fs.rm(systemTaskInventoryPath, { force: true });
+    await fs.rm(systemProcessInventoryPath, { force: true });
+    await fs.rm(hostOrchestratorInventory, { force: true });
+    await fs.writeFile(inventoryPath, JSON.stringify([exactWatcherInventory]));
+    console.log('PASS RDC A/B activation recognizes exact SYSTEM task-host topology');    const externalHostScript = path.join(handoffSandbox, 'external-rdc-host.ps1');
+    await fs.writeFile(externalHostScript, `$bundle = '${canonicalEntrypoint.replaceAll("'", "''")}'\nStart-Process -FilePath '${process.execPath.replaceAll("'", "''")}' -ArgumentList @($bundle,'remote','--persist-session')\n`);
     await fs.writeFile(hostOrchestratorInventory, JSON.stringify([{
       TaskName: 'Codebase44 Remote Desktop Commander SYSTEM', Enabled: true, State: 'Ready',
       Actions: [{ Execute: 'powershell.exe', Arguments: `-NoProfile -File "${externalHostScript}"` }],
@@ -1789,10 +2352,16 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     assert.equal((await fs.readFile(oldInstancesPath, 'utf8')).trim().split(/\r?\n/).length, 1);
     console.log('PASS RDC A/B authenticated graceful watcher activation handoff');
   } finally {
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '').catch(() => {});
     await fs.writeFile(path.join(signals, 'authenticated-shutdown-1'), '').catch(() => {});
     await fs.writeFile(path.join(signals, 'authenticated-shutdown-2'), '').catch(() => {});
     if (oldWatcher.child.exitCode === null) oldWatcher.child.kill();
     if (decoyWatcher.child.exitCode === null) decoyWatcher.child.kill();
+    if (systemFixtureWrapper?.child.exitCode === null) systemFixtureWrapper.child.kill();
+    if (restartRaceWrapper?.child.exitCode === null) restartRaceWrapper.child.kill();
+    for (const wrapper of extraSystemWrappers) {
+      if (wrapper.child.exitCode === null) wrapper.child.kill();
+    }
     if (Number.isInteger(activatedWrapperPid)) {
       try { process.kill(activatedWrapperPid); } catch {}
     }
@@ -1808,6 +2377,9 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     const fakeRemotePids = await fs.readFile(oldInstancesPath, 'utf8')
       .then((value) => value.trim().split(/\r?\n/).map(Number), () => []);
     fakeRemotePids.push(unrelatedRemotePid);
+    fakeRemotePids.push(systemFixtureRemotePid, systemFixtureLocalPid);
+    fakeRemotePids.push(restartRaceRemotePid, restartRaceLocalPid);
+    fakeRemotePids.push(...extraSystemPids);
     await terminateFakeProcesses(fakeRemotePids);
     await fs.rm(handoffSandbox, { recursive: true, force: true }).catch(() => {});
   }

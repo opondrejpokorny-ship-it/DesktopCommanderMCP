@@ -115,6 +115,7 @@ function Get-HostOrchestratorInventory {
   }
   return @(Get-ScheduledTask -ErrorAction Stop | ForEach-Object {
     [pscustomobject]@{
+      TaskPath = [string]$_.TaskPath
       TaskName = [string]$_.TaskName
       Enabled = [bool]$_.Settings.Enabled -and ([string]$_.State -ne 'Disabled')
       State = [string]$_.State
@@ -123,24 +124,42 @@ function Get-HostOrchestratorInventory {
   })
 }
 
-function Assert-NoCompetingHostOrchestrator($Contract) {
+function Assert-NoCompetingHostOrchestrator($Contract, [string]$AllowedTaskPath = $null, [string]$AllowedTaskName = $null) {
   $entrypoint = [IO.Path]::GetFullPath([string]$Contract.Entrypoint).Replace('/', '\')
   foreach ($task in @(Get-HostOrchestratorInventory)) {
+    if ($AllowedTaskPath -and $AllowedTaskName -and
+        ([string]$task.TaskPath).Equals($AllowedTaskPath, [StringComparison]::OrdinalIgnoreCase) -and
+        ([string]$task.TaskName).Equals($AllowedTaskName, [StringComparison]::OrdinalIgnoreCase)) {
+      continue
+    }
     $taskState = [string]$task.State
     $definitionEnabled = [bool]$task.Enabled -and ($taskState -ne 'Disabled')
     $instanceRunning = $taskState -eq 'Running'
     if (-not ($definitionEnabled -or $instanceRunning)) { continue }
     foreach ($action in @($task.Actions)) {
-      $text = ([string]$action.Execute) + ' ' + ([string]$action.Arguments)
-      $fileMatch = [regex]::Match([string]$action.Arguments, '(?i)(?:^|\s)-File\s+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^\s"\r\n]+))')
+      $execute = [string]$action.Execute
+      $arguments = [string]$action.Arguments
+      $text = $execute + ' ' + $arguments
+      $fileMatch = [regex]::Match($arguments, '(?i)(?:^|\s)-File\s+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^\s"\r\n]+))')
       if ($fileMatch.Success) {
-        $scriptPath = if ($fileMatch.Groups['quoted'].Success) { $fileMatch.Groups['quoted'].Value } else { $fileMatch.Groups['bare'].Value }
+        try { $executeName = [IO.Path]::GetFileName($execute) }
+        catch { $executeName = $null }
+        $isPowerShellFileAction = $executeName -and
+          ($executeName.Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase) -or
+           $executeName.Equals('pwsh.exe', [StringComparison]::OrdinalIgnoreCase))
+        $scriptText = $null
         try {
+          if (-not $isPowerShellFileAction) { throw 'not a PowerShell file action' }
+          $scriptPath = if ($fileMatch.Groups['quoted'].Success) { $fileMatch.Groups['quoted'].Value } else { $fileMatch.Groups['bare'].Value }
           $scriptPath = [IO.Path]::GetFullPath($scriptPath)
-          if (Test-Path -LiteralPath $scriptPath -PathType Leaf) {
-            $text += "`n" + [IO.File]::ReadAllText($scriptPath)
+          if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw 'script target is not a file' }
+          $scriptText = [IO.File]::ReadAllText($scriptPath)
+        } catch {
+          if ($isPowerShellFileAction) {
+            throw "Enabled PowerShell host orchestrator '$([string]$task.TaskName)' has an unverifiable script target; activation stopped without changes"
           }
-        } catch { }
+        }
+        if ($null -ne $scriptText) { $text += "`n" + $scriptText }
       }
       $normalized = $text.Replace('/', '\')
       if ($normalized.IndexOf($entrypoint, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
@@ -205,6 +224,395 @@ function ConvertTo-ProcessCreationUtc($Value) {
   } catch { return $null }
 }
 
+function Test-ExactProcessRecordIdentity($Expected, $Actual) {
+  if ($null -eq $Expected -or $null -eq $Actual -or
+      [int64]$Expected.ProcessId -ne [int64]$Actual.ProcessId) {
+    return $false
+  }
+  $expectedCreationUtc = ConvertTo-ProcessCreationUtc $Expected.CreationDate
+  $actualCreationUtc = ConvertTo-ProcessCreationUtc $Actual.CreationDate
+  return $null -ne $expectedCreationUtc -and $null -ne $actualCreationUtc -and
+    [Math]::Abs(($expectedCreationUtc - $actualCreationUtc).TotalMilliseconds) -le 1
+}
+
+function Get-TrustedWindowsPowerShellPath {
+  $systemRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+  if ([string]::IsNullOrWhiteSpace($systemRoot)) {
+    throw 'Machine SystemRoot is unavailable'
+  }
+  try {
+    $trustedPowerShell = [IO.Path]::GetFullPath((Join-Path $systemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+  } catch {
+    throw 'Trusted Windows PowerShell path is invalid'
+  }
+  if (-not (Test-Path -LiteralPath $trustedPowerShell -PathType Leaf)) {
+    throw 'Trusted Windows PowerShell executable is unavailable'
+  }
+  return $trustedPowerShell
+}
+
+function Get-SystemTaskHostInventory($Contract) {
+  if ($testControl) {
+    $taskPath = Join-Path $testControl 'system-task-inventory.json'
+    $processPath = Join-Path $testControl 'system-process-inventory.json'
+    if (-not (Test-Path -LiteralPath $taskPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $processPath -PathType Leaf)) {
+      return [pscustomobject]@{ Tasks = @(); Processes = @() }
+    }
+    return [pscustomobject]@{
+      Tasks = @((Get-Content -Raw -LiteralPath $taskPath | ConvertFrom-Json))
+      Processes = @((Get-Content -Raw -LiteralPath $processPath | ConvertFrom-Json))
+    }
+  }
+
+  $tasks = @(Get-ScheduledTask -TaskName ([string]$Contract.TaskName) -ErrorAction Stop |
+    Where-Object { ([string]$_.TaskPath).Equals([string]$Contract.TaskPath, [StringComparison]::OrdinalIgnoreCase) } |
+    ForEach-Object {
+      $taskInfo = Get-ScheduledTaskInfo -TaskName ([string]$_.TaskName) -TaskPath ([string]$_.TaskPath) -ErrorAction Stop
+      [pscustomobject]@{
+        TaskPath = [string]$_.TaskPath
+        TaskName = [string]$_.TaskName
+        State = [string]$_.State
+        LastTaskResult = [int64]$taskInfo.LastTaskResult
+        Principal = [pscustomobject]@{
+          UserId = [string]$_.Principal.UserId
+          LogonType = [string]$_.Principal.LogonType
+          RunLevel = [string]$_.Principal.RunLevel
+        }
+        Actions = @($_.Actions | ForEach-Object {
+          [pscustomobject]@{ Execute = [string]$_.Execute; Arguments = [string]$_.Arguments }
+        })
+        Settings = [pscustomobject]@{
+          MultipleInstances = [string]$_.Settings.MultipleInstances
+          RestartCount = [int]$_.Settings.RestartCount
+          RestartInterval = [string]$_.Settings.RestartInterval
+        }
+        Triggers = @($_.Triggers | ForEach-Object {
+          [pscustomobject]@{ Class = [string]$_.CimClass.CimClassName; Enabled = [bool]$_.Enabled }
+        })
+      }
+    })
+  $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+    ([string]$_.Name) -in @('powershell.exe','node.exe','svchost.exe')
+  } | ForEach-Object {
+    $ownerSid = $null
+    if (([string]$_.Name).Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
+      try {
+        $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction Stop
+        if ([int]$owner.ReturnValue -eq 0) { $ownerSid = [string]$owner.Sid }
+      } catch { $ownerSid = $null }
+    }
+    [pscustomobject]@{
+      Name = [string]$_.Name
+      ProcessId = [int64]$_.ProcessId
+      ParentProcessId = [int64]$_.ParentProcessId
+      CreationDate = $_.CreationDate
+      ExecutablePath = [string]$_.ExecutablePath
+      CommandLine = [string]$_.CommandLine
+      OwnerSid = $ownerSid
+    }
+  })
+  return [pscustomobject]@{ Tasks = $tasks; Processes = $processes }
+}
+
+function Assert-ExactSystemTaskDefinition($TaskInventory, $Contract, [string[]]$AllowedStates = @('Running')) {
+  $tasks = @($TaskInventory | Where-Object {
+    ([string]$_.TaskPath).Equals([string]$Contract.TaskPath, [StringComparison]::OrdinalIgnoreCase) -and
+    ([string]$_.TaskName).Equals([string]$Contract.TaskName, [StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($tasks.Count -ne 1) { throw "Expected exactly one configured SYSTEM RDC task; found $($tasks.Count)" }
+  $task = $tasks[0]
+  if ([string]$task.State -notin $AllowedStates) { throw "SYSTEM RDC task state is not allowed for handoff: $([string]$task.State)" }
+
+  $principal = $task.Principal
+  $systemUsers = @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18')
+  if ([string]$principal.UserId -notin $systemUsers -or
+      -not ([string]$principal.LogonType).Equals('ServiceAccount', [StringComparison]::OrdinalIgnoreCase) -or
+      -not ([string]$principal.RunLevel).Equals('Highest', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'SYSTEM RDC task principal is not exact'
+  }
+
+  $actions = @($task.Actions)
+  if ($actions.Count -ne 1) { throw 'SYSTEM RDC task must have exactly one action' }
+  $actionText = [string]$actions[0].Execute
+  $trustedPowerShell = Get-TrustedWindowsPowerShellPath
+  $trustedAction = $actionText.Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)
+  if (-not $trustedAction -and [IO.Path]::IsPathRooted($actionText)) {
+    try {
+      $trustedAction = [IO.Path]::GetFullPath($actionText).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase)
+    } catch { $trustedAction = $false }
+  }
+  if (-not $trustedAction) {
+    throw 'SYSTEM RDC task action executable is not the trusted Windows PowerShell image'
+  }
+  $actionMatch = [regex]::Match(
+    [string]$actions[0].Arguments,
+    '(?i)^[ \t]*-NoProfile[ \t]+-NonInteractive[ \t]+-WindowStyle[ \t]+Hidden[ \t]+-ExecutionPolicy[ \t]+Bypass[ \t]+-File[ \t]+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^ \t"\r\n]+))[ \t]*$'
+  )
+  if (-not $actionMatch.Success) { throw 'SYSTEM RDC task PowerShell arguments are not exact' }
+  $wrapperText = if ($actionMatch.Groups['quoted'].Success) { $actionMatch.Groups['quoted'].Value } else { $actionMatch.Groups['bare'].Value }
+  try { $actionWrapper = [IO.Path]::GetFullPath($wrapperText) } catch { throw 'SYSTEM RDC task wrapper path is invalid' }
+  if (-not $actionWrapper.Equals([IO.Path]::GetFullPath([string]$Contract.WrapperPath), [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'SYSTEM RDC task wrapper path is not exact'
+  }
+
+  if (-not ([string]$task.Settings.MultipleInstances).Equals('IgnoreNew', [StringComparison]::OrdinalIgnoreCase) -or
+      [int]$task.Settings.RestartCount -ne 999 -or
+      -not ([string]$task.Settings.RestartInterval).Equals('PT1M', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'SYSTEM RDC task restart/multiple-instance semantics are not exact'
+  }
+  $triggers = @($task.Triggers)
+  if ($triggers.Count -ne 1 -or -not [bool]$triggers[0].Enabled -or
+      -not ([string]$triggers[0].Class).Equals('MSFT_TaskBootTrigger', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'SYSTEM RDC task trigger is not the exact enabled boot trigger'
+  }
+  return $task
+}
+
+function Assert-ExactSystemTaskHostIdentity($TaskInventory, $ProcessInventory, $Contract) {
+  $task = Assert-ExactSystemTaskDefinition -TaskInventory $TaskInventory -Contract $Contract -AllowedStates @('Running')
+  $wrapperPath = [IO.Path]::GetFullPath([string]$Contract.WrapperPath)
+  $nodePath = [IO.Path]::GetFullPath([string]$Contract.NodePath)
+  $entrypoint = [IO.Path]::GetFullPath([string]$Contract.Entrypoint)
+  $trustedPowerShell = Get-TrustedWindowsPowerShellPath
+
+  $wrappers = @($ProcessInventory | Where-Object {
+    if (-not ([string]$_.Name).Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $match = [regex]::Match(
+      [string]$_.CommandLine,
+      '(?i)^[ \t]*(?:"(?<exeQuoted>[^"\r\n]+)"|(?<exeBare>[^ \t"\r\n]+))[ \t]+-NoProfile[ \t]+-NonInteractive[ \t]+-WindowStyle[ \t]+Hidden[ \t]+-ExecutionPolicy[ \t]+Bypass[ \t]+-File[ \t]+(?:"(?<wrapperQuoted>[^"\r\n]+)"|(?<wrapperBare>[^ \t"\r\n]+))[ \t]*$'
+    )
+    if (-not $match.Success) { return $false }
+    $exeText = if ($match.Groups['exeQuoted'].Success) { $match.Groups['exeQuoted'].Value } else { $match.Groups['exeBare'].Value }
+    $wrapperText = if ($match.Groups['wrapperQuoted'].Success) { $match.Groups['wrapperQuoted'].Value } else { $match.Groups['wrapperBare'].Value }
+    try {
+      $trustedCommandImage = $exeText.Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)
+      if (-not $trustedCommandImage -and [IO.Path]::IsPathRooted($exeText)) {
+        $trustedCommandImage = [IO.Path]::GetFullPath($exeText).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase)
+      }
+      return ([string]$_.OwnerSid).Equals('S-1-5-18', [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals($trustedPowerShell, [StringComparison]::OrdinalIgnoreCase) -and
+        $trustedCommandImage -and
+        [IO.Path]::GetFullPath($wrapperText).Equals($wrapperPath, [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+  })
+  if ($wrappers.Count -ne 1) { throw "Expected exactly one exact SYSTEM PowerShell wrapper process; found $($wrappers.Count)" }
+  $wrapper = $wrappers[0]
+  $wrapperCreationUtc = ConvertTo-ProcessCreationUtc $wrapper.CreationDate
+  if ($null -eq $wrapperCreationUtc) { throw 'SYSTEM PowerShell wrapper creation identity is unavailable' }
+
+  $parents = @($ProcessInventory | Where-Object { [int64]$_.ProcessId -eq [int64]$wrapper.ParentProcessId })
+  if ($parents.Count -ne 1 -or
+      -not ([string]$parents[0].Name).Equals('svchost.exe', [StringComparison]::OrdinalIgnoreCase) -or
+      -not [regex]::IsMatch([string]$parents[0].CommandLine, '(?i)(?:^|[ \t])-s[ \t]+Schedule(?:[ \t]|$)')) {
+    throw 'SYSTEM PowerShell wrapper parent is not the Task Scheduler service host'
+  }
+  $parentCreationUtc = ConvertTo-ProcessCreationUtc $parents[0].CreationDate
+  if ($null -ne $parentCreationUtc -and $parentCreationUtc -gt $wrapperCreationUtc) {
+    throw 'SYSTEM PowerShell wrapper predates its Task Scheduler parent'
+  }
+
+  $remotes = @($ProcessInventory | Where-Object {
+    if (-not ([string]$_.Name).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase) -or
+        [int64]$_.ParentProcessId -ne [int64]$wrapper.ProcessId) { return $false }
+    $creationUtc = ConvertTo-ProcessCreationUtc $_.CreationDate
+    if ($null -eq $creationUtc -or $creationUtc -lt $wrapperCreationUtc) { return $false }
+    $match = [regex]::Match(
+      [string]$_.CommandLine,
+      '^[ \t]*"(?<node>[^"\r\n]+)"[ \t]+(?:"(?<entryQuoted>[^"\r\n]+)"|(?<entryBare>[^ \t"\r\n]+))[ \t]+remote[ \t]+--persist-session[ \t]*$'
+    )
+    if (-not $match.Success) { return $false }
+    $entryText = if ($match.Groups['entryQuoted'].Success) { $match.Groups['entryQuoted'].Value } else { $match.Groups['entryBare'].Value }
+    try {
+      return [IO.Path]::GetFullPath($match.Groups['node'].Value).Equals($nodePath, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFullPath($entryText).Equals($entrypoint, [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+  })
+  if ($remotes.Count -ne 1) { throw "Expected exactly one exact SYSTEM-hosted RDC Remote; found $($remotes.Count)" }
+  $remote = $remotes[0]
+  $remoteCreationUtc = ConvertTo-ProcessCreationUtc $remote.CreationDate
+
+  $localMcp = @($ProcessInventory | Where-Object {
+    if (-not ([string]$_.Name).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase) -or
+        [int64]$_.ParentProcessId -ne [int64]$remote.ProcessId) { return $false }
+    $creationUtc = ConvertTo-ProcessCreationUtc $_.CreationDate
+    if ($null -eq $creationUtc -or $creationUtc -lt $remoteCreationUtc) { return $false }
+    $match = [regex]::Match(
+      [string]$_.CommandLine,
+      '^[ \t]*"(?<node>[^"\r\n]+)"[ \t]+(?:"(?<entryQuoted>[^"\r\n]+)"|(?<entryBare>[^ \t"\r\n]+))[ \t]*$'
+    )
+    if (-not $match.Success) { return $false }
+    $entryText = if ($match.Groups['entryQuoted'].Success) { $match.Groups['entryQuoted'].Value } else { $match.Groups['entryBare'].Value }
+    try {
+      return [IO.Path]::GetFullPath($match.Groups['node'].Value).Equals($nodePath, [StringComparison]::OrdinalIgnoreCase) -and
+        [IO.Path]::GetFullPath($entryText).Equals($entrypoint, [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+  })
+  $directNodeChildren = @($ProcessInventory | Where-Object {
+    ([string]$_.Name).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase) -and
+    [int64]$_.ParentProcessId -eq [int64]$remote.ProcessId
+  })
+  if ($localMcp.Count -ne 1 -or $directNodeChildren.Count -ne $localMcp.Count) {
+    throw 'SYSTEM-hosted RDC Remote local MCP child identity is not exact'
+  }
+
+  return [pscustomobject]@{
+    Task = $task
+    WrapperProcess = $wrapper
+    RemoteProcess = $remote
+    LocalMcpProcesses = $localMcp
+  }
+}
+
+function Assert-SystemTaskHostQuiesced($TaskInventory, $ProcessInventory, $Contract) {
+  $task = Assert-ExactSystemTaskDefinition -TaskInventory $TaskInventory -Contract $Contract -AllowedStates @('Ready')
+  if ($null -eq $task.LastTaskResult -or [int64]$task.LastTaskResult -ne 0) {
+    throw "SYSTEM RDC task did not record a successful wrapper exit ($([string]$task.LastTaskResult))"
+  }
+  $wrapperPath = [IO.Path]::GetFullPath([string]$Contract.WrapperPath)
+  $entrypoint = [IO.Path]::GetFullPath([string]$Contract.Entrypoint)
+  foreach ($process in @($ProcessInventory)) {
+    $commandLine = [string]$process.CommandLine
+    if (([string]$process.Name).Equals('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
+      $fileMatch = [regex]::Match($commandLine, '(?i)(?:^|[ \t])-File[ \t]+(?:"(?<quoted>[^"\r\n]+)"|(?<bare>[^ \t"\r\n]+))(?:[ \t]*$)')
+      if ($fileMatch.Success) {
+        $candidate = if ($fileMatch.Groups['quoted'].Success) { $fileMatch.Groups['quoted'].Value } else { $fileMatch.Groups['bare'].Value }
+        try {
+          if ([IO.Path]::GetFullPath($candidate).Equals($wrapperPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'SYSTEM RDC wrapper restarted during handoff'
+          }
+        } catch [Management.Automation.RuntimeException] { throw } catch { }
+      }
+    }
+    if (([string]$process.Name).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase) -and
+        [regex]::IsMatch($commandLine, '(?i)(?:^|[ \t])remote[ \t]+--persist-session[ \t]*$')) {
+      $escapedEntry = [regex]::Escape($entrypoint.Replace('/', '\'))
+      if ($commandLine.Replace('/', '\') -match $escapedEntry) {
+        throw 'SYSTEM RDC Remote restarted during handoff'
+      }
+    }
+  }
+}
+
+function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$ShutdownWaitSeconds, [string]$Variant) {
+  $wrapperRecord = $HostInfo.WrapperProcess
+  $remoteRecord = $HostInfo.RemoteProcess
+  $localRecords = @($HostInfo.LocalMcpProcesses)
+  $wrapperProcess = $null
+  $remoteProcess = $null
+  $localProcesses = @()
+  try {
+    $wrapperProcess = [Diagnostics.Process]::GetProcessById([int]$wrapperRecord.ProcessId)
+    $remoteProcess = [Diagnostics.Process]::GetProcessById([int]$remoteRecord.ProcessId)
+    if (-not $wrapperProcess.ProcessName.Equals('powershell', [StringComparison]::OrdinalIgnoreCase) -or
+        -not $remoteProcess.ProcessName.Equals('node', [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'SYSTEM host process type changed before graceful handoff'
+    }
+    $wrapperCreationUtc = ConvertTo-ProcessCreationUtc $wrapperRecord.CreationDate
+    $remoteCreationUtc = ConvertTo-ProcessCreationUtc $remoteRecord.CreationDate
+    if ($null -eq $wrapperCreationUtc -or $null -eq $remoteCreationUtc -or
+        [Math]::Abs(($wrapperProcess.StartTime.ToUniversalTime() - $wrapperCreationUtc).TotalMilliseconds) -gt 1 -or
+        [Math]::Abs(($remoteProcess.StartTime.ToUniversalTime() - $remoteCreationUtc).TotalMilliseconds) -gt 1) {
+      throw 'SYSTEM host PID/creation identity changed before graceful handoff'
+    }
+    foreach ($localRecord in $localRecords) {
+      $localProcess = [Diagnostics.Process]::GetProcessById([int]$localRecord.ProcessId)
+      $localCreationUtc = ConvertTo-ProcessCreationUtc $localRecord.CreationDate
+      if (-not $localProcess.ProcessName.Equals('node', [StringComparison]::OrdinalIgnoreCase) -or
+          $null -eq $localCreationUtc -or
+          [Math]::Abs(($localProcess.StartTime.ToUniversalTime() - $localCreationUtc).TotalMilliseconds) -gt 1) {
+        $localProcess.Dispose()
+        throw 'SYSTEM local MCP PID/creation identity changed before graceful handoff'
+      }
+      $localProcesses += $localProcess
+    }
+
+    $freshInventory = Get-SystemTaskHostInventory $Contract
+    $freshHost = Assert-ExactSystemTaskHostIdentity -TaskInventory $freshInventory.Tasks -ProcessInventory $freshInventory.Processes -Contract $Contract
+    $freshLocal = @($freshHost.LocalMcpProcesses | Sort-Object { [int64]$_.ProcessId })
+    $expectedLocal = @($localRecords | Sort-Object { [int64]$_.ProcessId })
+    $sameLocalIdentity = $freshLocal.Count -eq $expectedLocal.Count
+    if ($sameLocalIdentity) {
+      for ($index = 0; $index -lt $expectedLocal.Count; $index++) {
+        if (-not (Test-ExactProcessRecordIdentity $expectedLocal[$index] $freshLocal[$index])) {
+          $sameLocalIdentity = $false
+          break
+        }
+      }
+    }
+    if (-not (Test-ExactProcessRecordIdentity $wrapperRecord $freshHost.WrapperProcess) -or
+        -not (Test-ExactProcessRecordIdentity $remoteRecord $freshHost.RemoteProcess) -or
+        -not $sameLocalIdentity) {
+      throw 'SYSTEM host identity changed immediately before authenticated shutdown handoff'
+    }
+
+    if ($testControl) { [IO.File]::WriteAllText((Join-Path $testControl 'authenticated-shutdown-ready'), '') }
+    [ordered]@{
+      phase = 'awaiting-authenticated-shutdown'
+      host = 'system-task'
+      variant = $Variant
+      systemWrapperPid = [int]$wrapperRecord.ProcessId
+      remotePid = [int]$remoteRecord.ProcessId
+    } | ConvertTo-Json -Compress | Write-Output
+
+    if (-not $remoteProcess.WaitForExit($ShutdownWaitSeconds * 1000)) {
+      throw 'Exact SYSTEM-hosted RDC Remote did not complete authenticated graceful shutdown before timeout'
+    }
+    foreach ($localProcess in $localProcesses) {
+      if (-not $localProcess.WaitForExit(5000)) {
+        throw 'Exact SYSTEM-hosted RDC local MCP child remained alive after authenticated Remote shutdown'
+      }
+    }
+    if (-not $wrapperProcess.WaitForExit(5000)) {
+      throw 'SYSTEM PowerShell wrapper did not exit cleanly after the Remote completed'
+    }
+    # A Process object attached with GetProcessById can wait for an externally
+    # owned process on Windows but may not expose ExitCode. When it does, retain
+    # this early negative; the authoritative Task Scheduler result is required
+    # below at the Ready/quiescence boundary in every case.
+    $attachedWrapperExitCode = $wrapperProcess.ExitCode
+    if ($null -ne $attachedWrapperExitCode -and $attachedWrapperExitCode -ne 0) {
+      throw "SYSTEM PowerShell wrapper exited non-zero after Remote shutdown ($($wrapperProcess.ExitCode)); replacement launch refused"
+    }
+
+    # A single Ready snapshot is not enough: scheduler state and restarted
+    # processes can be published on different ticks. Require a continuous
+    # quiescence window. Wrapper result 0 rules out configured RestartOnFailure;
+    # the stability window covers delayed state/process observation without
+    # mutating the task definition.
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    $stableSince = $null
+    $stableQuiescence = $false
+    $lastQuiescenceError = $null
+    do {
+      try {
+        $postInventory = Get-SystemTaskHostInventory $Contract
+        Assert-SystemTaskHostQuiesced -TaskInventory $postInventory.Tasks -ProcessInventory $postInventory.Processes -Contract $Contract
+        if ($null -eq $stableSince) { $stableSince = [DateTime]::UtcNow }
+        if ($testControl) {
+          [IO.File]::WriteAllText((Join-Path $testControl 'system-quiescence-observed'), '')
+        }
+        $lastQuiescenceError = $null
+        if (([DateTime]::UtcNow - $stableSince).TotalMilliseconds -ge 1000) {
+          $stableQuiescence = $true
+          break
+        }
+      } catch {
+        $lastQuiescenceError = $_
+        $stableSince = $null
+      }
+      if (-not $stableQuiescence) { Start-Sleep -Milliseconds 100 }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if (-not $stableQuiescence) {
+      $detail = if ($null -ne $lastQuiescenceError) { $lastQuiescenceError.Exception.Message } else { 'stable interval was not sustained' }
+      throw "SYSTEM task host did not become stably quiescent after graceful shutdown: $detail"
+    }
+  } finally {
+    foreach ($localProcess in $localProcesses) { if ($null -ne $localProcess) { $localProcess.Dispose() } }
+    if ($null -ne $remoteProcess) { $remoteProcess.Dispose() }
+    if ($null -ne $wrapperProcess) { $wrapperProcess.Dispose() }
+  }
+}
 function Get-ExactRemoteProcesses([int]$WatcherPid, [DateTime]$WatcherCreationUtc, $Contract) {
   return @(Get-RemoteProcessInventory | Where-Object {
     if (-not ([string]$_.Name).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase)) { return $false }
@@ -285,8 +693,104 @@ try {
     $null -ne (Get-CmdLaunchTarget ([string]$_.CommandLine)) -and
     (Get-CmdLaunchTarget ([string]$_.CommandLine)).Equals($launcher, [StringComparison]::OrdinalIgnoreCase)
   })
-  if ($matchingWatchers.Count -eq 0) { throw 'Watcher command is not exact; activation stopped without changes' }
   if ($matchingWatchers.Count -gt 1) { throw 'Multiple exact old launcher watchers were found; activation stopped without changes' }
+  if ($matchingWatchers.Count -eq 0) {
+    $legacyContract = Get-OriginalLauncherRemoteContract
+    $systemContract = [pscustomobject]@{
+      TaskPath = '\'
+      TaskName = 'Codebase44 Remote Desktop Commander SYSTEM'
+      WrapperPath = 'C:\Codebase44\system\rdc-system\Start-RemoteDesktopCommanderSystem.ps1'
+      NodePath = [string]$legacyContract.Node
+      Entrypoint = [string]$legacyContract.Entrypoint
+    }
+    if ($testControl) {
+      $testContractPath = Join-Path $testControl 'system-host-contract.json'
+      if (Test-Path -LiteralPath $testContractPath -PathType Leaf) {
+        try { $testContract = Get-Content -Raw -LiteralPath $testContractPath | ConvertFrom-Json }
+        catch { throw 'Activation test SYSTEM host contract is invalid' }
+        if ([string]::IsNullOrWhiteSpace([string]$testContract.WrapperPath)) {
+          throw 'Activation test SYSTEM host wrapper path is missing'
+        }
+        $systemContract.WrapperPath = [IO.Path]::GetFullPath([string]$testContract.WrapperPath)
+      }
+    }
+    try {
+      $systemInventory = Get-SystemTaskHostInventory $systemContract
+      $systemHost = Assert-ExactSystemTaskHostIdentity -TaskInventory $systemInventory.Tasks -ProcessInventory $systemInventory.Processes -Contract $systemContract
+    } catch {
+      throw "Watcher command is not exact and no exact SYSTEM task host was authenticated; activation stopped without changes: $($_.Exception.Message)"
+    }
+
+    # Only the fully authenticated SYSTEM task may be excluded from the competing
+    # orchestrator gate. Any other enabled/running canonical Remote launcher still
+    # fails closed before the handoff acquires authority.
+    Assert-NoCompetingHostOrchestrator $legacyContract $systemContract.TaskPath $systemContract.TaskName
+
+    $cmdPath = if ($env:SystemRoot) { Join-Path ([IO.Path]::GetFullPath($env:SystemRoot)) 'System32\cmd.exe' } else { $null }
+    if (-not $cmdPath -or -not (Test-Path -LiteralPath $cmdPath -PathType Leaf)) {
+      throw 'Canonical Windows command processor is unavailable'
+    }
+    $argumentLine = '/d /s /c ""' + $launcher + '""'
+    $startedWrapper = $null
+    $launcherReadLock = $null
+    try {
+      try {
+        $launcherReadLock = [IO.File]::Open(
+          $launcher, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+        )
+      } catch {
+        throw "Unable to lock verified launcher bytes before SYSTEM handoff: $($_.Exception.Message)"
+      }
+      Assert-VerifiedLauncherStream $launcherReadLock
+      if ($testControl -and (Test-Path -LiteralPath (Join-Path $testControl 'fail-replacement-launch') -PathType Leaf)) {
+        throw 'Test-controlled replacement launcher failure'
+      }
+
+      Invoke-SystemTaskHostGracefulHandoff -HostInfo $systemHost -Contract $systemContract -ShutdownWaitSeconds $ShutdownWaitSeconds -Variant ([string]$validated.variant)
+
+      # The selected runtime is authority-sensitive across the shutdown window.
+      # Revalidate it and the immutable launcher bytes before granting launch.
+      $postValidationOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installedSupervisor -BenchmarkRoot $root -ValidateOnly 2>&1
+      if ($LASTEXITCODE -ne 0) { throw "Installed supervisor post-shutdown validation failed: $($postValidationOutput -join ' ')" }
+      try { $postValidated = ($postValidationOutput -join "`n") | ConvertFrom-Json }
+      catch { throw 'Installed supervisor post-shutdown validation did not return JSON' }
+      if ([string]$postValidated.variant -ne [string]$validated.variant -or
+          [string]$postValidated.expectedSha -ne [string]$validated.expectedSha -or
+          [string]$postValidated.actualSha -ne [string]$validated.actualSha) {
+        throw 'RDC A/B selected runtime changed during SYSTEM authenticated shutdown handoff'
+      }
+      Assert-VerifiedLauncherStream $launcherReadLock
+
+      # This is the final scheduler/process boundary before replacement launch.
+      # The task has only a boot trigger and recorded wrapper result 0, so its
+      # configured RestartOnFailure cannot fire. A separate administrator
+      # manually starting the task after this check is outside an atomic task
+      # coordination contract; the harness deliberately does not disable or
+      # rewrite the task to cover that external authority.
+      $finalSystemInventory = Get-SystemTaskHostInventory $systemContract
+      Assert-SystemTaskHostQuiesced -TaskInventory $finalSystemInventory.Tasks -ProcessInventory $finalSystemInventory.Processes -Contract $systemContract
+      Assert-NoCompetingHostOrchestrator $legacyContract $systemContract.TaskPath $systemContract.TaskName
+
+      $startedWrapper = Start-Process -FilePath $cmdPath -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
+      if ($null -eq $startedWrapper) { throw 'Unable to start installed RDC A/B launcher after SYSTEM authenticated shutdown' }
+      $startedWrapperPid = $startedWrapper.Id
+      if ($startedWrapper.WaitForExit(250)) {
+        throw "Installed RDC A/B launcher exited immediately after SYSTEM authenticated handoff (exit $($startedWrapper.ExitCode))"
+      }
+    } finally {
+      if ($null -ne $startedWrapper) { $startedWrapper.Dispose() }
+      if ($null -ne $launcherReadLock) { $launcherReadLock.Dispose() }
+    }
+
+    [ordered]@{
+      phase = 'completed'
+      host = 'system-task'
+      variant = [string]$validated.variant
+      stoppedSystemWrapperPid = [int]$systemHost.WrapperProcess.ProcessId
+      startedWrapperPid = $startedWrapperPid
+    } | ConvertTo-Json -Compress | Write-Output
+    return
+  }
 
   $watcherPid = [int]$matchingWatchers[0].ProcessId
   if ($watcherPid -le 0 -or $watcherPid -eq $PID) { throw 'Old launcher watcher identity is invalid' }
