@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { RemoteChannel } from './remote-channel.js';
+import { RemoteChannel, type AuthSession } from './remote-channel.js';
 import { DeviceAuthenticator } from './device-authenticator.js';
 import { DesktopCommanderIntegration } from './desktop-commander-integration.js';
 import { fileURLToPath } from 'url';
@@ -29,6 +29,7 @@ export class MCPDevice {
     private isShuttingDown: boolean;
     private configPath: string;
     private persistSession: boolean;
+    private sessionPersistChain: Promise<void> = Promise.resolve();
     private desktop: DesktopCommanderIntegration;
     /** Call ids already handled by THIS process (insertion-ordered, bounded). */
     private seenCallIds: Set<string> = new Set();
@@ -44,6 +45,9 @@ export class MCPDevice {
         // refresh-token families get replayed, trip GoTrue's reuse detection, and
         // take the whole family down including the token a healthy connector holds.
         this.persistSession = options.persistSession ?? true;
+        this.remoteChannel.setSessionRefreshListener((session) => {
+            if (this.persistSession) void this.queuePersistedConfig(session);
+        });
 
         // Initialize desktop integration
         this.desktop = new DesktopCommanderIntegration();
@@ -242,25 +246,48 @@ export class MCPDevice {
             console.debug('[DEBUG] Saving persisted config, persistSession:', this.persistSession);
             const currentSessionStore = await this.remoteChannel.getSession();
             const session = currentSessionStore.data.session;
-
-            const config = {
-                deviceId: this.deviceId,
-                // Only save session if --persist-session flag is set
-                session: (session && this.persistSession) ? {
-                    access_token: session.access_token,
-                    refresh_token: session.refresh_token
-                } : null
-            };
-            // Ensure the config directory exists
-            console.debug('[DEBUG] Creating config directory:', path.dirname(this.configPath));
-            await fs.mkdir(path.dirname(this.configPath), { recursive: true });
-            await fs.writeFile(this.configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
-            console.debug('[DEBUG] Config saved to:', this.configPath);
+            await this.queuePersistedConfig(session ? {
+                access_token: session.access_token,
+                refresh_token: session.refresh_token
+            } : null);
         } catch (error: any) {
             console.error(' - ❌ Failed to save config:', error.message);
             console.debug('[DEBUG] Config save error details:', error);
             await captureRemote('remote_device_config_save_error', { error });
         }
+    }
+
+    private queuePersistedConfig(session: AuthSession | null): Promise<void> {
+        const snapshot = session && this.persistSession ? {
+            access_token: session.access_token,
+            refresh_token: session.refresh_token
+        } : null;
+
+        const writeSnapshot = async () => {
+            const tempPath = `${this.configPath}.tmp-${process.pid}-${Date.now()}`;
+            try {
+                const config = { deviceId: this.deviceId, session: snapshot };
+                await fs.mkdir(path.dirname(this.configPath), { recursive: true });
+                await fs.writeFile(tempPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+                try {
+                    await fs.rename(tempPath, this.configPath);
+                } catch (error: any) {
+                    if (error?.code !== 'EPERM' && error?.code !== 'EEXIST') throw error;
+                    await fs.rm(this.configPath, { force: true });
+                    await fs.rename(tempPath, this.configPath);
+                }
+                console.debug('[DEBUG] Config saved to:', this.configPath);
+            } catch (error: any) {
+                console.error(' - ❌ Failed to save config:', error.message);
+                console.debug('[DEBUG] Config save error details:', error);
+                await captureRemote('remote_device_config_save_error', { error });
+            } finally {
+                await fs.rm(tempPath, { force: true }).catch(() => undefined);
+            }
+        };
+
+        this.sessionPersistChain = this.sessionPersistChain.then(writeSnapshot, writeSnapshot);
+        return this.sessionPersistChain;
     }
 
     async fetchSupabaseConfig() {
@@ -419,6 +446,13 @@ export class MCPDevice {
             console.log('  → Unsubscribing from channel...');
             console.debug('[DEBUG] Calling channel.unsubscribe()');
             await this.remoteChannel.unsubscribe();
+
+            // Once realtime/token refresh is stopped and the channel is unsubscribed,
+            // flush any queued rotated-session write before process exit. Otherwise a
+            // graceful restart can still leave the previous one-time refresh token on disk.
+            console.log('  → Flushing persisted session...');
+            await this.sessionPersistChain;
+            console.log('  ✓ Persisted session flushed');
 
             // Mark device offline
             console.log('  → Marking device offline...');
