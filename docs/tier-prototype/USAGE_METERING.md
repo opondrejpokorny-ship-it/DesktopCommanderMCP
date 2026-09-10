@@ -32,7 +32,7 @@ Content payload bytes accepted by successful side-effecting content tools:
 - `edit_block`: UTF-8 bytes of `new_string`, or serialized `content` for structured edits
 - `write_pdf`: UTF-8/serialized bytes of `content`
 
-Denied, approval-required, or failed writes add zero `writtenBytes`.
+Denied or failed writes add zero `writtenBytes`. A private Commercial policy layer may also prevent a paid action before the public handler runs; such an action likewise contributes no accepted write payload.
 
 Terminal commands can write arbitrary files, but the server cannot reliably infer resulting disk bytes from command text. Terminal execution is therefore not guessed into `writtenBytes`.
 
@@ -64,15 +64,9 @@ That fail-open behavior is intentional while metering is observational only.
 
 ## Control Center contract
 
-The human-only access-control CLI exposes:
+The public/shared Control Center exposes the read-only Usage surface directly from the shared metering implementation. The public repository does not depend on the removed paid access-control CLI for Usage display.
 
-`access-control usage`
-
-and includes `usage` in:
-
-`access-control state`
-
-This lets the standalone Control Center display real counters without owning or duplicating the metering logic.
+Private Commercial extensions may compose additional paid views through the versioned Control Center attachment contract, but they do not own or duplicate the Free usage counters.
 
 ## Future decisions intentionally deferred
 
@@ -85,4 +79,4 @@ Before adding a quota, observe real usage and then decide:
 - paid-tier behavior,
 - reporting/aggregation.
 
-Any future quota gate must remain a product entitlement layer and must not replace or bypass existing policy, path validation, blocked-command, or other upstream guardrails.
+Any future quota gate must remain a product entitlement layer and must not replace or bypass existing path validation, blocked-command, command validation, core-safety, or other upstream guardrails.

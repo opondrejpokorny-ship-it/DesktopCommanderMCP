@@ -56,6 +56,10 @@ jobs:
 
       - name: Run prototype test suite
         run: npm test
+
+      - name: Verify public Free/shared CI boundary
+        run: node test/test-r3-public-ci-boundary.js
+
       - name: Run workflow MCP integrations
         run: |
           node test/integration/project-workflow.js

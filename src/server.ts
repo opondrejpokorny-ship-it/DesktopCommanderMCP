@@ -66,6 +66,7 @@ import {
 import { getConfig, setConfigValue } from './tools/config.js';
 import { getUsageStats } from './tools/usage.js';
 import { buildProgressReport } from './progress/progress-reporter.js';
+import { CapabilityRegistry } from './entitlements/capabilities.js';
 import { applyCoreSafetyGate } from './runtime/core-safety.js';
 import { applyActiveWorkEnforcementGate } from './workflow/active-work-enforcement.js';
 import { applyProgressEnforcementGate } from './workflow/progress-enforcement.js';
@@ -1441,11 +1442,39 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
     try {
         runtimeAccess = await resolveRuntimeAccess();
         runtimePolicyHook = getRuntimeServices().policyHook;
+        const policyArgs = args === undefined ? undefined : structuredClone(args);
+        // Treat the Commercial hook as an attachment boundary: it may inspect
+        // capabilities, but mutations must never affect the registry later used
+        // by shared/Free handlers.
+        const policyCapabilities = new CapabilityRegistry(runtimeAccess.entitlement.capabilities);
         policyGate = await runtimePolicyHook.preflight(
             name,
-            args,
-            runtimeAccess.capabilities,
+            policyArgs,
+            policyCapabilities,
         );
+        const validAllow =
+            policyGate?.decision === 'allow' &&
+            policyGate.allowed === true &&
+            policyGate.result === undefined;
+        const validPolicyContent = (content: unknown): boolean =>
+            Array.isArray(content) && content.every((entry) => {
+                if (entry === null || typeof entry !== 'object') return false;
+                const item = entry as Record<string, unknown>;
+                if (item.type === 'text') return typeof item.text === 'string';
+                if (item.type === 'image' || item.type === 'audio') {
+                    return typeof item.data === 'string' && typeof item.mimeType === 'string';
+                }
+                return false;
+            });
+        const validBlocked =
+            (policyGate?.decision === 'deny' || policyGate?.decision === 'require_approval') &&
+            policyGate.allowed === false &&
+            policyGate.result !== undefined &&
+            (policyGate.result.isError === undefined || typeof policyGate.result.isError === 'boolean') &&
+            validPolicyContent(policyGate.result.content);
+        if (!validAllow && !validBlocked) {
+            throw new Error('Commercial policy returned an invalid or contradictory gate result.');
+        }
     } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         const failureResult: ServerResult = {

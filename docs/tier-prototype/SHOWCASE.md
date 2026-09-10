@@ -1,225 +1,136 @@
-# Free / Pro / Team Prototype — Showcase
+# Free / Pro / Team — Two-Product Showcase
 
-## What this prototype demonstrates
+## Product story
 
-The public Desktop Commander MCP already gives AI powerful access to a real computer.
+Desktop Commander gives AI access to a real computer.
 
-This prototype explores a possible business layer on top:
+> **Free = access. Pro/Team = control.**
 
-> **Free gives AI access. Pro and Team give the user control over that access.**
+Open-Core R3 turns that product story into two independently testable products rather than paid switches hidden inside one public source tree.
 
-It is intentionally built as two pieces.
+## Product A — Desktop Commander Free
 
-### 1. Enforcement
-
-Repository:
+Public repository:
 
 `opondrejpokorny-ship-it/DesktopCommanderMCP`
 
-Branch:
+The public product owns:
 
-`prototype/free-pro-team`
+- normal Desktop Commander functionality and upstream safeguards;
+- shared core-safety and workflow controls;
+- Operational Memory and observational Usage surfaces;
+- Free capability composition;
+- Commercial Contract v1;
+- Control Center Contract v1 and the shared/Free local host.
 
-Responsibilities:
+The R3 extraction removes active proprietary Pro/Team policy, approval, audit and paid Control Center implementation from the public source and package artifact.
 
-- evaluate policies before MCP tool execution,
-- enforce folder and command rules,
-- create exact one-time approvals,
-- preserve existing Desktop Commander guardrails,
-- record Team audit events,
-- expose a human-only local control CLI.
+## Product B — Desktop Commander Commercial
 
-### 2. Human Control Center
+Private repository:
 
-Repository:
+`opondrejpokorny-ship-it/unoficialDesktopCommanderCommercial`
 
-`opondrejpokorny-ship-it/desktop-commander-control-center`
+Commercial owns the proprietary control layer:
 
-Responsibilities:
+- Pro folder/read/write/terminal/command policy;
+- exact-action human approvals;
+- policy profiles;
+- paid Control Center extensions;
+- Team device governance;
+- Team privacy-conscious audit.
 
-- display Free / Pro / Team state,
-- display observational returned/write usage counters,
-- edit policy through the enforcement CLI,
-- show pending approvals,
-- approve once / deny,
-- show per-device rules and audit events.
+Team extends Pro inside this Commercial product. Commercial consumes Free only through declared public package/contracts, not public `src/**` internals.
 
-The Control Center is deliberately not an MCP tool. The AI client does not get a direct mechanism to approve its own request.
+## Security composition
+
+The intended execution shape is:
+
+```text
+MCP request
+  -> shared Free/core-safety checks
+  -> Commercial preflight when explicitly attached
+  -> ALLOW / DENY / REQUIRE APPROVAL
+  -> existing Desktop Commander validation/handler
+  -> side effect
+```
+
+Commercial ALLOW never bypasses public/upstream safeguards. Approval is not authorization to skip blocked commands, allowed-directory checks, path validation, command validation or handler protections.
+
+The public server also isolates handler arguments from Commercial preflight: the hook receives a deep-cloned JSON-compatible request, while the already-gated original arguments continue to the handler. Mutation, nested mutation, synchronous throw and asynchronous rejection are covered by negative regression tests.
 
 ## Tier concept
 
 | Capability | Free | Pro | Team |
 | --- | --- | --- | --- |
-| AI can use Desktop Commander tools | Yes | Yes | Yes |
-| Folder policies | — | Yes | Yes |
-| Read-only / blocked folders | — | Yes | Yes |
-| Writes requiring approval | — | Yes | Yes |
-| Command allow / approval / block rules | — | Yes | Yes |
-| Policy profiles | Basic | Yes | Yes |
-| Device-specific permissions | — | — | Yes |
-| Human approval queue | — | Yes | Yes |
-| Structured audit log | — | Optional/local | Yes |
-| Advanced workflow skills | Basic | More | Full pack |
-| Private/self-hosted Remote MCP concept | — | — | Future Team/Enterprise |
+| Core Desktop Commander access | Yes | Yes | Yes |
+| Shared Memory / Usage | Yes | Yes | Yes |
+| Folder and command policy | — | Yes | Yes |
+| Exact-action approvals | — | Yes | Yes |
+| Policy profiles | — | Yes | Yes |
+| Device-specific governance | — | — | Yes |
+| Centralized Team audit/control | — | — | Yes |
 
-This table represents the prototype/product idea, not an official Desktop Commander pricing promise.
+This is a prototype/product concept, not an official Desktop Commander pricing promise.
 
-## Architecture
+## Approval security proof
 
-```text
-AI client
-   |
-Desktop Commander MCP
-   |
-central policy gate
-   |
-   +-- ALLOW ----------------------> existing DC handler
-   |
-   +-- DENY -----------------------> no side effect
-   |
-   +-- REQUIRE_APPROVAL -----------> pending approval
-                                        |
-                              Standalone Control Center
-                                        |
-                                  human approves
-                                        |
-                              human-only local CLI
-                                        |
-                              exact retry allowed once
-                                        |
-                                 existing DC handler
-                                        |
-                                    Team audit
-```
+The verified private Commercial suite covers the key negative cases:
 
-Existing Desktop Commander filesystem and command checks still run after policy ALLOW. The prototype adds governance; it does not replace upstream safety checks.
+- no side effect before approval;
+- exact-action fingerprinting;
+- changed arguments fail;
+- denied and expired approvals fail;
+- approvals are one-time and reused retries fail;
+- concurrent same-action consumption is serialized;
+- malformed approval storage fails closed.
 
-## Real E2E proof
+## Privacy boundaries
 
-The strongest demo is not a mocked UI test.
+Approval and audit persistence must not store raw file contents, unnecessary raw MCP arguments, credentials, or raw terminal commands.
 
-A real cross-repository test was run on a connected Windows Remote Device:
+The human approval mutation path belongs outside the ordinary model-facing MCP surface. UI restrictions alone are not a security boundary.
 
-1. Control Center set **Team**.
-2. It used the real Remote Device ID.
-3. A folder was configured as **writes require approval** for that device.
-4. A real MCP client invoked `write_file`.
-5. Desktop Commander blocked execution before the write handler changed the file.
-6. Disk verification proved the file was unchanged.
-7. The pending approval appeared in the separate Control Center.
-8. The human approved it once.
-9. The exact MCP retry reached the normal Desktop Commander write handler.
-10. Disk verification proved the file changed.
-11. The approval was consumed and could not be reused.
-12. Audit contained policy, approval and execution events.
-13. The written file content was absent from approval and audit storage.
-
-Observed cross-repo result:
-
-```text
-CROSS-REPO E2E PASS
-tier: Team
-device-scoped rule: PASS
-blocked before mutation: PASS
-human approval: PASS
-exact retry: PASS
-real disk write after approval: PASS
-audit lifecycle: PASS
-raw file content persisted in approval/audit: NO
-```
+Desktop Commander is **not a complete OS security sandbox**. It still executes with the permissions of its host context, and higher-risk deployments should use appropriate OS/VM/container isolation as an additional boundary.
 
 ## Observational usage metering
 
-The prototype also measures data usage without enforcing a quota. It tracks aggregate finalized MCP result bytes returned to the AI plus accepted write/edit payload bytes. It deliberately does not charge implementation-dependent physical disk scan bytes.
+Free/shared metering records aggregate finalized MCP result bytes returned to the AI plus accepted write/edit payload bytes. It does not infer physical disk scan bytes or protocol overhead.
 
-Only `returnedBytes`, `writtenBytes`, and `periodStartedAt` are persisted. Metering problems fail open and do not alter tool execution. There is currently no fixed Free allowance or automatic period reset; those product decisions are deferred until real usage has been observed.
+Persisted usage data is aggregate counters only. There is currently no enforced Free quota; allowance and reset semantics remain a future product decision.
 
-## Security choices
+## Shared workflow capabilities
 
-The prototype deliberately includes:
+Free retains shared project workflow, Active Work coordination, progress enforcement and Operational Memory surfaces. Those shared controls are separate from the removed Commercial policy implementation and must continue to work in the standalone public product.
 
-- fail-closed invalid policy handling,
-- one-time expiring approvals,
-- exact action fingerprints,
-- policy files outside ordinary MCP config mutation,
-- path normalization and nested-path precedence,
-- token-aware command matching,
-- privacy-safe Remote Device identity discovery,
-- no Remote Device access/refresh tokens in Control Center state,
-- no raw file contents in approval/audit storage,
-- no raw terminal command text in audit,
-- loopback-only standalone Control Center,
-- Host and mutation-Origin validation,
-- random local control token,
-- CSP / frame blocking / no-store,
-- AI-inaccessible human approval CLI.
+Progress product framing remains:
 
-### Important boundary
+- Free: approximate percentage remaining;
+- paid product: additional commercial presentation/controls only when actually attached and verified.
 
-This is **not a complete OS sandbox**.
+## R3 completion proof
 
-Desktop Commander executes with the local user's permissions. For high-risk or enterprise environments, OS / VM / container isolation remains the stronger security boundary.
+Do not present the two-product split as complete merely because paid public files were deleted. Completion requires:
 
-## Operational-memory skill
+1. public Free extraction merged into `prototype/free-pro-team` with exact merged-SHA CI GREEN;
+2. private Commercial repinned to an artifact built from that final public SHA;
+3. clean independent Free and Commercial clone/build/test/run proofs;
+4. real MCP cross-product security composition proof;
+5. public source/package absence of active paid implementation;
+6. private absence of public deep imports;
+7. documentation and Active Work Registry synchronized.
 
-The prototype also includes a `software-project-workflow` skill for longer autonomous work:
+## Demo framing after completion
 
-**Inspect → Plan → Implement → Test → Review → Document**
+The strongest owner-facing proof is architectural and behavioral:
 
-It maintains a model for:
+- clone/build/run Free by itself;
+- show the public source/package contains no active proprietary Pro/Team implementation;
+- attach the private Commercial product through explicit contracts;
+- demonstrate a protected action stopping before side effect;
+- approve once outside ordinary MCP;
+- retry exactly and execute through normal Desktop Commander safeguards;
+- show changed/reused/denied/expired retries do not execute;
+- show Team device/audit controls only from Commercial.
 
-- current plan,
-- whole-lifecycle progress,
-- work log,
-- failed attempts and lessons,
-- verification,
-- resumable checkpoint.
-
-The real MCP tool `report_task_progress` applies the configured tier to each update:
-
-- **Free:** approximate percentage remaining.
-- **Pro / Team:** percentage remaining plus a rounded estimated time remaining.
-
-ETA is explicitly approximate rather than guaranteed. The reporter uses only progress numbers and a short phase label; it does not need file contents or raw terminal commands.
-
-This is different from generic knowledge management: it records how work was executed so a later session can continue without repeating the same mistakes.
-
-## Verification
-
-Verified before this documentation-only update:
-
-- focused policy tests: PASS,
-- real MCP policy integrations: PASS,
-- full prototype suite: PASS,
-- clean upstream baseline suite: PASS,
-- standalone Control Center CI: PASS,
-- local TypeScript build: PASS,
-- real cross-repository live proof: PASS.
-
-## 60–90 second demo
-
-1. Open standalone Control Center.
-2. Select **Team**.
-3. Select the detected Remote Device.
-4. Add a demo folder → **Writes need approval** → **This device**.
-5. Ask AI to edit a file there.
-6. Show the MCP response: approval required.
-7. Show that the file did not change.
-8. Show the pending approval in Control Center.
-9. Click **Approve once**.
-10. Ask AI to repeat the exact edit.
-11. Show that the file changed.
-12. Show the audit trail.
-
-That single flow demonstrates the product thesis without needing billing, hosted infrastructure, or a marketplace.
-
-## Intentionally deferred
-
-- Server Builder / hosted computer.
-- Billing.
-- Skills marketplace.
-- Full private/self-hosted relay implementation.
-- Enterprise SSO / centralized RBAC.
-- Background workers.
-
-Those are potential product extensions after the access-control concept is proven.
+No deployment claim should be made unless an exact verified version has separately been authorized, deployed and live-checked.

@@ -1,10 +1,10 @@
-# Control Center MVP
+# Control Center — Public Free / Shared Host
 
-The first Control Center is intentionally local and dependency-free.
+The public Control Center is intentionally local and dependency-free. After Open-Core R3 extraction, the public repository owns only the shared/Free host and shared extensions. Pro/Team policy, approvals, device governance and audit extensions belong to the private Commercial product.
 
 ## Start
 
-After the project is built:
+After the public project is built:
 
 ```bash
 node dist/npm-scripts/control-center.js
@@ -16,59 +16,35 @@ Default URL:
 http://127.0.0.1:17831/
 ```
 
-A custom port can be passed as the first argument or with
-`DESKTOP_COMMANDER_CONTROL_CENTER_PORT`.
+A custom port can be passed as the first argument or with `DESKTOP_COMMANDER_CONTROL_CENTER_PORT`.
 
-## Current screens
+## Public Free screens
 
-- Current tier and profile.
-- Device identity.
-- Pending approvals.
-- Approve / Deny.
-- Recent Team audit events.
-- Active policy summary.
+The public composition currently includes shared/Free surfaces such as:
 
-The page refreshes automatically and never receives raw MCP arguments or file
-contents from the approval store.
+- Operational Memory;
+- observational Usage metering.
+
+The public host also exposes the versioned Control Center attachment contract so the private Commercial product can attach its own Pro/Team extensions without importing public `src/**` or undeclared `dist/**` internals.
 
 ## Security defaults
 
-This prototype intentionally does **not** expose the dashboard on the LAN.
+The public host intentionally binds to loopback only.
 
-- Binds to loopback only.
-- Rejects non-local Host headers (basic DNS-rebinding defense).
-- Generates a random session token on every launch.
-- Requires the token on all API endpoints.
-- Mutation requests also reject non-local browser origins.
+- Requires a random local control token for API requests.
+- Rejects non-local Host headers.
+- Rejects non-local mutation origins where mutations exist.
 - Sends `Cache-Control: no-store`.
 - Uses CSP and blocks framing.
-- Dynamic approval/audit values are inserted with DOM `textContent`, not
-  `innerHTML`.
 
-The session token is embedded only in the locally served page so the browser can
-call the local API. This is a prototype local-session boundary, not OS-level
-authentication.
+The local token is a prototype browser-session boundary, not OS-level authentication.
 
-## API
+## Public API ownership
 
-The web UI currently uses:
+Shared/Free APIs are defined by the public host and its attached Free extensions. Paid Pro/Team API routes are not implemented in this public source tree.
 
-- `GET /api/state`
-- `POST /api/approvals/:id/approve`
-- `POST /api/approvals/:id/deny`
+The private Commercial repository is responsible for its policy/approval/audit routes and UI when those extensions are attached through the public Control Center contract.
 
-Every API request requires the `X-DC-Control-Token` header.
+## Product boundary
 
-## Next UI iteration
-
-The next useful additions are:
-
-1. Policy profile selector.
-2. Folder permission editor.
-3. Command permission editor.
-4. Device list / per-device policy assignment.
-5. Audit filters and pagination.
-
-For Team-grade multi-process operation, persistence should move behind a single
-local control service or transactional database rather than independent JSON
-file writers.
+Removing paid extensions from public composition must not remove shared Free security or workflow controls. Public `src/runtime/core-safety.ts`, existing Desktop Commander validation and handler safeguards remain authoritative for Free.

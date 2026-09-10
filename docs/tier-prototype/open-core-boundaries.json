@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "purpose": "Source ownership contract for the future public Free plus private Pro/Team extraction",
+  "purpose": "Source ownership contract for the public Free/shared-core repository after Commercial extraction",
   "defaultOwner": "public",
   "allowedDependencies": {
     "public": ["public"],
@@ -9,21 +9,11 @@
     "demo": ["public", "pro", "team", "demo"]
   },
   "ownershipRules": [
-    { "kind": "file", "path": "src/index.ts", "owner": "demo" },
-    { "kind": "directory", "path": "src/prototype", "owner": "demo" },
-    { "kind": "directory", "path": "src/policy", "owner": "pro" },
-    { "kind": "file", "path": "src/policy/audit-store.ts", "owner": "team" },
-    { "kind": "file", "path": "src/policy/device-identity.ts", "owner": "team" },
-    { "kind": "file", "path": "src/policy/policy-runtime.ts", "owner": "pro" },
-    { "kind": "file", "path": "src/policy/policy-gate.ts", "owner": "pro" },
+    { "kind": "file", "path": "src/index.ts", "owner": "public" },
     { "kind": "file", "path": "src/control-center/contract.ts", "owner": "public" },
     { "kind": "file", "path": "src/control-center/host.ts", "owner": "public" },
-    { "kind": "file", "path": "src/control-center/pro-extension.ts", "owner": "pro" },
-    { "kind": "file", "path": "src/control-center/team-extension.ts", "owner": "team" },
-    { "kind": "file", "path": "src/control-center/demo-extension.ts", "owner": "demo" },
-    { "kind": "file", "path": "src/control-center/server.ts", "owner": "demo" },
-    { "kind": "file", "path": "src/npm-scripts/access-control.ts", "owner": "demo" },
-    { "kind": "file", "path": "src/npm-scripts/control-center.ts", "owner": "demo" }
+    { "kind": "file", "path": "src/control-center/server.ts", "owner": "public" },
+    { "kind": "file", "path": "src/npm-scripts/control-center.ts", "owner": "public" }
   ],
   "requiredPublicContracts": [
     "src/entitlements/capabilities.ts",

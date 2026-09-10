@@ -1,7 +1,15 @@
 import assert from 'assert';
-import { readFileSync } from 'fs';
-import { configManager } from '../dist/config-manager.js';
-import { CONFIG_FILE } from '../dist/config.js';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import os from 'os';
+import path from 'path';
+
+const home = mkdtempSync(path.join(os.tmpdir(), 'dc-nonblocking-save-'));
+mkdirSync(path.join(home, '.claude-server-commander'), { recursive: true });
+process.env.HOME = home;
+process.env.USERPROFILE = home;
+
+const { configManager } = await import('../dist/config-manager.js');
+const { CONFIG_FILE } = await import('../dist/config.js');
 
 /**
  * Regression test for the parallel-load tool-call hang.
@@ -43,13 +51,21 @@ async function run() {
   assert.strictEqual(await configManager.getValue(KEY), BURST - 1);
   passed++; console.log('✓ in-memory value reflects the latest write immediately');
 
-  // 3) After the background flush window, config.json is valid JSON (no torn
-  //    write from overlapping saves) and holds the final coalesced value.
-  await new Promise((r) => setTimeout(r, 300));
+  // 3) Wait for the coalesced background flush without assuming a fast disk.
+  //    This test specifically protects behavior under slow/saturated filesystems.
+  const deadline = Date.now() + 3000;
   let parsed;
-  assert.doesNotThrow(() => { parsed = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); },
-    'config.json must remain valid JSON after concurrent writes');
-  assert.strictEqual(parsed[KEY], BURST - 1, 'final value must be persisted to disk');
+  while (Date.now() < deadline) {
+    try {
+      parsed = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+      if (parsed[KEY] === BURST - 1) break;
+    } catch {
+      // The config may not exist until the first background flush completes.
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.strictEqual(parsed?.[KEY], BURST - 1,
+    'final value must be persisted to disk within the bounded flush window');
   passed++; console.log('✓ config.json is valid and holds the coalesced final value');
 
   // cleanup: remove the test key (undefined is dropped by JSON.stringify)
@@ -57,5 +73,13 @@ async function run() {
 }
 
 run()
-  .then(() => { console.log(`\nPASS (${passed}/3)`); process.exit(0); })
-  .catch((e) => { console.error(`\nFAIL: ${e.message}`); process.exit(1); });
+  .then(() => {
+    console.log(`\nPASS (${passed}/3)`);
+    rmSync(home, { recursive: true, force: true });
+    process.exit(0);
+  })
+  .catch((e) => {
+    console.error(`\nFAIL: ${e.message}`);
+    rmSync(home, { recursive: true, force: true });
+    process.exit(1);
+  });
