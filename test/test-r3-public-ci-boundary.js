@@ -29,6 +29,8 @@ for (const required of [
 for (const required of ['test/test-project-workflow-coordinator.js', 'test/integration/active-work-enforcement.js', 'test/integration/progress-enforcement.js', 'test/integration/r3-commercial-hook-core-safety.js']) {
   assert.ok(coreSafety.includes(required), `Free core-safety CI missing ${required}`);
 }
+assert.match(coreSafety, /Checkout public Free\/shared tree[\s\S]{0,220}fetch-depth:\s*0/,
+  'Free core-safety CI must fetch full history before diffing against origin/prototype/free-pro-team');
 
 assert.match(prototypeCi, /run:\s*npm test/, 'Prototype CI must retain the broad public regression suite');
 assert.ok(prototypeCi.includes('test/test-r3-public-ci-boundary.js'),
