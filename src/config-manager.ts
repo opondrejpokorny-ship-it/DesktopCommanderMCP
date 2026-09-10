@@ -51,6 +51,7 @@ class ConfigManager {
   private configPath: string;
   private config: ServerConfig = {};
   private initialized = false;
+  private initializationPromise: Promise<void> | null = null;
   private _isFirstRun = false; // Track if this is the first run (config was just created)
   // Serializes all disk writes so concurrent saves can't corrupt config.json.
   private writeChain: Promise<void> = Promise.resolve();
@@ -69,49 +70,63 @@ class ConfigManager {
   }
 
   /**
-   * Initialize configuration - load from disk or create default
+   * Initialize configuration - load from disk or create default.
+   * Concurrent callers share one initialization so a slower stale read cannot
+   * overwrite an already acknowledged mutation from another caller.
    */
-  async init() {
+  async init(): Promise<void> {
     if (this.initialized) return;
+    if (this.initializationPromise) return this.initializationPromise;
 
-    try {
-      // Ensure config directory exists
-      const configDir = path.dirname(this.configPath);
-      if (!existsSync(configDir)) {
-        await mkdir(configDir, { recursive: true });
-      }
-
-      // Check if config file exists
+    const initialization = (async () => {
       try {
-        await fs.access(this.configPath);
-        // Load existing config
-        const configData = await fs.readFile(this.configPath, 'utf8');
-        this.config = JSON.parse(configData);
-        this._isFirstRun = false;
+        // Ensure config directory exists
+        const configDir = path.dirname(this.configPath);
+        if (!existsSync(configDir)) {
+          await mkdir(configDir, { recursive: true });
+        }
 
-        // Configs created before this marker existed must not receive the
-        // welcome page retroactively when client eligibility changes later.
-        // New configs get this field from getDefaultConfig() and remain
-        // eligible across restarts until their first initialization.
-        if (this.config['welcomeOnboardingEligible'] === undefined) {
-          this.config['welcomeOnboardingEligible'] = false;
-          this.config['pendingWelcomeOnboarding'] = false;
+        // Check if config file exists
+        try {
+          await fs.access(this.configPath);
+          // Load existing config
+          const configData = await fs.readFile(this.configPath, 'utf8');
+          this.config = JSON.parse(configData);
+          this._isFirstRun = false;
+
+          // Configs created before this marker existed must not receive the
+          // welcome page retroactively when client eligibility changes later.
+          // New configs get this field from getDefaultConfig() and remain
+          // eligible across restarts until their first initialization.
+          if (this.config['welcomeOnboardingEligible'] === undefined) {
+            this.config['welcomeOnboardingEligible'] = false;
+            this.config['pendingWelcomeOnboarding'] = false;
+            await this.saveConfig();
+          }
+        } catch (error) {
+          // Config file doesn't exist, create default
+          this.config = this.getDefaultConfig();
+          this._isFirstRun = true; // This is a first run!
           await this.saveConfig();
         }
-      } catch (error) {
-        // Config file doesn't exist, create default
-        this.config = this.getDefaultConfig();
-        this._isFirstRun = true; // This is a first run!
-        await this.saveConfig();
-      }
-      this.config['version'] = VERSION;
+        this.config['version'] = VERSION;
 
-      this.initialized = true;
-    } catch (error) {
-      console.error('Failed to initialize config:', error);
-      // Fall back to default config in memory
-      this.config = this.getDefaultConfig();
-      this.initialized = true;
+        this.initialized = true;
+      } catch (error) {
+        console.error('Failed to initialize config:', error);
+        // Fall back to default config in memory
+        this.config = this.getDefaultConfig();
+        this.initialized = true;
+      }
+    })();
+
+    this.initializationPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.initializationPromise === initialization) {
+        this.initializationPromise = null;
+      }
     }
   }
 

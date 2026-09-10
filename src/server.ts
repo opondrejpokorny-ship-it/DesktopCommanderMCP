@@ -66,6 +66,7 @@ import {
 import { getConfig, setConfigValue } from './tools/config.js';
 import { getUsageStats } from './tools/usage.js';
 import { buildProgressReport } from './progress/progress-reporter.js';
+import { CapabilityRegistry } from './entitlements/capabilities.js';
 import { applyCoreSafetyGate } from './runtime/core-safety.js';
 import { applyActiveWorkEnforcementGate } from './workflow/active-work-enforcement.js';
 import { applyProgressEnforcementGate } from './workflow/progress-enforcement.js';
@@ -1442,10 +1443,14 @@ async function handleCallToolRequest(request: CallToolRequest): Promise<ServerRe
         runtimeAccess = await resolveRuntimeAccess();
         runtimePolicyHook = getRuntimeServices().policyHook;
         const policyArgs = args === undefined ? undefined : structuredClone(args);
+        // Treat the Commercial hook as an attachment boundary: it may inspect
+        // capabilities, but mutations must never affect the registry later used
+        // by shared/Free handlers.
+        const policyCapabilities = new CapabilityRegistry(runtimeAccess.entitlement.capabilities);
         policyGate = await runtimePolicyHook.preflight(
             name,
             policyArgs,
-            runtimeAccess.capabilities,
+            policyCapabilities,
         );
         const validAllow =
             policyGate?.decision === 'allow' &&

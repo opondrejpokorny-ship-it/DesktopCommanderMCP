@@ -34,7 +34,9 @@ These should be reused, not replaced.
 
 Important upstream limitation: directory restrictions and command blocklists are guardrails, not a full sandbox. Terminal commands can reach outside `allowedDirectories`, and blocklists can have bypass classes. The prototype must not claim to be an OS security boundary.
 
-## Proposed request flow
+## Historical pre-R3.5 / private Commercial policy design
+
+The paid policy/approval flow below records the earlier public prototype design and the behavior now owned by the private Commercial product. It is **not** implemented by standalone public Free.
 
 ```
 AI client
@@ -60,7 +62,7 @@ Policy Engine
                              Audit event
 ```
 
-## Best interception point
+## Current shared interception point
 
 The central `CallToolRequestSchema` handler in `src/server.ts` remains the interception point, but the shared server no longer imports prototype/commercial policy code directly.
 
@@ -78,7 +80,7 @@ MCP request
 
 The default and public runtime is **Free**: `FreeEntitlementProvider` plus `NoopPolicyHook`. In the R3.5 extraction branch, both the normal public entry point and the dedicated Free package entry point use these shared defaults. Pro/Team behavior lives in the private Commercial product and attaches only through the versioned Commercial and Control Center contracts. The previously public prototype adapters remain part of Git history but are no longer active public source.
 
-Current capability examples include:
+Versioned capability identifiers used by the public attachment contracts and private Commercial composition include:
 
 - `policy.filesystem`
 - `policy.command`
@@ -93,9 +95,9 @@ The shared core-safety gate still protects the project-workflow control plane ev
 
 A local `tier` value in a policy file is inert in the public Free composition and cannot activate paid capabilities or approvals. Production Commercial entitlement/licensing authority remains outside the public Free product.
 
-## Initial policy model
+## Private Commercial policy model
 
-Every evaluated action should normalize to:
+The following paid semantics describe the private Commercial implementation (and the pre-R3.5 public prototype history), not standalone Free. Every evaluated Commercial action normalizes to:
 
 ```ts
 type PolicyDecision = 'allow' | 'deny' | 'require_approval';
@@ -121,19 +123,19 @@ Initial normalized actions:
 - workflow.change
 - external.open
 
-### Restriction hardening semantics
+### Private Commercial restriction hardening semantics
 
 - Filesystem policy resources and folder-rule prefixes are canonicalized before policy matching, so symlink/junction aliases are evaluated against their real target.
 - `Read Only` is an absolute ceiling for write/move/delete, terminal execution, process/search termination, config changes, workflow mutations, and browser-opening feedback. Explicit `allow` rules cannot reopen those mutation classes. `project_workflow status` remains readable; `start`, `resume`, `record`, `learn`, and `finish` are mutations.
 - Managed command-prefix rules inspect common shell wrappers (`cmd`, PowerShell/pwsh, bash/sh/zsh/dash) in addition to direct commands. They are still command guardrails, not a complete shell-language or OS sandbox.
 - Folder rules are scoped rules, not an implicit allowlist. A single `read_write` folder rule does not deny unmatched folders; use a broader blocked/read-only rule plus narrower exceptions when default-deny behavior is required.
-- `Full Access` intentionally removes prototype default approval prompts. Because it permits arbitrary terminal execution under the same OS identity, neither prototype folder rules nor MCP filesystem control-plane denies can honestly prevent every filesystem effect performed *inside* that terminal. Stronger containment requires OS/container/process isolation or a narrower terminal policy. Existing upstream `allowedDirectories` and `blockedCommands` remain defense-in-depth guardrails and are not represented as a complete terminal sandbox.
+- In the verified private Commercial composition, `Full Access` intentionally removes Commercial default approval prompts. Because it permits arbitrary terminal execution under the same OS identity, neither Commercial folder rules nor MCP filesystem control-plane denies can honestly prevent every filesystem effect performed *inside* that terminal. Stronger containment requires OS/container/process isolation or a narrower terminal policy. Existing upstream `allowedDirectories` and `blockedCommands` remain defense-in-depth guardrails and are not represented as a complete terminal sandbox.
 
-## Approval model
+## Private Commercial approval model
 
-First version should avoid holding an MCP request open indefinitely.
+The private Commercial approval flow inherited from the earlier prototype avoids holding an MCP request open indefinitely.
 
-Recommended flow:
+Commercial flow:
 
 1. Policy returns `require_approval`.
 2. Original action is not executed.
@@ -145,9 +147,9 @@ Recommended flow:
 
 This is easier to reason about and demo than a long-lived suspended MCP request.
 
-## Audit model
+## Private Commercial audit model
 
-Record policy-relevant events only; do not log file contents or secrets.
+The private Commercial audit layer records policy-relevant events only; it does not log file contents or secrets.
 
 Suggested fields:
 
@@ -163,6 +165,8 @@ Suggested fields:
 - duration
 
 ## Tier behavior
+
+Free below describes the standalone public product. Pro and Team describe behavior owned by the private Commercial product when attached through the public contracts.
 
 ### Free
 
@@ -207,23 +211,23 @@ The coordinator also maintains a separate append-only operational-memory JSONL l
 
 The MCP initialization response also includes workflow guidance so compatible clients can automatically start/resume the coordinator for non-trivial repository work and use returned operational lessons to avoid unchanged failed approaches. This guidance is advisory because host/client behavior is implementation-dependent; the persistent coordinator is the runtime source of lifecycle state.
 
-Workflow control-plane files are denied through ordinary filesystem write/move/delete paths, including canonicalized symlink aliases. Agent-controlled MCP evidence cannot mint `user_authorization`; authorization-required stages are reserved for a trusted human/control-plane signal. This coordinator does not turn Desktop Commander into a security sandbox and does not prevent a sufficiently privileged terminal/OS process from altering local files. Existing policy, approvals, allowed-directory checks, blocked-command checks and upstream validation remain authoritative.
+Workflow control-plane files are denied through ordinary filesystem write/move/delete paths, including canonicalized symlink aliases. Agent-controlled MCP evidence cannot mint `user_authorization`; authorization-required stages are reserved for a trusted human/control-plane signal. This coordinator does not turn Desktop Commander into a security sandbox and does not prevent a sufficiently privileged terminal/OS process from altering local files. Public Free shared core-safety, allowed-directory checks, blocked-command checks and upstream validation remain authoritative. When private Commercial is attached, its policy and approvals supplement rather than replace those protections.
 
 External Drive/GitHub/CI evidence is recorded as an agent/provider attestation unless independently verified by Desktop Commander. No provider credentials are stored in workflow state.
 
-## First vertical slice
+## Historical pre-R3.5 first vertical slice
 
-The first functional demo should be deliberately small:
+The earlier public paid prototype used this deliberately small demo; equivalent paid behavior is now owned by private Commercial rather than standalone Free:
 
 1. Mark one folder as `write: approval_required`.
 2. Attempt `write_file` through Desktop Commander.
-3. Policy engine blocks execution and creates an approval request.
+3. Commercial policy blocks execution and creates an approval request.
 4. Approve the exact request.
 5. Retry through an approved-action execution path.
 6. File changes successfully.
-7. Audit log shows request -> approval -> execution.
+7. Commercial audit shows request -> approval -> execution.
 
-Once this works end-to-end, expand to commands and multiple devices.
+This remains historical design context, not a claim that the public Free repository implements approvals.
 
 
 ## Open-core composition proof

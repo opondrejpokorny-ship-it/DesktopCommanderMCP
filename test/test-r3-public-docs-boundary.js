@@ -28,4 +28,12 @@ assert.match(roadmap, /Historical pre-R3\.5 milestone/i,
 assert.doesNotMatch(roadmap, /The existing prototype entry point adds the entitlement\/policy adapter/i,
   'Roadmap must not describe the removed public paid adapter as current behavior');
 
+const architecture = await fs.readFile(path.join(root, 'docs', 'tier-prototype', 'ARCHITECTURE.md'), 'utf8');
+assert.match(architecture, /Historical pre-R3\.5 \/ private Commercial policy design/i,
+  'Architecture must explicitly scope the legacy paid policy/approval model as historical/private Commercial');
+assert.doesNotMatch(architecture, /Existing policy, approvals, allowed-directory checks, blocked-command checks and upstream validation remain authoritative\./i,
+  'Architecture must not imply public Free still owns paid policy/approval enforcement');
+assert.match(architecture, /Public Free shared core-safety[\s\S]{0,300}private Commercial[\s\S]{0,200}supplement/i,
+  'Architecture must state that private Commercial policy supplements rather than replaces Free/shared safeguards');
+
 console.log('✅ Public docs distinguish historical paid prototype behavior from current Free functionality');

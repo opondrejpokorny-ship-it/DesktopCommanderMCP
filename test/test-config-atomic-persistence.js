@@ -15,7 +15,63 @@ process.env.USERPROFILE = home;
 
 const { configManager } = await import('../dist/config-manager.js');
 const originalWriteFile = fs.writeFile;
+const originalReadFile = fs.readFile;
 const failureMessage = 'simulated interrupted config write';
+
+async function proveInitializationSingleFlight() {
+  let configReadCount = 0;
+  let firstReadCapturedResolve;
+  let releaseFirstReadResolve;
+  let secondReadStartedResolve;
+  const firstReadCaptured = new Promise((resolve) => { firstReadCapturedResolve = resolve; });
+  const releaseFirstRead = new Promise((resolve) => { releaseFirstReadResolve = resolve; });
+  const secondReadStarted = new Promise((resolve) => { secondReadStartedResolve = resolve; });
+
+  fs.readFile = async (target, ...args) => {
+    if (String(target) !== configPath) return originalReadFile(target, ...args);
+    configReadCount++;
+    if (configReadCount === 1) {
+      const staleSnapshot = await originalReadFile(target, ...args);
+      firstReadCapturedResolve();
+      await releaseFirstRead;
+      return staleSnapshot;
+    }
+    if (configReadCount === 2) secondReadStartedResolve();
+    return originalReadFile(target, ...args);
+  };
+
+  try {
+    const firstInit = configManager.loadConfig();
+    await firstReadCaptured;
+    const mutation = configManager.setValue('initRaceProbe', 'committed');
+    const secondReadObserved = await Promise.race([
+      secondReadStarted.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 250)),
+    ]);
+
+    if (secondReadObserved) {
+      // On the buggy implementation a second init can complete the mutation while
+      // the first init still owns an older disk snapshot. Let it commit first so
+      // releasing the stale init deterministically proves the lost-update race.
+      await mutation;
+      releaseFirstReadResolve();
+      await firstInit;
+    } else {
+      // A single-flight implementation makes the mutation await the same init.
+      releaseFirstReadResolve();
+      await Promise.all([firstInit, mutation]);
+    }
+  } finally {
+    releaseFirstReadResolve();
+    fs.readFile = originalReadFile;
+  }
+
+  assert.equal(await configManager.getValue('initRaceProbe'), 'committed',
+    'a slower concurrent init must not overwrite an acknowledged mutation in memory');
+  await configManager.setValue('postInitRaceFlush', 'committed');
+  assert.equal(readDiskConfig().initRaceProbe, 'committed',
+    'a later save must not make a stale concurrent-init snapshot durable');
+}
 
 async function blockFirstPersistence(startOperation, whileBlocked = async () => {}, reject = false) {
   let intercepted = false;
@@ -61,6 +117,8 @@ function readDiskConfig() {
 }
 
 try {
+  await proveInitializationSingleFlight();
+
   const interruptedTarget = await blockFirstPersistence(
     () => configManager.setValue('atomicProbe', 'new-value'),
     undefined,

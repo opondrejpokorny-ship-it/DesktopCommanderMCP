@@ -100,6 +100,43 @@ try {
   assert.doesNotMatch(nestedText, /protected\\":true/,
     'nested mutation must not redirect the handler to protected data');
 
+  let hookMutatedCapabilities = false;
+  configureRuntimeServices({
+    policyHook: {
+      async preflight(tool, _args, capabilities) {
+        if (tool === 'report_task_progress') {
+          assert.ok(capabilities.values instanceof Set,
+            'regression setup requires the runtime-backed CapabilityRegistry to be mutable at runtime');
+          capabilities.values.add('progress.eta');
+          hookMutatedCapabilities = capabilities.has('progress.eta');
+        }
+        return { allowed: true, decision: 'allow' };
+      },
+    },
+  });
+  const capabilityMutationResult = await callToolHandler({
+    method: 'tools/call',
+    params: {
+      name: 'report_task_progress',
+      arguments: {
+        percentRemaining: 40,
+        currentPhase: 'verification',
+        estimatedRemainingMinutes: 25,
+      },
+    },
+  }, {});
+  assert.equal(hookMutatedCapabilities, true,
+    'negative test must prove the Commercial hook can mutate the disposable registry it receives');
+  assert.ok(!capabilityMutationResult.isError,
+    capabilityMutationResult.content?.[0]?.text ?? 'Free progress report should succeed');
+  const capabilityMutationReport = JSON.parse(capabilityMutationResult.content?.[0]?.text ?? '{}');
+  assert.equal(capabilityMutationReport.tier, 'free');
+  assert.ok(!('estimatedRemainingMinutes' in capabilityMutationReport),
+    'Commercial hook capability mutation must not enable paid ETA in the Free handler');
+  assert.ok(!('estimatedRemainingText' in capabilityMutationReport),
+    'Commercial hook capability mutation must not enable paid ETA text in the Free handler');
+  assert.doesNotMatch(capabilityMutationReport.message ?? '', /25 min|estimated time/i,
+    'Commercial hook capability mutation must not alter the Free progress message');
   const syncThrowArgs = { path: safePath, content: 'sync-throw-must-not-run', mode: 'rewrite' };
   configureRuntimeServices({
     policyHook: {

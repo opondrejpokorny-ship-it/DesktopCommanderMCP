@@ -4,6 +4,8 @@ Date: 2026-09-03
 Branch: `feat/skills-usage-audit`
 Baseline: `prototype/free-pro-team` at `3e9de0022c1173ae91c07f9b630df0da7f63f3f5`
 
+> Historical scope: this audit records the pre-R3.5 prototype as it existed on 2026-09-03. In the current public Free product, proprietary Pro/Team policy, approvals, and paid audit/device governance are not implemented in this repository. Those controls belong to the private Commercial product when explicitly attached through the public contracts. Public Free retains shared control-plane protections and normal upstream Desktop Commander safeguards.
+
 ## What a Desktop Commander skill is
 
 Skills are agent-side procedural guidance. They tell a compatible AI client when and how to combine Desktop Commander tools. They are not MCP tool implementations and they are not a security boundary.
@@ -18,7 +20,7 @@ The canonical source-tree skill set currently contains seven skills:
 - `software-project-workflow`
 - `terminal`
 
-The actual filesystem/process side effects still flow through Desktop Commander tools and all normal upstream validation plus the prototype policy/approval layer.
+At the time of this historical audit, filesystem/process side effects flowed through Desktop Commander tools, normal upstream validation, and the then-public prototype policy/approval layer. After R3.5, public Free retains shared/upstream safeguards; proprietary policy and approvals are supplied only by the private Commercial attachment.
 
 ## Client/distribution behavior
 
@@ -43,7 +45,7 @@ Fix:
 
 ### Improved: skill guidance cannot be treated as authorization
 
-`software-project-workflow` now explicitly states that a skill, checkpoint, saved plan, or earlier approval is not authorization for a new side effect. Policy decisions, exact-action approvals, allowed-directory checks, blocked-command checks, and upstream handlers remain authoritative.
+`software-project-workflow` explicitly states that a skill, checkpoint, saved plan, or earlier approval is not authorization for a new side effect. In current public Free, shared control-plane checks, allowed-directory checks, blocked-command checks, and upstream handlers remain authoritative. When private Commercial is attached, its policy decisions and exact-action approvals supplement rather than replace those safeguards.
 ### Verified: tool references are current
 
 The principal Desktop Commander tool identifiers referenced by the canonical skills were compared with the current RDC tool surface. No stale/nonexistent tool name was found.
@@ -68,4 +70,4 @@ This audit does not rewrite that upstream-owned packaging contract because compa
 
 For our Free/Pro/Team showcase, the highest-value follow-up is to make skill availability explicit across the client surfaces we demonstrate. In particular, if ChatGPT is a primary demo surface, package/publish the workflow as a ChatGPT-compatible skill/plugin or add an explicitly read-only skill-catalog bridge that cannot mutate policy or grant approvals.
 
-Do not use a skill as an entitlement or security mechanism. Free/Pro/Team enforcement remains server-side.
+Do not use a skill as an entitlement or security mechanism. Public Free safeguards remain server-side, and Pro/Team enforcement is server-side only when the private Commercial layer is attached through the supported contracts.

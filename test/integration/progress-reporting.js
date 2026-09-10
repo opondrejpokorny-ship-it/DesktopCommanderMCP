@@ -1,5 +1,6 @@
 /**
- * Real MCP stdio integration test for tier-aware lifecycle progress reporting.
+ * Real MCP stdio integration test for public Free lifecycle progress reporting.
+ * A local policy file must not activate private Commercial tiers or paid ETA.
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -75,22 +76,26 @@ try {
   assert.ok(!('estimatedRemainingText' in free));
   assert.doesNotMatch(free.message, /25 min|estimated time/i);
 
-  for (const tier of ['pro', 'team']) {
-    await setTier(tier);
-    const paidResult = await client.callTool({
+  for (const requestedTier of ['pro', 'team']) {
+    await setTier(requestedTier);
+    const result = await client.callTool({
       name: 'report_task_progress',
       arguments: args,
     });
-    assert.ok(!paidResult.isError);
-    const paid = JSON.parse(firstText(paidResult));
-    assert.strictEqual(paid.tier, tier);
-    assert.strictEqual(paid.percentRemaining, 40);
-    assert.strictEqual(paid.estimatedRemainingMinutes, 25);
-    assert.strictEqual(paid.estimatedRemainingText, 'about 25 min');
-    assert.match(paid.message, /estimated time remaining.*25 min/i);
+    assert.ok(!result.isError);
+    const report = JSON.parse(firstText(result));
+    assert.strictEqual(report.tier, 'free',
+      'public Free must ignore a local policy tier=' + requestedTier + ' request');
+    assert.strictEqual(report.percentRemaining, 40);
+    assert.strictEqual(report.percentComplete, 60);
+    assert.ok(!('estimatedRemainingMinutes' in report),
+      'public Free must not expose paid ETA from a local policy tier');
+    assert.ok(!('estimatedRemainingText' in report),
+      'public Free must not expose paid ETA text from a local policy tier');
+    assert.doesNotMatch(report.message, /25 min|estimated time/i);
   }
 
-  console.log('✅ Real MCP tier-aware progress integration test passed');
+  console.log('✅ Real MCP public Free progress integration test passed');
 } finally {
   await client.close().catch(() => undefined);
   await fs.rm(tempDir, { recursive: true, force: true });
