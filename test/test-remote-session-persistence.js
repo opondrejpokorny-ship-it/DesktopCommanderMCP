@@ -114,10 +114,34 @@ async function testRapidRotationsKeepNewestSession() {
   console.log('✅ rapid token rotations persist the newest session');
 }
 
+async function testShutdownWaitsForPendingPersistence() {
+  const harness = await createHarness(true);
+  let releasePersist;
+  try {
+    harness.device.sessionPersistChain = new Promise((resolve) => { releasePersist = resolve; });
+    harness.remote.stopHeartbeat = () => {};
+    harness.remote.unsubscribe = async () => {};
+    harness.remote.setOffline = async () => {};
+    harness.device.desktop.shutdown = async () => {};
+
+    let settled = false;
+    const shutdownPromise = harness.device.shutdown().then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.strictEqual(settled, false, 'shutdown must wait for pending session persistence');
+    releasePersist();
+    await shutdownPromise;
+  } finally {
+    releasePersist?.();
+    await harness.cleanup();
+  }
+  console.log('✅ shutdown waits for pending session persistence');
+}
+
 async function main() {
   await testRotatedSessionPersists();
   await testNoPersistModeStaysSessionless();
   await testRapidRotationsKeepNewestSession();
+  await testShutdownWaitsForPendingPersistence();
 }
 
 main().catch((error) => {

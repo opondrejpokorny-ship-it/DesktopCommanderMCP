@@ -447,6 +447,13 @@ export class MCPDevice {
             console.debug('[DEBUG] Calling channel.unsubscribe()');
             await this.remoteChannel.unsubscribe();
 
+            // Once realtime/token refresh is stopped and the channel is unsubscribed,
+            // flush any queued rotated-session write before process exit. Otherwise a
+            // graceful restart can still leave the previous one-time refresh token on disk.
+            console.log('  → Flushing persisted session...');
+            await this.sessionPersistChain;
+            console.log('  ✓ Persisted session flushed');
+
             // Mark device offline
             console.log('  → Marking device offline...');
             console.debug('[DEBUG] Calling setOffline() with deviceId:', this.deviceId);
