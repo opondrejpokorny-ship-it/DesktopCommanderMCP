@@ -1,5 +1,5 @@
 import assert from 'assert';
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { startProcess, readProcessOutput, forceTerminate, interactWithProcess } from '../dist/tools/improved-process-tools.js';
 
 /**
@@ -7,19 +7,14 @@ import { startProcess, readProcessOutput, forceTerminate, interactWithProcess } 
  * @returns {string} 'python3' or 'python'
  */
 function getPythonCommand() {
-  try {
-    // Prefer python3 if available
-    execSync('command -v python3', { stdio: 'ignore' });
-    return 'python3';
-  } catch (e) {
-    // Fallback to python
-    try {
-      execSync('command -v python', { stdio: 'ignore' });
-      return 'python';
-    } catch (error) {
-      throw new Error('Neither python3 nor python command is available in the PATH');
+  for (const command of ['python3', 'python']) {
+    const probe = spawnSync(command, ['--version'], { stdio: 'ignore' });
+    if (!probe.error && probe.status === 0) {
+      return command;
     }
   }
+
+  throw new Error('Neither python3 nor python command is available in the PATH');
 }
 
 
@@ -37,7 +32,7 @@ async function testEnhancedREPL() {
   const result = await startProcess({
     command: `${pythonCommand} -i`,
     timeout_ms: 10000,
-    shell: '/bin/bash'
+    shell: process.platform === 'win32' ? (process.env.COMSPEC || 'cmd.exe') : '/bin/bash'
   });
   
   console.log('Result from start_process:', result);

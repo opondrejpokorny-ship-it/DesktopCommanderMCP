@@ -15,7 +15,7 @@ import {
   resumeProjectWorkflow,
   startProjectWorkflow,
 } from '../dist/workflow/project-workflow.js';
-import { applyPolicyGate } from '../dist/policy/policy-gate.js';
+import { applyCoreSafetyGate } from '../dist/runtime/core-safety.js';
 
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-project-workflow-test-'));
 const projectRoot = path.join(tempDir, 'repo');
@@ -23,8 +23,6 @@ const stateRoot = path.join(tempDir, 'state');
 const profileDir = path.join(projectRoot, '.desktop-commander');
 const profilePath = path.join(profileDir, 'project-workflow.json');
 const projectProfilePath = path.join(profileDir, 'project-profile.json');
-const approvalPath = path.join(tempDir, 'approvals.json');
-const missingPolicy = path.join(tempDir, 'missing-policy.json');
 
 function git(...args) {
   return execFileSync('git', ['-C', projectRoot, ...args], { encoding: 'utf8' }).trim();
@@ -153,64 +151,34 @@ try {
   assert.strictEqual(resumedLegacyState.projectIdentity.projectId, started.projectIdentity.projectId);
   assert.strictEqual(resumedLegacyState.projectProfile.profile.name, 'Coordinator Project Profile');
 
-  const stateGate = await applyPolicyGate(
-    'write_file',
-    { path: expectedStatePath, content: 'tamper' },
-    missingPolicy,
-    approvalPath
-  );
-  assert.strictEqual(stateGate.allowed, false);
-  assert.strictEqual(stateGate.decision, 'deny');
-  assert.strictEqual(stateGate.matchedRuleId, 'system:project-workflow-control-plane');
+  const assertCoreSafetyBlock = (gate) => {
+    assert.strictEqual(gate.allowed, false);
+    assert.match(gate.result?.content?.[0]?.text ?? '', /system:project-workflow-control-plane/);
+  };
+  const stateGate = await applyCoreSafetyGate('write_file',
+    { path: expectedStatePath, content: 'tamper' });
+  assertCoreSafetyBlock(stateGate);
 
   const stateAliasDir = path.join(tempDir, 'state-alias');
-  await fs.symlink(
-    stateRoot,
-    stateAliasDir,
-    process.platform === 'win32' ? 'junction' : 'dir'
-  );
-  const symlinkStateGate = await applyPolicyGate(
-    'write_file',
-    {
-      path: path.join(stateAliasDir, path.basename(expectedStatePath)),
-      content: 'tamper through symlink alias'
-    },
-    missingPolicy,
-    approvalPath
-  );
-  assert.strictEqual(symlinkStateGate.allowed, false,
-    'Workflow state protection must canonicalize symlink aliases');
-  assert.strictEqual(
-    symlinkStateGate.matchedRuleId,
-    'system:project-workflow-control-plane'
-  );
-  const profileGate = await applyPolicyGate(
-    'write_file',
-    { path: profilePath, content: 'tamper' },
-    missingPolicy,
-    approvalPath
-  );
-  assert.strictEqual(profileGate.allowed, false);
-  assert.strictEqual(profileGate.matchedRuleId, 'system:project-workflow-control-plane');
+  await fs.symlink(stateRoot, stateAliasDir, process.platform === 'win32' ? 'junction' : 'dir');
+  const symlinkStateGate = await applyCoreSafetyGate('write_file', {
+    path: path.join(stateAliasDir, path.basename(expectedStatePath)),
+    content: 'tamper through symlink alias'
+  });
+  assertCoreSafetyBlock(symlinkStateGate);
+  const profileGate = await applyCoreSafetyGate('write_file',
+    { path: profilePath, content: 'tamper' });
+  assertCoreSafetyBlock(profileGate);
 
-  const boundaryGate = await applyPolicyGate(
-    'write_file',
-    { path: profilePath + '.bak', content: 'allowed boundary' },
-    missingPolicy,
-    approvalPath
-  );
+  const boundaryGate = await applyCoreSafetyGate('write_file',
+    { path: profilePath + '.bak', content: 'allowed boundary' });
   assert.strictEqual(boundaryGate.allowed, true);
 
   const profileAliasDir = path.join(tempDir, 'profile-alias');
   await fs.symlink(profileDir, profileAliasDir, 'junction');
-  const symlinkGate = await applyPolicyGate(
-    'write_file',
-    { path: path.join(profileAliasDir, 'project-workflow.json'), content: 'tamper' },
-    missingPolicy,
-    approvalPath
-  );
-  assert.strictEqual(symlinkGate.allowed, false);
-  assert.strictEqual(symlinkGate.matchedRuleId, 'system:project-workflow-control-plane');
+  const symlinkGate = await applyCoreSafetyGate('write_file',
+    { path: path.join(profileAliasDir, 'project-workflow.json'), content: 'tamper' });
+  assertCoreSafetyBlock(symlinkGate);
   const afterDrive = await recordProjectWorkflowStage({
     projectRoot,
     stageId: 'drive-pre-read',

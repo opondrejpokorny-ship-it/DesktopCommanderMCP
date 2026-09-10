@@ -6,6 +6,7 @@ on:
       - prototype/free-pro-team
       - feat/free-commercial-composition-proof
       - feat/open-core-extraction-readiness
+      - feat/r3-public-paid-source-removal
   pull_request:
     branches:
       - prototype/free-pro-team
@@ -36,14 +37,35 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build prototype
+      - name: Build public Free/shared tree
         run: npm run build
 
-      - name: Pro approval without Team audit storage
-        run: node test/test-open-core-boundaries.js
+      - name: Prove paid source is physically absent
+        run: node test/test-r3-public-source-boundary.js
 
-      - name: Enforce public/commercial source boundary
+      - name: Enforce public source dependency boundary
         run: node test/test-open-core-extraction-boundary.js
+
+      - name: Enforce public documentation boundary
+        run: node test/test-r3-public-docs-boundary.js
+
+      - name: Verify public Commercial attachment contract
+        run: node test/test-commercial-contract-v1.js
+
+      - name: Verify public Control Center attachment contract
+        run: node test/test-control-center-contract-v1.js
+
+      - name: Verify Free entitlement boundary
+        run: node test/test-capability-entitlements.js
+
+      - name: Prove normal build removes stale paid output
+        run: node test/test-r3-build-cleans-dist.js
+
+      - name: Verify crash-safe config persistence
+        run: node test/test-config-atomic-persistence.js
+
+      - name: Verify Free composition
+        run: node test/test-free-composition.js
 
       - name: Build, inspect, install and smoke Free package
         run: node test/test-free-package-artifact.js
@@ -58,19 +80,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Run all tier and security regressions
-        shell: bash
-        run: |
-          for test_file in test/test-tier-*.js; do
-            node "$test_file"
-          done
-
-      - name: Run all real MCP policy regressions
-        shell: bash
-        run: |
-          for test_file in test/integration/policy-*.js; do
-            node "$test_file"
-          done
+      - name: Verify public CI boundary
+        run: node test/test-r3-public-ci-boundary.js
 
       - name: Diff whitespace check
         run: git diff --check origin/prototype/free-pro-team...HEAD

@@ -52,4 +52,25 @@ for (const forbidden of [
   assert.ok(!declarations.includes(forbidden), `Commercial contract must not expose ${forbidden}`);
 }
 
+const declarationQueue = [path.join(root, 'dist', 'commercial-contract.d.ts')];
+const visitedDeclarations = new Set();
+while (declarationQueue.length) {
+  const current = declarationQueue.shift();
+  if (visitedDeclarations.has(current)) continue;
+  visitedDeclarations.add(current);
+  const source = await fs.readFile(current, 'utf8');
+  const specifiers = [
+    ...source.matchAll(/\bfrom\s+['\"]([^'\"]+)['\"]/g),
+    ...source.matchAll(/\bimport\(['\"]([^'\"]+)['\"]\)/g),
+  ].map((match) => match[1]);
+  for (const specifier of specifiers) {
+    assert.ok(
+      !specifier.startsWith('@modelcontextprotocol/'),
+      `Commercial Contract v1 declaration closure must not depend on MCP SDK types: ${specifier}`,
+    );
+    if (!specifier.startsWith('.')) continue;
+    declarationQueue.push(path.resolve(path.dirname(current), specifier.replace(/\.js$/, '.d.ts')));
+  }
+}
+
 console.log('✅ Commercial contract v1 export surface passed');

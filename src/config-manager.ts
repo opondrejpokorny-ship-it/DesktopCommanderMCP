@@ -51,11 +51,17 @@ class ConfigManager {
   private configPath: string;
   private config: ServerConfig = {};
   private initialized = false;
+  private initializationPromise: Promise<void> | null = null;
   private _isFirstRun = false; // Track if this is the first run (config was just created)
   // Serializes all disk writes so concurrent saves can't corrupt config.json.
   private writeChain: Promise<void> = Promise.resolve();
   // True while a coalesced background write is already queued (see scheduleSave).
   private saveScheduled = false;
+  // Serializes awaited logical mutations, not just their disk writes.
+  private mutationChain: Promise<void> = Promise.resolve();
+  // Orders in-flight awaited mutations against immediate non-blocking updates.
+  private mutationRevision = 0;
+  private keyRevisions = new Map<string, number>();
 
   constructor() {
     // Get user's home directory
@@ -64,49 +70,63 @@ class ConfigManager {
   }
 
   /**
-   * Initialize configuration - load from disk or create default
+   * Initialize configuration - load from disk or create default.
+   * Concurrent callers share one initialization so a slower stale read cannot
+   * overwrite an already acknowledged mutation from another caller.
    */
-  async init() {
+  async init(): Promise<void> {
     if (this.initialized) return;
+    if (this.initializationPromise) return this.initializationPromise;
 
-    try {
-      // Ensure config directory exists
-      const configDir = path.dirname(this.configPath);
-      if (!existsSync(configDir)) {
-        await mkdir(configDir, { recursive: true });
-      }
-
-      // Check if config file exists
+    const initialization = (async () => {
       try {
-        await fs.access(this.configPath);
-        // Load existing config
-        const configData = await fs.readFile(this.configPath, 'utf8');
-        this.config = JSON.parse(configData);
-        this._isFirstRun = false;
+        // Ensure config directory exists
+        const configDir = path.dirname(this.configPath);
+        if (!existsSync(configDir)) {
+          await mkdir(configDir, { recursive: true });
+        }
 
-        // Configs created before this marker existed must not receive the
-        // welcome page retroactively when client eligibility changes later.
-        // New configs get this field from getDefaultConfig() and remain
-        // eligible across restarts until their first initialization.
-        if (this.config['welcomeOnboardingEligible'] === undefined) {
-          this.config['welcomeOnboardingEligible'] = false;
-          this.config['pendingWelcomeOnboarding'] = false;
+        // Check if config file exists
+        try {
+          await fs.access(this.configPath);
+          // Load existing config
+          const configData = await fs.readFile(this.configPath, 'utf8');
+          this.config = JSON.parse(configData);
+          this._isFirstRun = false;
+
+          // Configs created before this marker existed must not receive the
+          // welcome page retroactively when client eligibility changes later.
+          // New configs get this field from getDefaultConfig() and remain
+          // eligible across restarts until their first initialization.
+          if (this.config['welcomeOnboardingEligible'] === undefined) {
+            this.config['welcomeOnboardingEligible'] = false;
+            this.config['pendingWelcomeOnboarding'] = false;
+            await this.saveConfig();
+          }
+        } catch (error) {
+          // Config file doesn't exist, create default
+          this.config = this.getDefaultConfig();
+          this._isFirstRun = true; // This is a first run!
           await this.saveConfig();
         }
-      } catch (error) {
-        // Config file doesn't exist, create default
-        this.config = this.getDefaultConfig();
-        this._isFirstRun = true; // This is a first run!
-        await this.saveConfig();
-      }
-      this.config['version'] = VERSION;
+        this.config['version'] = VERSION;
 
-      this.initialized = true;
-    } catch (error) {
-      console.error('Failed to initialize config:', error);
-      // Fall back to default config in memory
-      this.config = this.getDefaultConfig();
-      this.initialized = true;
+        this.initialized = true;
+      } catch (error) {
+        console.error('Failed to initialize config:', error);
+        // Fall back to default config in memory
+        this.config = this.getDefaultConfig();
+        this.initialized = true;
+      }
+    })();
+
+    this.initializationPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.initializationPromise === initialization) {
+        this.initializationPromise = null;
+      }
     }
   }
 
@@ -194,19 +214,71 @@ class ConfigManager {
    * interleave and corrupt the file. Previously every tool call could fire its
    * own independent fs.writeFile of the same path.
    */
-  private async writeConfigToDisk(): Promise<void> {
-    await fs.writeFile(this.configPath, JSON.stringify(this.config, null, 2), 'utf8');
+  private async writeConfigToDisk(snapshot: ServerConfig): Promise<void> {
+    const tempPath = `${this.configPath}.${process.pid}.tmp`;
+    const serialized = JSON.stringify(snapshot, null, 2);
+    try {
+      await fs.writeFile(tempPath, serialized, 'utf8');
+      await fs.rename(tempPath, this.configPath);
+    } catch (error) {
+      await fs.unlink(tempPath).catch(() => {});
+      throw error;
+    }
   }
 
   /**
    * Awaitable save, serialized on writeChain. Use for explicit, user-driven
    * config changes where the caller wants on-disk confirmation.
    */
-  private async saveConfig(): Promise<void> {
-    const write = this.writeChain.then(() => this.writeConfigToDisk());
+  private async saveConfig(snapshot: ServerConfig = structuredClone(this.config)): Promise<void> {
+    const fixedSnapshot = structuredClone(snapshot);
+    const write = this.writeChain.then(() => this.writeConfigToDisk(fixedSnapshot));
     // Keep the chain alive even if this write rejects, so later writes still run.
     this.writeChain = write.catch(() => {});
     return write;
+  }
+
+  /**
+   * Run one awaited config mutation transaction. Failed persistence never
+   * mutates memory; later non-blocking writes are preserved by revision.
+   */
+  private async runAwaitedMutation(
+    buildNext: (current: ServerConfig) => { next: ServerConfig; affectedKeys: string[] },
+  ): Promise<ServerConfig> {
+    const operationRevision = ++this.mutationRevision;
+    let result: ServerConfig = {};
+    const mutation = this.mutationChain.then(async () => {
+      const current = structuredClone(this.config);
+      const built = buildNext(current);
+      const next = structuredClone(built.next);
+      const affectedKeys = built.affectedKeys;
+
+      // A later non-blocking mutation may have been accepted while this awaited
+      // mutation was queued. Preserve that newer value in the exact disk snapshot.
+      for (const key of affectedKeys) {
+        if ((this.keyRevisions.get(key) ?? 0) <= operationRevision) continue;
+        if (Object.prototype.hasOwnProperty.call(current, key)) {
+          next[key] = structuredClone(current[key]);
+        } else {
+          delete next[key];
+        }
+      }
+
+      await this.saveConfig(next);
+      for (const key of affectedKeys) {
+        if ((this.keyRevisions.get(key) ?? 0) > operationRevision) continue;
+        if (Object.prototype.hasOwnProperty.call(next, key)) {
+          this.config[key] = structuredClone(next[key]);
+        } else {
+          delete this.config[key];
+        }
+        this.keyRevisions.set(key, operationRevision);
+      }
+      result = structuredClone(this.config);
+    });
+    this.mutationChain = mutation.catch(() => {});
+    await mutation;
+    return result;
   }
 
   /**
@@ -223,7 +295,7 @@ class ConfigManager {
     this.writeChain = this.writeChain.then(async () => {
       this.saveScheduled = false; // let the next burst queue a fresh write
       try {
-        await this.writeConfigToDisk();
+        await this.writeConfigToDisk(structuredClone(this.config));
       } catch (error) {
         console.error('Failed to save config (background):', error);
       }
@@ -276,9 +348,11 @@ class ConfigManager {
       }
     }
     
-    // Update the value
-    this.config[key] = value;
-    await this.saveConfig();
+    const acceptedValue = structuredClone(value);
+    await this.runAwaitedMutation((current) => ({
+      next: { ...current, [key]: acceptedValue },
+      affectedKeys: [key],
+    }));
   }
 
   /**
@@ -292,7 +366,10 @@ class ConfigManager {
    */
   async setValueNonBlocking(key: string, value: any): Promise<void> {
     await this.init();
-    this.config[key] = value;
+    const acceptedValue = structuredClone(value);
+    const revision = ++this.mutationRevision;
+    this.config[key] = acceptedValue;
+    this.keyRevisions.set(key, revision);
     this.scheduleSave();
   }
 
@@ -301,18 +378,23 @@ class ConfigManager {
    */
   async updateConfig(updates: Partial<ServerConfig>): Promise<ServerConfig> {
     await this.init();
-    this.config = { ...this.config, ...updates };
-    await this.saveConfig();
-    return { ...this.config };
+    const acceptedUpdates = structuredClone(updates);
+    return this.runAwaitedMutation((current) => ({
+      next: { ...current, ...acceptedUpdates },
+      affectedKeys: Object.keys(acceptedUpdates),
+    }));
   }
 
   /**
    * Reset configuration to defaults
    */
   async resetConfig(): Promise<ServerConfig> {
-    this.config = this.getDefaultConfig();
-    await this.saveConfig();
-    return { ...this.config };
+    await this.init();
+    const defaults = structuredClone(this.getDefaultConfig());
+    return this.runAwaitedMutation((current) => ({
+      next: defaults,
+      affectedKeys: Array.from(new Set([...Object.keys(current), ...Object.keys(defaults)])),
+    }));
   }
 
   /**

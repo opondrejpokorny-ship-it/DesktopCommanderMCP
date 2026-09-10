@@ -9,10 +9,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  listApprovals,
-  setApprovalDecision,
-} from '../../dist/policy/approval-store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, '..', '..');
@@ -21,7 +17,6 @@ const repoA = path.join(tempDir, 'repo-a');
 const repoB = path.join(tempDir, 'repo-b');
 const stateRoot = path.join(tempDir, 'state');
 const policyFile = path.join(tempDir, 'policy.json');
-const approvalFile = path.join(tempDir, 'approvals.json');
 
 function git(cwd, ...args) {
   return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -29,10 +24,6 @@ function git(cwd, ...args) {
 
 function firstText(result) {
   return result?.content?.find?.((item) => item.type === 'text')?.text ?? '';
-}
-
-function approvalIdFrom(result) {
-  return firstText(result).match(/Approval request ID:\s*([0-9a-f-]+)/i)?.[1] ?? null;
 }
 
 async function exists(target) {
@@ -49,7 +40,6 @@ function transport() {
       ...process.env,
       DESKTOP_COMMANDER_DISABLE_TELEMETRY: 'true',
       DESKTOP_COMMANDER_POLICY_FILE: policyFile,
-      DESKTOP_COMMANDER_APPROVAL_FILE: approvalFile,
       DESKTOP_COMMANDER_WORKFLOW_STATE_DIR: stateRoot,
     },
   });
@@ -173,61 +163,28 @@ try {
     });
 
     await fs.writeFile(policyFile, JSON.stringify({
-      version: 1,
-      tier: 'pro',
-      rules: [{
-        id: 'approval-after-registration',
-        action: 'filesystem.write',
-        resourcePrefix: repoA,
-        decision: 'require_approval',
-      }],
+      version: 1, tier: 'pro',
+      rules: [{ id: 'would-be-paid-rule', action: 'filesystem.write', resourcePrefix: repoA, decision: 'require_approval' }],
     }));
-
     const protectedTarget = path.join(repoA, 'src', 'protected.txt');
     const preRegistration = await client.callTool({
-      name: 'write_file',
-      arguments: { path: protectedTarget, content: 'approved-later', mode: 'rewrite' },
+      name: 'write_file', arguments: { path: protectedTarget, content: 'free-write', mode: 'rewrite' },
     });
     assert.equal(preRegistration.isError, true);
     assert.match(firstText(preRegistration), /ACTIVE_WORK_REGISTRATION_REQUIRED/);
-    assert.equal((await listApprovals(approvalFile)).length, 0);
     assert.equal(await exists(protectedTarget), false);
-
     const protectedRegistration = await client.callTool({
-      name: 'active_work_registry',
-      arguments: {
-        action: 'register',
-        projectRoot: repoA,
-        title: 'Protected registered write',
-        scope: 'Write the protected target after registration',
-        affectedAreas: ['src/protected.txt'],
-      },
+      name: 'active_work_registry', arguments: { action: 'register', projectRoot: repoA,
+        title: 'Free registered write', scope: 'Write after registration', affectedAreas: ['src/protected.txt'] },
     });
     assert.equal(protectedRegistration.structuredContent?.registered, true);
-
-    const approvalRequired = await client.callTool({
-      name: 'write_file',
-      arguments: { path: protectedTarget, content: 'approved-later', mode: 'rewrite' },
+    const freeWrite = await client.callTool({
+      name: 'write_file', arguments: { path: protectedTarget, content: 'free-write', mode: 'rewrite' },
     });
-    assert.equal(approvalRequired.isError, true);
-    assert.match(firstText(approvalRequired), /Approval required/i);
-    const approvalId = approvalIdFrom(approvalRequired);
-    assert.ok(approvalId);
-    assert.equal((await listApprovals(approvalFile)).length, 1);
-    assert.equal(await exists(protectedTarget), false);
-
-    const approved = await setApprovalDecision(approvalId, 'approved', approvalFile);
-    assert.equal(approved?.status, 'approved');
-
-    const exactRetry = await client.callTool({
-      name: 'write_file',
-      arguments: { path: protectedTarget, content: 'approved-later', mode: 'rewrite' },
-    });
-    assert.ok(!exactRetry.isError, firstText(exactRetry));
-    assert.equal(await fs.readFile(protectedTarget, 'utf8'), 'approved-later');
-    assert.equal((await listApprovals(approvalFile))[0]?.status, 'consumed');
-
-    console.log('✅ Real MCP active work enforcement integration passed');
+    assert.ok(!freeWrite.isError, firstText(freeWrite));
+    assert.doesNotMatch(firstText(freeWrite), /Approval required/i);
+    assert.equal(await fs.readFile(protectedTarget, 'utf8'), 'free-write');
+    console.log('✅ Real MCP active work enforcement + inert paid-tier flag integration passed');
   } finally {
     await client.close();
   }
