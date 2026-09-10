@@ -1,108 +1,32 @@
-# Policy Examples
+# Policy Examples — Commercial Product Only
 
-The prototype keeps Desktop Commander's existing behavior when no policy file exists.
+The Pro/Team policy and approval examples that previously lived in this public prototype have moved with the active implementation to the **private Commercial product**.
 
-Default policy path:
+They are **not implemented by Desktop Commander Free in this public repository**. Creating a local file with `tier: pro` or `tier: team`, or copying an old prototype policy example, does not activate Commercial policy enforcement or approvals in Free.
 
-`~/.claude-server-commander/policy.json`
+## Public Free behavior
 
-For isolated demos/tests, override it with:
+Free preserves the shared Desktop Commander execution flow, shared `runtime/core-safety.ts` protections, and existing upstream safeguards such as allowed-directory, path, command and handler validation.
 
-`DESKTOP_COMMANDER_POLICY_FILE=/path/to/policy.json`
+The public repository exposes versioned attachment contracts so the private Commercial product can add Pro/Team controls without importing public internals.
 
-## Free
+## Commercial behavior
 
-No policy file is required.
+The private Commercial product owns the verified paid control layer, including:
 
-```json
-{
-  "version": 1,
-  "tier": "free",
-  "rules": []
-}
-```
+- Pro folder/read/write/terminal/command policy;
+- exact-action, expiring and one-time approvals;
+- policy profiles;
+- Team per-device rules;
+- privacy-conscious Team audit/control;
+- paid Control Center extensions.
 
-Free preserves the existing Desktop Commander execution flow and existing upstream guardrails.
+Commercial policy is additive. `ALLOW` or an approved retry must still pass through Free/shared and upstream Desktop Commander safeguards.
 
-## Pro — Safe Developer
-
-```json
-{
-  "version": 1,
-  "tier": "pro",
-  "rules": [
-    {
-      "id": "production-writes-need-approval",
-      "action": "filesystem.write",
-      "resourcePrefix": "/projects/production",
-      "decision": "require_approval"
-    },
-    {
-      "id": "config-changes-need-approval",
-      "action": "config.change",
-      "decision": "require_approval"
-    }
-  ]
-}
-```
-
-A matching write is stopped before the underlying Desktop Commander handler runs.
-The response contains a one-time approval request ID.
-
-## Team — Read-only Server
-
-Each device can load a different policy file.
-
-```json
-{
-  "version": 1,
-  "tier": "team",
-  "deviceId": "production-server-1",
-  "rules": [
-    {
-      "id": "server-no-file-writes",
-      "action": "filesystem.write",
-      "deviceId": "production-server-1",
-      "decision": "deny"
-    },
-    {
-      "id": "server-terminal-needs-approval",
-      "action": "terminal.execute",
-      "deviceId": "production-server-1",
-      "decision": "require_approval"
-    },
-    {
-      "id": "server-no-config-changes",
-      "action": "config.change",
-      "deviceId": "production-server-1",
-      "decision": "deny"
-    }
-  ]
-}
-```
-
-The future Control Center will manage these policies without requiring users to edit JSON manually.
-
-## Approval storage
-
-Approvals default to:
-
-`~/.claude-server-commander/approvals.json`
-
-The store does **not** persist raw MCP arguments or file contents. It stores a SHA-256 fingerprint of the exact action, status, timestamps, rule ID, and limited safe metadata.
-
-An approval is:
-
-- bound to the exact tool + arguments,
-- optionally bound to the matching policy rule,
-- time-limited,
-- one-time,
-- consumed when the approved request succeeds through the gate.
-
-The approval file can be overridden for tests with:
-
-`DESKTOP_COMMANDER_APPROVAL_FILE=/path/to/approvals.json`
+Human approval mutation remains outside the ordinary model-facing MCP surface. Approval and audit persistence must not store raw file contents or raw terminal commands.
 
 ## Security boundary
 
-This policy layer is additive. It does not replace Desktop Commander's existing path validation, blocked-command handling, or OS/container isolation. It should be described as fine-grained control and approvals, not as a complete sandbox.
+Do not treat a Free configuration file or UI restriction as a Pro/Team security boundary. Desktop Commander is not a complete OS security sandbox; use appropriate OS/VM/container isolation where a stronger isolation boundary is required.
+
+For the authoritative Commercial policy examples and storage/configuration details, use the private Commercial repository documentation that accompanies the exact verified Commercial version.

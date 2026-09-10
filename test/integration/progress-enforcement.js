@@ -7,7 +7,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listApprovals, setApprovalDecision } from '../../dist/policy/approval-store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, '..', '..');
@@ -15,7 +14,6 @@ const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dc-progress-enforce-mcp
 const repo = path.join(tempDir, 'repo');
 const stateRoot = path.join(tempDir, 'state');
 const policyFile = path.join(tempDir, 'policy.json');
-const approvalFile = path.join(tempDir, 'approvals.json');
 
 function git(...args) {
   return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -63,7 +61,6 @@ try {
       ...process.env,
       DESKTOP_COMMANDER_DISABLE_TELEMETRY: 'true',
       DESKTOP_COMMANDER_POLICY_FILE: policyFile,
-      DESKTOP_COMMANDER_APPROVAL_FILE: approvalFile,
       DESKTOP_COMMANDER_WORKFLOW_STATE_DIR: stateRoot,
     },
   });
@@ -83,7 +80,7 @@ try {
       name: 'active_work_registry',
       arguments: {
         action: 'register', projectRoot: repo, title: 'Progress enforcement proof',
-        scope: 'Prove progress gate precedes approval', affectedAreas: ['.'],
+        scope: 'Prove Free progress gate precedes side effects', affectedAreas: ['.'],
       },
     });
     assert.equal(registered.structuredContent?.registered, true);
@@ -122,7 +119,6 @@ try {
     assert.equal(blocked.isError, true);
     assert.match(text(blocked), /PROGRESS_REPORT_REQUIRED/);
     assert.equal(await exists(target), false);
-    assert.equal((await listApprovals(approvalFile)).length, 0);
 
     const report = await client.callTool({
       name: 'report_task_progress',
@@ -137,30 +133,18 @@ try {
     const progress = JSON.parse(text(report));
     assert.equal(progress.percentRemaining, 50);
     assert.equal(progress.percentComplete, 50);
-    assert.equal(progress.estimatedRemainingMinutes, 25);
+    assert.equal('estimatedRemainingMinutes' in progress, false);
+    assert.equal('estimatedRemainingText' in progress, false);
+    assert.equal(progress.tier, 'free');
     assert.doesNotMatch(progress.currentPhase, /fake/i);
 
-    const approvalRequired = await client.callTool({
+    const freeWrite = await client.callTool({
       name: 'write_file',
       arguments: { path: target, content: 'write-after-progress', mode: 'rewrite' },
     });
-    assert.equal(approvalRequired.isError, true);
-    assert.match(text(approvalRequired), /Approval required/i);
-    assert.equal(await exists(target), false);
-    const approvals = await listApprovals(approvalFile);
-    assert.equal(approvals.length, 1);
-    const approvalId = approvals[0]?.id;
-    assert.ok(approvalId);
-    const approved = await setApprovalDecision(approvalId, 'approved', approvalFile);
-    assert.equal(approved?.status, 'approved');
-
-    const exactRetry = await client.callTool({
-      name: 'write_file',
-      arguments: { path: target, content: 'write-after-progress', mode: 'rewrite' },
-    });
-    assert.ok(!exactRetry.isError, text(exactRetry));
+    assert.ok(!freeWrite.isError, text(freeWrite));
+    assert.doesNotMatch(text(freeWrite), /Approval required/i);
     assert.equal(await fs.readFile(target, 'utf8'), 'write-after-progress');
-    assert.equal((await listApprovals(approvalFile))[0]?.status, 'consumed');
 
     await client.callTool({
       name: 'active_work_registry',

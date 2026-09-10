@@ -1,7 +1,7 @@
 # Open-Core Physical Extraction Readiness
 
-Status: readiness contract; no physical repository split yet.
-Baseline: `prototype/free-pro-team` @ `f3b44e4734300a0f2482a6189bacb6c84f254a55` (C3 starting authority).
+Status: R3.5 physical public-source extraction implemented on `feat/r3-public-paid-source-removal`; public PR/CI/merge is still pending.
+R3.5 baseline: `prototype/free-pro-team` @ `0eda352feeeca4303ee90e8bedd1e35f1e55eaf8`. Private Commercial R3.4 is already merged and post-merge verified at `fe87d99cb6706b9d088ff0370839086c4c7456aa`.
 
 ## Decision
 Use two product repositories, not three forks:
@@ -18,32 +18,25 @@ PRIVATE DesktopCommanderCommercial
 
 A separate Team service is justified only when central fleet/account functionality actually needs a hosted authority.
 
-## Non-goals of this slice
-No commercial code is physically moved to a private repository. C3 does not change MCP execution policy/approval semantics, entitlement signing, billing, DRM, Scope Architecture, Operational Memory persistence/retrieval, or deployment. It refactors the local Control Center composition and Free packaging proof only.
+## Scope and non-goals of this slice
+R3.5 removes active paid implementation from the public source tree after verified private Commercial parity. It does not introduce production entitlement signing, billing, DRM, hosted Team authority, deployment, or a complete security sandbox. Shared Scope/Workflow/Operational Memory infrastructure remains public.
 ## Current ownership inventory
 
-The machine-readable authority for this readiness slice is `open-core-boundaries.json`. Every `src/**/*.ts` file is classified: the default is `public`, with explicit non-public overrides.
+The machine-readable authority is `open-core-boundaries.json`. In the R3.5 branch, active `src/**/*.ts` is public/shared; paid implementation is physically absent.
 
-| Area | Current owner | Extraction meaning |
+| Area | R3.5 owner | Extraction meaning |
 | --- | --- | --- |
-| `src/entitlements/*` | PUBLIC/shared | Capability/entitlement contracts plus Free provider |
-| `src/runtime/policy-hook.ts` | PUBLIC/shared | Stable attachment point; Free uses no-op behavior |
-| `src/runtime/runtime-services.ts` | PUBLIC/shared | Shared runtime composition surface |
-| `src/free-index.ts`, `src/run-server.ts`, `src/server.ts` | PUBLIC/shared | Free/shared execution composition |
-| `src/workflow/*`, `src/progress/*` | PUBLIC/shared | General workflow/memory/progress infrastructure; paid presentation can gate individual capabilities |
-| `src/policy/*` | Pro/commercial by default | Commercial governance implementation; Team-only audit/device storage remains separately classified |
-| `src/policy/audit-store.ts` | Team | Team/local audit storage candidate |
-| `src/policy/device-identity.ts` | Team | Device-scoped governance candidate |
-| `src/prototype/*` | demo-only | Prototype entitlement/policy/audit composition |
-| `src/index.ts` | demo-only | Current prototype/commercial entrypoint |
-| `src/control-center/contract.ts`, `host.ts`, `src/control-center-contract.ts` | PUBLIC/shared | Versioned Control Center Contract v1 plus loopback host/security envelope |
-| `src/control-center/pro-extension.ts` | Pro | Policy/profile/folder/command controls and local approval UI/mutation |
-| `src/control-center/team-extension.ts` | Team | Remote Device selection and privacy-bounded audit UI/API |
-| `src/control-center/demo-extension.ts`, `server.ts` | demo-only | Local tier switch plus prototype composition of PUBLIC + Pro + Team extensions |
-| `src/npm-scripts/access-control.ts` | demo-only today | Uses prototype audit composition |
-| `src/npm-scripts/control-center.ts` | demo-only today | Starts current prototype Control Center |
+| `src/entitlements/*` | PUBLIC/shared | Capability contracts plus Free provider; Free does not grant paid capabilities |
+| `src/runtime/policy-hook.ts`, `runtime-services.ts` | PUBLIC/shared | Stable Commercial attachment point; Free uses no-op policy |
+| `src/index.ts`, `src/free-index.ts`, `src/run-server.ts`, `src/server.ts` | PUBLIC/shared | Free/default execution composition |
+| `src/workflow/*`, `src/progress/*` | PUBLIC/shared | Workflow, Active Work, progress and Operational Memory infrastructure |
+| `src/control-center/contract.ts`, `host.ts`, `src/control-center-contract.ts` | PUBLIC/shared | Control Center Contract v1 and security envelope |
+| `src/control-center/server.ts` | PUBLIC/shared | Free Control Center composition: Memory + Usage |
+| `src/policy/*`, `src/prototype/*` | PRIVATE Commercial / historical public Git only | Not present in active R3.5 public source |
+| Pro/Team/demo Control Center extensions | PRIVATE Commercial / historical public Git only | Not present in active R3.5 public source |
+| `src/npm-scripts/access-control.ts` | PRIVATE/demo historical | Not present in active R3.5 public source |
 
-The Pro/Team labels are product inventory, not a requirement for separate private repositories. Pro and Team intentionally target one commercial repository, so internal commercial dependencies can be resolved there before a future production packaging decision.
+Paid behavior remains verified in the private Commercial repository rather than by keeping duplicate active implementation in the public repository.
 ## Permanent dependency invariant
 
 The new source-level guard enforces the rule that matters before physical extraction:
@@ -60,11 +53,11 @@ C2 removed the Pro -> Team storage dependency from policy runtime. C3 now separa
 
 The PUBLIC host fails closed before extension handlers when capabilities are absent, expired or incomplete. Human approval mutation remains outside the ordinary model MCP surface, and existing policy/approval/upstream safeguards are unchanged. Pro does not import Team audit/device implementation. The Free package roots and exports the PUBLIC Control Center contract/host while physically omitting Pro, Team, demo and prototype/policy implementation.
 
-This removes the Control Center monolith as a physical-extraction blocker, but it does not create the final private `DesktopCommanderCommercial` repository or a production entitlement authority. Future commercial composition must consume only versioned public package contracts rather than deep-importing public `src/*`.
+The Control Center monolith is no longer a physical-extraction blocker. The private Commercial repository now exists and its R3.4 parity is merged/verified; it composes against pinned public artifacts/contracts. A production entitlement authority remains future work, and Commercial must continue to consume only versioned public package contracts rather than arbitrary public `src/*` deep imports.
 
 ## Public cross-repo contract
 
-The future commercial repository should consume only versioned public attachment points. The current required public set is:
+The Commercial repository consumes only versioned public attachment points. The current required public set is:
 
 - `EntitlementProvider`, entitlement snapshot and `CapabilityRegistry` in `src/entitlements/capabilities.ts`;
 - `FreeEntitlementProvider` as the public default;
@@ -74,7 +67,7 @@ The future commercial repository should consume only versioned public attachment
 - `@wonderwhy-er/desktop-commander/commercial-contract` remains the separately frozen C1 v1 commercial attachment contract;
 - `@wonderwhy-er/desktop-commander/control-center-contract` is the separately versioned C3 v1 public Control Center host/extension attachment contract.
 
-C1 and C3 therefore have explicit package/export surfaces. Future commercial code must consume those versioned package contracts rather than reaching back into arbitrary public-core `src/*` internals.
+C1 and C3 therefore have explicit package/export surfaces. Commercial code must continue to consume those versioned package contracts rather than reaching back into arbitrary public-core `src/*` internals.
 
 ## Commercial build/version contract
 
@@ -100,19 +93,21 @@ Upstream is integrated once:
 5. release commercial only after the combined proof is green.
 
 This avoids maintaining Free, Pro and Team as three divergent Desktop Commander forks.
-## Physical split exit gates
+## R3.5 public extraction exit gates
 
-Do not create the final private commercial repository until all of these are true:
+Before merging R3.5 into `prototype/free-pro-team`, all of these must be true:
 
-1. Free remains independently buildable/installable and real MCP read/write smoke is green.
-2. The source boundary guard is green and PUBLIC has no direct commercial/demo imports.
-3. Public cross-repo contracts have an explicit version/compatibility policy.
-4. Commercial composition can be tested against a pinned public core revision.
-5. Pro approvals are not accidentally dependent on Team-only storage/hosted services.
-6. Scope B1/B2 shared identities are stable enough that extraction will not immediately churn the cross-repo API.
-7. Operational Memory shared/public storage contracts needed by both distributions are stable.
-8. Independent public and combined commercial CI is rehearsed.
-9. MIT/upstream attribution and public/private licensing boundaries are documented.
+1. Free independently builds, installs and passes real MCP read/write/shared-safety proofs.
+2. Active public source and normal build output contain no paid policy/prototype/Pro/Team/demo implementation.
+3. Public Commercial Contract v1 and Control Center Contract v1 declaration/package boundaries are closed and versioned.
+4. Public CI invokes only Free/shared-core tests; paid parity remains gated in private Commercial CI.
+5. The standard build removes stale paid `dist` output left by an older prototype checkout.
+6. Free Active Work, progress, workflow core-safety, allowed-directory, blocked-command and symlink safeguards remain authoritative.
+7. The private Commercial product remains reproducible against an exact pinned public SHA/artifact digest and does not deep-import arbitrary public internals.
+8. Public PR exact-head CI and merged-SHA CI are green before R3.5 is called integrated.
+9. After public merge, Commercial is repinned to the final Free SHA/digest and the dual-product clean-checkout proof is rerun.
+
+MIT/upstream attribution remains required in both products.
 
 ## Disclosure boundary
 

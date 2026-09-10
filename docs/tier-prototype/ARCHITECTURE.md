@@ -76,7 +76,7 @@ MCP request
   -> optional policy execution-result hook
 ```
 
-The default shared runtime is **Free**: `FreeEntitlementProvider` plus a no-op commercial policy hook. The current prototype entry point explicitly installs `PrototypeEntitlementProvider` and `PrototypePolicyHook`, which translate the local Free/Pro/Team selector into capabilities for demo/testing only.
+The default and public runtime is **Free**: `FreeEntitlementProvider` plus `NoopPolicyHook`. In the R3.5 extraction branch, both the normal public entry point and the dedicated Free package entry point use these shared defaults. Pro/Team behavior lives in the private Commercial product and attaches only through the versioned Commercial and Control Center contracts. The previously public prototype adapters remain part of Git history but are no longer active public source.
 
 Current capability examples include:
 
@@ -87,11 +87,11 @@ Current capability examples include:
 - `team.device_policy`
 - `audit.local`
 
-This is the first open-core packaging boundary. `tsconfig.free.json` and its regression test prove that the dependency graph rooted at the shared `src/server.ts` does not require `src/policy` or `src/prototype`. It is not yet a complete independently released Free artifact; packaging/release composition remains follow-up work.
+R3.5 turns the earlier packaging boundary into a physical source boundary: active public source no longer contains `src/policy`, `src/prototype`, or the Pro/Team/demo Control Center implementations. The Free package remains independently buildable/installable and the public source/package boundary tests fail if paid implementation or stale paid build output reappears. Public PR/CI/merge is still required before this R3.5 state is authoritative on `prototype/free-pro-team`.
 
 The shared core-safety gate still protects the project-workflow control plane even when commercial policy is absent. Tool-level checks such as `validatePath()` and `commandManager.validateCommand()` still run afterwards as defense in depth.
 
-The local `tier` in `policy.json` remains only a prototype entitlement simulator. It must not become the production licensing authority.
+A local `tier` value in a policy file is inert in the public Free composition and cannot activate paid capabilities or approvals. Production Commercial entitlement/licensing authority remains outside the public Free product.
 
 ## Initial policy model
 
@@ -228,15 +228,15 @@ Once this works end-to-end, expand to commands and multiple devices.
 
 ## Open-core composition proof
 
-The prototype now has two composition entry points over the same shared Desktop Commander runtime:
+R3 now uses two repositories with explicit attachment contracts:
 
-- `src/index.ts` installs the prototype entitlement/policy adapters and represents the current Pro/Team showcase composition.
-- `src/free-index.ts` uses the shared runtime defaults (`FreeEntitlementProvider` + `NoopPolicyHook`) and has no dependency on `src/policy` or `src/prototype`.
+- Public `DesktopCommanderMCP`: Free/shared source only. `src/index.ts` and `src/free-index.ts` both start the shared Free defaults.
+- Private `unoficialDesktopCommanderCommercial`: verified Pro/Team policy, exact-action approvals and Team governance, composed only through public versioned contracts.
 
-`scripts/build-free-package.cjs` compiles the Free entry point into an isolated build graph, stages a deliberately non-publishable npm package, runs a commercial-path denylist before packing, and writes a package manifest. The resulting tarball is then installed into a clean temporary consumer project and exercised through the real MCP SDK.
+`scripts/build-free-package.cjs` builds an isolated non-publishable proof package, checks a paid-path denylist, installs it into a clean consumer project and exercises the real MCP SDK. Standard public builds also clean `dist/` first so stale paid output from an older prototype checkout cannot survive an upgrade.
 
-The verified Free artifact does not contain `dist/policy/`, `dist/prototype/`, `dist/control-center/`, or the access-control CLI. Importing the approval implementation from the installed package must fail with module-not-found. The installed package still proves the intended Free product story by performing real MCP read and write side effects and by reporting lifecycle progress without paid ETA.
+The verified Free artifact omits paid policy/prototype code and Pro/Team/demo Control Center extensions while retaining the public Control Center contract/host and Free Memory + Usage composition. Importing paid implementation from the Free package must fail.
 
-Pro approvals are also no longer coupled to Team audit storage. Approval/policy code depends only on an injected `AuditSink` contract. The prototype supplies a file-backed sink only when the entitlement exposes the audit capability. This lets Pro approval behavior operate with Team audit implementation absent while Team retains policy/approval/execution audit events.
+Private Commercial parity includes one-time exact-action approvals, Pro/Team composition and privacy-bounded Team audit while preserving downstream Free/upstream safeguards. Public Free does not make a local policy tier a licensing authority.
 
-This is a packaging and composition proof, not production licensing or DRM. The current prototype commercial implementation has already been published in this public showcase repository, and signed production entitlements/private commercial distribution remain later phases.
+This is an open-core source/composition boundary, not production licensing, DRM or a complete security sandbox. Previously published prototype Commercial code remains disclosed in Git history; R3 protects proprietary development prospectively.

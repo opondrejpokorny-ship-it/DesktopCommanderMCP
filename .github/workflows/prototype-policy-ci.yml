@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - prototype/free-pro-team
+      - feat/r3-public-paid-source-removal
+  pull_request:
+    branches:
+      - prototype/free-pro-team
 
 permissions:
   contents: read
@@ -15,9 +19,9 @@ concurrency:
 jobs:
   policy-engine:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Checkout prototype
+      - name: Checkout public Free/shared tree
         uses: actions/checkout@v4
 
       - name: Setup Node
@@ -29,19 +33,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build public Free/shared tree
         run: npm run build
 
-      - name: Run focused policy tests
-        shell: bash
-        run: |
-          for test_file in test/test-tier-*.js; do
-            node "$test_file"
-          done
+      - name: Verify workflow control-plane core safety
+        run: node test/test-project-workflow-coordinator.js
 
-      - name: Run real MCP policy integrations
-        shell: bash
+      - name: Verify Active Work enforcement over real MCP
+        run: node test/integration/active-work-enforcement.js
+
+      - name: Verify progress enforcement over real MCP
+        run: node test/integration/progress-enforcement.js
+
+      - name: Verify Commercial hook cannot mutate Free-validated arguments
+        run: node test/integration/r3-commercial-hook-core-safety.js
+
+      - name: Verify upstream command and filesystem guardrails
         run: |
-          for test_file in test/integration/policy-*.js; do
-            node "$test_file"
-          done
+          node test/test-blocked-commands.js
+          node test/test-allowed-directories.js
+          node test/test-symlink-security.js
+
+      - name: Verify Free entitlement cannot activate paid capabilities
+        run: node test/test-capability-entitlements.js
+
+      - name: Diff whitespace check
+        run: git diff --check origin/prototype/free-pro-team...HEAD

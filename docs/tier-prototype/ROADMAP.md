@@ -6,6 +6,8 @@ Build one convincing end-to-end workflow before expanding scope.
 
 Do not build the Server Builder, billing, marketplace, or a replacement hosted Remote MCP backend in the first version.
 
+> **Historical scope note (R3.5):** Phases 0–9 below are historical pre-R3.5 prototype records. Active Pro/Team policy, approvals, Team audit and paid Control Center composition have since moved to the private Commercial product. The current public product is Free/shared core plus the versioned Commercial and Control Center attachment contracts.
+
 ## Phase 0 — Baseline and architecture audit
 
 **Status: DONE**
@@ -204,9 +206,9 @@ Native lifecycle progress reporting is tier-aware through the real MCP tool
 - Pro / Team → approximate percent remaining + estimated time remaining.
 
 The estimate is intentionally rounded and described as approximate, never as a
-deadline or guarantee. The tool now asks the runtime CapabilityRegistry for
-`progress.eta`; the current prototype entitlement provider derives that capability
-from the local tier simulator, while a Free entitlement omits it. Progress arguments
+deadline or guarantee. At this historical milestone the tool asked the runtime
+CapabilityRegistry for `progress.eta`; the prototype entitlement provider derived that
+capability from the local tier simulator, while a Free entitlement omitted it. Progress arguments
 contain only percentage, a short phase label, and the numeric time estimate; file
 contents and raw terminal commands are not needed.
 
@@ -286,16 +288,16 @@ These remain product ideas, not first-prototype requirements:
 - Background autonomous workers.
 
 
-## Open-core packaging milestone — VERIFIED ON TASK BRANCH
+## Historical pre-R3.5 milestone — open-core packaging proof
 
-The owner-presentation slice now proves both sides of the intended open-core architecture:
+This section records the architecture that was verified before the R3.5 physical public/private extraction. It is historical evidence, not a description of the current public Free source tree.
 
-1. **Free is a real artifact, not a hidden Pro switch.** A Free-only entry point compiles the shared core into an npm tarball whose file manifest excludes prototype/commercial policy, approval, Control Center and Team-audit implementation. CI installs that tarball in a clean consumer directory and exercises real MCP read/write plus Free progress behavior.
-2. **Pro/Team compose over the same core.** The existing prototype entry point adds the entitlement/policy adapter over the same shared runtime. Pro approval storage/policy no longer imports Team audit storage; Team audit is injected through an `AuditSink` only when the audit capability is present.
+1. **Free was proven as a real artifact, not a hidden Pro switch.** A Free-only entry point compiled the shared core into an npm tarball whose file manifest excluded prototype/commercial policy, approval, Control Center and Team-audit implementation. CI installed that tarball in a clean consumer directory and exercised real MCP read/write plus Free progress behavior.
+2. **Pro/Team previously composed over the same public prototype core.** At that milestone, a prototype entry point added the entitlement/policy adapter over the shared runtime. R3.5 subsequently moved active Pro/Team policy, approvals and Team audit implementation to the private Commercial repository; the public Free product now exposes only explicit attachment contracts.
 
 The CI proof preserves the `.tgz` and `package-manifest.json` as a 30-day GitHub Actions artifact for presentation/review.
 
-Remaining before a physical public/private repository split:
+At that historical milestone, the remaining items before a physical public/private repository split were:
 - production signed/server-verified entitlement authority,
 - private commercial implementation/distribution boundary for newly proprietary code,
 - release/version compatibility contract between public core and commercial package,

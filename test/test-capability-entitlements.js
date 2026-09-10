@@ -1,66 +1,25 @@
-/**
- * RED -> GREEN tests for the shared entitlement/capability boundary.
- */
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
 import {
   CapabilityRegistry,
   FREE_CAPABILITIES,
 } from '../dist/entitlements/capabilities.js';
 import { FreeEntitlementProvider } from '../dist/entitlements/free-provider.js';
-import { PrototypeEntitlementProvider } from '../dist/prototype/prototype-entitlement-provider.js';
 
 const freeProvider = new FreeEntitlementProvider();
 const freeEntitlement = await freeProvider.getEntitlement();
-assert.strictEqual(freeEntitlement.tier, 'free');
-assert.strictEqual(freeEntitlement.source, 'free-default');
-assert.deepStrictEqual([...freeEntitlement.capabilities].sort(), [...FREE_CAPABILITIES].sort());
-assert.strictEqual(typeof freeProvider.setTier, 'undefined');
+assert.equal(freeEntitlement.tier, 'free');
+assert.equal(freeEntitlement.source, 'free-default');
+assert.deepEqual([...freeEntitlement.capabilities].sort(), [...FREE_CAPABILITIES].sort());
+assert.equal(typeof freeProvider.setTier, 'undefined');
 
 const freeRegistry = new CapabilityRegistry(freeEntitlement.capabilities);
-assert.strictEqual(freeRegistry.has('core.mcp'), true);
-assert.strictEqual(freeRegistry.has('policy.filesystem'), false);
-assert.strictEqual(freeRegistry.has('progress.eta'), false);
-assert.throws(
-  () => freeRegistry.require('policy.filesystem'),
-  /capability.*policy\.filesystem.*not available/i,
-);
-
-for (const [tier, expected] of [
-  ['free', {
-    policy: false,
-    eta: false,
-    teamDevice: false,
-    audit: false,
-  }],
-  ['pro', {
-    policy: true,
-    eta: true,
-    teamDevice: false,
-    audit: false,
-  }],
-  ['team', {
-    policy: true,
-    eta: true,
-    teamDevice: true,
-    audit: true,
-  }],
-]) {
-  const provider = new PrototypeEntitlementProvider(async () => ({
-    version: 1,
-    tier,
-    rules: [],
-  }));
-  const entitlement = await provider.getEntitlement();
-  const registry = new CapabilityRegistry(entitlement.capabilities);
-
-  assert.strictEqual(entitlement.source, 'prototype');
-  assert.strictEqual(entitlement.tier, tier);
-  assert.strictEqual(registry.has('policy.filesystem'), expected.policy);
-  assert.strictEqual(registry.has('policy.command'), expected.policy);
-  assert.strictEqual(registry.has('approvals.local'), expected.policy);
-  assert.strictEqual(registry.has('progress.eta'), expected.eta);
-  assert.strictEqual(registry.has('team.device_policy'), expected.teamDevice);
-  assert.strictEqual(registry.has('audit.local'), expected.audit);
+assert.equal(freeRegistry.has('core.mcp'), true);
+for (const paid of ['policy.filesystem', 'approvals.local', 'progress.eta', 'team.device_policy', 'audit.local']) {
+  assert.equal(freeRegistry.has(paid), false, `Free must not grant ${paid}`);
+  assert.throws(() => freeRegistry.require(paid), new RegExp(`capability.*${paid.replace('.', '\\.')}`, 'i'));
 }
 
-console.log('✅ Entitlement/capability boundary tests passed');
+const attachedCommercial = new CapabilityRegistry(['core.mcp', 'policy.filesystem']);
+assert.equal(attachedCommercial.has('policy.filesystem'), true,
+  'Public contract must still support an explicitly attached Commercial capability set');
+console.log('✅ Free entitlement and public capability contract tests passed');
