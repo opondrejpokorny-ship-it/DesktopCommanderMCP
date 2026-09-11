@@ -1,4 +1,4 @@
-name: RDC A/B diagnose user launcher restore
+name: RDC A/B recover stale user journal
 
 on:
   push:
@@ -9,39 +9,81 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  recover-user-journal:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 30
     steps:
-      - name: Run exact restore under ondre and capture output
+      - name: Recover stale journal and restore launcher under ondre
         shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference='Stop'
-          $taskName='DC2 RDC A-B Diagnose Stale Restore 20260911'
-          if(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue){ throw 'Diagnostic task already exists' }
-          $scriptPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.ps1'
-          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.done.json'
-          $logPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.log'
+          $repo='C:\DesktopCommanderTierPrototype'
+          $head=(git -c safe.directory=$repo -C $repo rev-parse HEAD).Trim()
+          if($head -ne 'b191fba107860b5d1614eb327e1ff55fbcf21d95'){ throw "Unexpected canonical HEAD: $head" }
+          $dirty=(git -c safe.directory=$repo -C $repo status --porcelain -- scripts/benchmark/rdc-ab)
+          if($dirty){ throw "Canonical A/B scripts are dirty: $dirty" }
+
+          $taskName='DC2 RDC A-B Recover Stale User Journal 20260911'
+          if(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue){ throw 'Temporary recovery task already exists' }
+          $scriptPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-recover-stale-journal.ps1'
+          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-recover-stale-journal.done.json'
+          $logPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-recover-stale-journal.log'
           Remove-Item $donePath,$logPath -Force -ErrorAction SilentlyContinue
+
           $payload=@'
-          $ErrorActionPreference='Continue'
-          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.done.json'
-          $logPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.log'
-          $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
-          try{$sid=$identity.User.Value}finally{$identity.Dispose()}
-          if($sid -ne 'S-1-5-21-3352991977-3764762469-2652498129-1001'){
-            [IO.File]::WriteAllText($logPath,"Unexpected SID: $sid",[Text.UTF8Encoding]::new($false))
-            [IO.File]::WriteAllText($donePath,'{"exitCode":97}',[Text.UTF8Encoding]::new($false))
-            exit 97
-          }
-          $restore='C:\DesktopCommanderTierPrototype\scripts\benchmark\rdc-ab\Restore-RdcAbLauncher.ps1'
+          $ErrorActionPreference='Stop'
+          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-recover-stale-journal.done.json'
+          $logPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-recover-stale-journal.log'
           $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260908-c2234dd'
+          $active=Join-Path $root 'active-variant.txt'
+          $journal=Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
           $launcher='C:\Users\ondre\AppData\Local\DesktopCommanderRemote\start-remote.cmd'
-          $output=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $restore -BenchmarkRoot $root -LauncherPath $launcher 2>&1
-          $code=$LASTEXITCODE
-          [IO.File]::WriteAllText($logPath,($output -join [Environment]::NewLine),[Text.UTF8Encoding]::new($false))
-          [IO.File]::WriteAllText($donePath,(@{exitCode=$code;sid=$sid}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
-          exit $code
+          $vbs='C:\Users\ondre\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\DesktopCommanderRemote.vbs'
+          $disabled=$vbs+'.rdc-retired-20260911'
+          $supervisor='C:\DesktopCommanderTierPrototype\scripts\benchmark\rdc-ab\Run-RdcAbSupervisor.ps1'
+          $restore='C:\DesktopCommanderTierPrototype\scripts\benchmark\rdc-ab\Restore-RdcAbLauncher.ps1'
+          try {
+            $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+            try{$sid=$identity.User.Value}finally{$identity.Dispose()}
+            if($sid -ne 'S-1-5-21-3352991977-3764762469-2652498129-1001'){ throw "Unexpected SID: $sid" }
+            if(Test-Path -LiteralPath $vbs){ throw 'Old Startup VBS unexpectedly re-enabled' }
+            if(-not(Test-Path -LiteralPath $disabled)){ throw 'Disabled Startup VBS evidence is missing' }
+            if((Get-FileHash $disabled -Algorithm SHA256).Hash.ToLowerInvariant() -ne '201bb07c9ff25dc5f08cf33d3a6a18fc1a5e33eaa63457da5fdce412e9d7af6d'){ throw 'Disabled Startup VBS hash mismatch' }
+            if(@(Get-CimInstance Win32_Process | Where-Object { [string]$_.CommandLine -like '*RDC-Benchmark-20260908-c2234dd*' }).Count -ne 0){ throw 'Old benchmark process is still running' }
+            if((Get-Content -Raw $active).Trim() -ne 'prototype'){ throw 'Old active pointer is not prototype' }
+            if(-not(Test-Path -LiteralPath $journal)){ throw 'Expected stale namespace-seal journal is missing' }
+
+            $temp="$active.recovery-$PID"
+            [IO.File]::WriteAllText($temp,('retire-recovery'+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+            Move-Item -LiteralPath $temp -Destination $active -Force
+
+            $recoveryOutput=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $supervisor -BenchmarkRoot $root 2>&1
+            $recoveryCode=$LASTEXITCODE
+            if(Test-Path -LiteralPath $journal){ throw "Journal recovery did not remove stale journal; exit=$recoveryCode output=$($recoveryOutput -join ' | ')" }
+            if(@(Get-CimInstance Win32_Process | Where-Object { [string]$_.CommandLine -like '*RDC-Benchmark-20260908-c2234dd*' }).Count -ne 0){ throw 'Recovery unexpectedly launched an old benchmark process' }
+
+            $temp="$active.prototype-$PID"
+            [IO.File]::WriteAllText($temp,('prototype'+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+            Move-Item -LiteralPath $temp -Destination $active -Force
+
+            $restoreOutput=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $restore -BenchmarkRoot $root -LauncherPath $launcher 2>&1
+            $restoreCode=$LASTEXITCODE
+            if($restoreCode -ne 0){ throw "Restore failed after journal recovery: $($restoreOutput -join ' | ')" }
+            $launcherSha=(Get-FileHash $launcher -Algorithm SHA256).Hash.ToLowerInvariant()
+            if($launcherSha -ne 'ace23a1bbd95b5d1b1965f203c767f59187ed58717c3deee4f7a4d2d8751ec65'){ throw "Restored launcher hash mismatch: $launcherSha" }
+
+            [IO.File]::WriteAllText($logPath,(($recoveryOutput+$restoreOutput) -join [Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($donePath,(@{status='ok';sid=$sid;recoveryExit=$recoveryCode;launcherSha=$launcherSha}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+          } catch {
+            if((Get-Content -Raw $active -ErrorAction SilentlyContinue).Trim() -eq 'retire-recovery'){
+              $temp="$active.rollback-$PID"
+              [IO.File]::WriteAllText($temp,('prototype'+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+              Move-Item -LiteralPath $temp -Destination $active -Force
+            }
+            [IO.File]::WriteAllText($logPath,$_.Exception.Message,[Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($donePath,(@{status='error';message=$_.Exception.Message}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+            exit 1
+          }
           '@
           $payload=($payload -replace '(?m)^          ','')
           [IO.File]::WriteAllText($scriptPath,$payload,[Text.UTF8Encoding]::new($false))
@@ -53,9 +95,11 @@ jobs:
             Start-ScheduledTask -TaskName $taskName
             $deadline=[DateTime]::UtcNow.AddMinutes(24)
             do{Start-Sleep -Seconds 2}while(-not(Test-Path $donePath) -and [DateTime]::UtcNow -lt $deadline)
-            if(-not(Test-Path $donePath)){throw 'Diagnostic restore did not finish'}
-            Write-Host "RESTORE_RESULT=$(Get-Content -Raw $donePath)"
-            if(Test-Path $logPath){Write-Host 'RESTORE_OUTPUT_START';Get-Content -Raw $logPath|Write-Host;Write-Host 'RESTORE_OUTPUT_END'}
+            if(-not(Test-Path $donePath)){throw 'User journal recovery did not finish'}
+            $result=Get-Content -Raw $donePath | ConvertFrom-Json
+            Write-Host "RECOVERY_RESULT=$(Get-Content -Raw $donePath)"
+            if(Test-Path $logPath){Write-Host 'RECOVERY_LOG_START';Get-Content -Raw $logPath|Write-Host;Write-Host 'RECOVERY_LOG_END'}
+            if($result.status -ne 'ok'){throw "User journal recovery failed: $($result.message)"}
           }finally{
             Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
           }
