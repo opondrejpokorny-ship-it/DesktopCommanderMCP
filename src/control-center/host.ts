@@ -354,7 +354,23 @@ const TOKEN=${serializedToken};
 async function api(path,options={}){const headers=new Headers(options.headers||{});headers.set('X-DC-Control-Token',TOKEN);const response=await fetch(path,{...options,headers,cache:'no-store'});if(!response.ok){let message='Request failed ('+response.status+')';try{const body=await response.json();if(body&&body.error)message=body.error}catch{}throw new Error(message)}return response.json()}
 
 function createElement(tag,text,className){const element=document.createElement(tag);if(text!==undefined)element.textContent=text;if(className)element.className=className;return element}
-window.dcControlCenter=Object.freeze({api,createElement});for(const button of document.querySelectorAll('[data-dc-target]')){button.addEventListener('click',()=>{const target=button.dataset.dcTarget;for(const view of document.querySelectorAll('[data-dc-view]'))view.hidden=view.dataset.dcView!==target})}
+window.dcControlCenter=Object.freeze({api,createElement});
+const dcViews=[...document.querySelectorAll('[data-dc-view]')];
+function dcHashTarget(){try{return decodeURIComponent(window.location.hash.slice(1))}catch{return ''}}
+function dcActivateView(target,syncHash=false){
+  const fallback=dcViews[0]?.dataset.dcView;
+  const resolved=dcViews.some((view)=>view.dataset.dcView===target)?target:fallback;
+  if(!resolved)return;
+  for(const view of dcViews)view.hidden=view.dataset.dcView!==resolved;
+  if(syncHash&&window.location.hash!=='#'+encodeURIComponent(resolved)){
+    window.history.replaceState(null,'','#'+encodeURIComponent(resolved));
+  }
+}
+for(const button of document.querySelectorAll('[data-dc-target]')){
+  button.addEventListener('click',()=>dcActivateView(button.dataset.dcTarget,true));
+}
+window.addEventListener('hashchange',()=>dcActivateView(dcHashTarget()));
+dcActivateView(dcHashTarget(),true);
 api('/api/state').then((state)=>{document.getElementById('dc-entitlement').textContent=state.entitlement.tier}).catch(()=>{document.getElementById('dc-entitlement').textContent='Disconnected'});
 ${scripts}
 </script></body></html>`;
