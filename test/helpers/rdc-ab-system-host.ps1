@@ -12,6 +12,66 @@ function Get-FunctionAst([string]$Name) {
   return $node
 }
 
+function Get-ProductionHandoffCalls($RootAst) {
+  $systemBranchBlocks = @()
+  foreach ($ifAst in @($RootAst.FindAll({
+    param($n) $n -is [Management.Automation.Language.IfStatementAst]
+  }, $true))) {
+    foreach ($clause in @($ifAst.Clauses)) {
+      if ($clause.Item1.Extent.Text -match '^\s*\$matchingWatchers\.Count\s*-eq\s*0\s*$') {
+        $systemBranchBlocks += $clause.Item2
+      }
+    }
+  }
+
+  $calls = @($RootAst.FindAll({
+    param($n) $n -is [Management.Automation.Language.CommandAst] -and
+      $n.GetCommandName() -eq 'Invoke-SystemTaskHostGracefulHandoff'
+  }, $true))
+  return @($calls | Where-Object {
+    $ancestor = $_.Parent
+    while ($null -ne $ancestor) {
+      if ($ancestor -is [Management.Automation.Language.FunctionDefinitionAst]) { return $false }
+      $ancestor = $ancestor.Parent
+    }
+    foreach ($block in $systemBranchBlocks) {
+      if ($_.Extent.StartOffset -ge $block.Extent.StartOffset -and
+          $_.Extent.EndOffset -le $block.Extent.EndOffset) {
+        return $true
+      }
+    }
+    return $false
+  })
+}
+
+foreach ($fixture in @(
+  @{ Name='missing production call'; Expected=0; Source='if ($matchingWatchers.Count -eq 0) { }' },
+  @{ Name='one production call'; Expected=1; Source=@'
+function Invoke-TestFixture { Invoke-SystemTaskHostGracefulHandoff }
+if ($matchingWatchers.Count -eq 0) {
+  'Invoke-SystemTaskHostGracefulHandoff'
+  # Invoke-SystemTaskHostGracefulHandoff
+  Invoke-SystemTaskHostGracefulHandoff
+}
+'@ },
+  @{ Name='duplicate production call'; Expected=2; Source=@'
+if ($matchingWatchers.Count -eq 0) {
+  Invoke-SystemTaskHostGracefulHandoff
+  Invoke-SystemTaskHostGracefulHandoff
+}
+'@ }
+)) {
+  $fixtureTokens = $null; $fixtureErrors = $null
+  $fixtureAst = [Management.Automation.Language.Parser]::ParseInput(
+    $fixture.Source, [ref]$fixtureTokens, [ref]$fixtureErrors
+  )
+  if ($fixtureErrors.Count) { throw "Invalid production-call contract fixture: $($fixture.Name)" }
+  $fixtureCount = @(Get-ProductionHandoffCalls $fixtureAst).Count
+  if ($fixtureCount -ne $fixture.Expected) {
+    throw "Production-call contract failed $($fixture.Name): expected $($fixture.Expected), got $fixtureCount"
+  }
+}
+
 # Load only the pure identity helpers under test; no top-level activation code runs.
 foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Test-ExactProcessRecordIdentity', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity', 'Assert-SystemTaskHostQuiesced')) {
   . ([scriptblock]::Create((Get-FunctionAst $name).Extent.Text))
@@ -19,6 +79,28 @@ foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Test-ExactProcessRecordIden
 
 $handoff = Get-FunctionAst 'Invoke-SystemTaskHostGracefulHandoff'
 $handoffText = $handoff.Extent.Text
+
+$handoffCalls = @(Get-ProductionHandoffCalls $ast)
+if ($handoffCalls.Count -ne 1) {
+  throw "Production activation must invoke SYSTEM graceful handoff exactly once; found $($handoffCalls.Count) call(s)"
+}
+
+$enterSuppression = Get-FunctionAst 'Enter-SystemTaskHandoffSuppression'
+$exitSuppression = Get-FunctionAst 'Exit-SystemTaskHandoffSuppression'
+$enterSuppressionText = $enterSuppression.Extent.Text
+$exitSuppressionText = $exitSuppression.Extent.Text
+if ($enterSuppressionText -notmatch '(?i)\bDisable-ScheduledTask\b') {
+  throw 'SYSTEM handoff suppression must disable the exact Scheduled Task before authenticated shutdown'
+}
+if ($exitSuppressionText -notmatch '(?i)\bEnable-ScheduledTask\b') {
+  throw 'SYSTEM handoff suppression must re-enable the exact Scheduled Task after stable shutdown quiescence or rollback'
+}
+if ($enterSuppressionText -match '(?i)\b(Start|Stop|Register|Unregister)-ScheduledTask\b') {
+  throw 'SYSTEM handoff suppression entry must not start, stop, register, or unregister Scheduled Tasks'
+}
+if ($exitSuppressionText -match '(?i)\b(Start|Stop|Register|Unregister|Disable)-ScheduledTask\b') {
+  throw 'SYSTEM handoff suppression exit must only re-enable the existing exact Scheduled Task'
+}
 if ($handoffText -match '(?i)\b(Set|Register|Unregister|Start|Stop)-ScheduledTask\b') {
   throw 'SYSTEM host handoff must never mutate or directly start/stop the Scheduled Task'
 }
@@ -34,6 +116,13 @@ $phaseMarker = $handoffText.IndexOf('awaiting-authenticated-shutdown')
 $remoteExit = $handoffText.IndexOf('remoteProcess.WaitForExit')
 $localMcpExit = $handoffText.IndexOf('localProcess.WaitForExit')
 $wrapperExit = $handoffText.IndexOf('wrapperProcess.WaitForExit')
+$identityCheck = $handoffText.IndexOf('Assert-ExactSystemTaskHostIdentity')
+$enterCall = $handoffText.IndexOf('Enter-SystemTaskHandoffSuppression')
+$exitCall = $handoffText.IndexOf('Exit-SystemTaskHandoffSuppression')
+if ($identityCheck -lt 0 -or $enterCall -lt 0 -or $exitCall -lt 0 -or
+    $identityCheck -gt $enterCall -or $enterCall -gt $phaseMarker -or $phaseMarker -gt $exitCall) {
+  throw 'SYSTEM task suppression ordering must be identity-check -> disable -> authenticated-shutdown boundary -> re-enable'
+}
 if ($phaseMarker -lt 0 -or $remoteExit -lt 0 -or $localMcpExit -lt 0 -or $wrapperExit -lt 0 -or
     $phaseMarker -gt $remoteExit -or $remoteExit -gt $localMcpExit -or $localMcpExit -gt $wrapperExit) {
   throw 'SYSTEM wrapper may complete only after authenticated Remote and local MCP exit'

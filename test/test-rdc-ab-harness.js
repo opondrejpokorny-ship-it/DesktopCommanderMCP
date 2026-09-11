@@ -1741,6 +1741,17 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
     await fs.writeFile(systemTaskInventoryPath, JSON.stringify([realSystemTask]));
     await fs.writeFile(systemProcessInventoryPath, JSON.stringify(realSystemProcesses));
     console.log('PASS RDC A/B production SYSTEM preflight rejects identity and task drift');
+    assert.doesNotThrow(() => process.kill(systemFixtureWrapper.child.pid, 0),
+      'SYSTEM fixture wrapper must still be alive before production handoff');
+    assert.doesNotThrow(() => process.kill(systemFixtureRemotePid, 0),
+      'SYSTEM fixture Remote must still be alive before production handoff');
+    assert.doesNotThrow(() => process.kill(systemFixtureLocalPid, 0),
+      'SYSTEM fixture local MCP must still be alive before production handoff');
+    await assert.rejects(
+      () => fs.access(path.join(signals, 'authenticated-system-shutdown')),
+      /ENOENT|no such file/i,
+      'SYSTEM authenticated-shutdown marker must not exist before production handoff',
+    );
     const launchMarkersBeforeSystemHandoff = new Set(
       (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
     );
@@ -1955,6 +1966,75 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       [],
       message,
     );
+
+    const shutdownRestartScenario = await startExtraSystemScenario('shutdown-restart');
+    const shutdownRestartLaunches = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    const shutdownRestartActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false),
+      shutdownRestartActivation,
+      'shutdown-restart handoff boundary',
+    );
+    await fs.access(path.join(signals, 'system-task-suppression-active'));
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...shutdownRestartScenario.task, State: 'Running', LastTaskResult: 267009,
+    }]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([
+      systemProcesses[0],
+      { ...shutdownRestartScenario.processes[1], ProcessId: 2147469102, CreationDate: '2026-01-03T00:01:00.000Z' },
+      { ...shutdownRestartScenario.processes[2], ProcessId: 2147469103, ParentProcessId: 2147469102, CreationDate: '2026-01-03T00:02:00.000Z' },
+      { ...shutdownRestartScenario.processes[3], ProcessId: 2147469104, ParentProcessId: 2147469103, CreationDate: '2026-01-03T00:03:00.000Z' },
+    ]));
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
+    const shutdownRestartResult = await shutdownRestartActivation.completed;
+    assert.notEqual(shutdownRestartResult.status, 0,
+      'a SYSTEM task restart during authenticated shutdown must be fatal');
+    assert.match(`${shutdownRestartResult.stdout}\n${shutdownRestartResult.stderr}`, /restart|quiescen|state/i);
+    await assertNoScenarioLaunch(shutdownRestartLaunches,
+      'replacement launcher must not run after a SYSTEM restart during shutdown');
+    console.log('PASS RDC A/B rejects a SYSTEM restart during authenticated shutdown');
+
+    const reenableFailureScenario = await startExtraSystemScenario('reenable-failure');
+    const reenableFailureLaunches = new Set(
+      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
+    );
+    const reenableFailureActivation = spawnCaptured('powershell.exe', activationArgs, {
+      env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForConditionOrProcessExit(
+      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false),
+      reenableFailureActivation,
+      're-enable-failure handoff shutdown boundary',
+    );
+    await fs.writeFile(path.join(signals, 'fail-system-task-reenable'), '');
+    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
+    await waitForDirectoryCondition(
+      signals,
+      async () => fs.access(path.join(signals, 'system-wrapper-exit')).then(() => true, () => false),
+      [reenableFailureActivation, reenableFailureScenario.wrapper],
+      're-enable-failure fixture exit',
+    );
+    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
+      ...reenableFailureScenario.task, State: 'Ready', LastTaskResult: 0,
+    }]));
+    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([]));
+    const reenableFailureResult = await reenableFailureActivation.completed;
+    assert.notEqual(reenableFailureResult.status, 0,
+      'SYSTEM task re-enable failure must be fatal');
+    assert.match(
+      `${reenableFailureResult.stdout}\n${reenableFailureResult.stderr}`,
+      /task suppression rollback re-enable failed|task re-enable failure/i,
+    );
+    await assertNoScenarioLaunch(reenableFailureLaunches,
+      'replacement launcher must not run when SYSTEM task re-enable fails');
+    await fs.access(path.join(signals, 'system-task-suppression-active'));
+    await fs.rm(path.join(signals, 'fail-system-task-reenable'), { force: true });
+    await fs.rm(path.join(signals, 'system-task-suppression-active'), { force: true });
+    console.log('PASS RDC A/B SYSTEM task re-enable failure is explicit and fatal');
 
     const selectionScenario = await startExtraSystemScenario('selection-drift');
     const selectionLaunches = new Set(
