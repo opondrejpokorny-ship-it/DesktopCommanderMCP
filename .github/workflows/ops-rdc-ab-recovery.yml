@@ -1,4 +1,4 @@
-name: RDC A/B inspect merged live handoff
+name: RDC A/B inspect SYSTEM restart cause
 
 on:
   push:
@@ -13,30 +13,46 @@ jobs:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
     steps:
-      - name: Read-only merged handoff inspection
+      - name: Read-only SYSTEM restart diagnostics
         shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference='Stop'
           $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260911-db84475'
           $out='C:\Codebase44\data\codebase44\rdc-system\ab-activate-db84475-3.stdout.log'
           $err='C:\Codebase44\data\codebase44\rdc-system\ab-activate-db84475-3.stderr.log'
+          $state='C:\Codebase44\data\codebase44\rdc-system\bootstrap-state.json'
+          $bootOut='C:\Codebase44\data\codebase44\rdc-system\bootstrap.stdout.log'
+          $bootErr='C:\Codebase44\data\codebase44\rdc-system\bootstrap.stderr.log'
+          $wrapper='C:\Codebase44\system\rdc-system\Start-RemoteDesktopCommanderSystem.ps1'
           $all=Get-CimInstance Win32_Process
           $acts=@($all|Where-Object{[string]$_.CommandLine -match 'Activate-RdcAbLauncher\.ps1' -and [string]$_.CommandLine -match 'RDC-Benchmark-20260911-db84475'})
           Write-Host "ACTIVATION_COUNT=$($acts.Count)"
-          foreach($p in $acts){Write-Host "ACT pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) cmd=$($p.CommandLine)"}
+          foreach($p in $acts){Write-Host "ACT pid=$($p.ProcessId) ppid=$($p.ParentProcessId) cmd=$($p.CommandLine)"}
           $remotes=@($all|Where-Object{$_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'dist\\index\.js.*remote'})
           Write-Host "REMOTE_COUNT=$($remotes.Count)"
           foreach($p in $remotes){
             $o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
             Write-Host "REMOTE pid=$($p.ProcessId) ppid=$($p.ParentProcessId) sid=$($o.Sid) created=$($p.CreationDate) cmd=$($p.CommandLine)"
           }
-          $task=Get-ScheduledTask -TaskName 'Codebase44 Remote Desktop Commander SYSTEM' -ErrorAction SilentlyContinue
-          if($task){
-            $info=Get-ScheduledTaskInfo -TaskName $task.TaskName
-            Write-Host "TASK state=$($task.State) enabled=$($task.Settings.Enabled) lastResult=$($info.LastTaskResult)"
+          $task=Get-ScheduledTask -TaskName 'Codebase44 Remote Desktop Commander SYSTEM'
+          $info=Get-ScheduledTaskInfo -TaskName $task.TaskName
+          Write-Host "TASK state=$($task.State) enabled=$($task.Settings.Enabled) lastRun=$($info.LastRunTime.ToString('o')) lastResult=$($info.LastTaskResult) restartCount=$($task.Settings.RestartCount) restartInterval=$($task.Settings.RestartInterval)"
+          if(Test-Path $state){
+            Write-Host 'BOOTSTRAP_STATE_START'
+            $j=Get-Content -Raw $state|ConvertFrom-Json
+            foreach($prop in $j.PSObject.Properties){
+              $name=[string]$prop.Name
+              if($name -match '(?i)token|secret|password|auth'){ continue }
+              $value=$prop.Value
+              if($value -is [string] -and $value.Length -gt 500){$value=$value.Substring(0,500)}
+              Write-Host "$name=$value"
+            }
+            Write-Host 'BOOTSTRAP_STATE_END'
           }
-          if(Test-Path $out){Write-Host 'STDOUT_START';Get-Content -Raw $out|Write-Host;Write-Host 'STDOUT_END'}
-          if(Test-Path $err){Write-Host 'STDERR_START';Get-Content -Raw $err|Write-Host;Write-Host 'STDERR_END'}
-          if(Test-Path (Join-Path $root 'active-variant.txt')){Write-Host "ACTIVE=$((Get-Content -Raw (Join-Path $root 'active-variant.txt')).Trim())"}
+          if(Test-Path $bootOut){Write-Host 'BOOT_OUT_START';Get-Content $bootOut -Tail 120|Write-Host;Write-Host 'BOOT_OUT_END'}
+          if(Test-Path $bootErr){Write-Host 'BOOT_ERR_START';Get-Content $bootErr -Tail 120|Write-Host;Write-Host 'BOOT_ERR_END'}
+          if(Test-Path $wrapper){Write-Host 'WRAPPER_SOURCE_START';Get-Content -Raw $wrapper|Write-Host;Write-Host 'WRAPPER_SOURCE_END'}
+          if(Test-Path $out){Write-Host 'ACT_OUT_START';Get-Content -Raw $out|Write-Host;Write-Host 'ACT_OUT_END'}
+          if(Test-Path $err){Write-Host 'ACT_ERR_START';Get-Content -Raw $err|Write-Host;Write-Host 'ACT_ERR_END'}
+          Write-Host "ACTIVE=$((Get-Content -Raw (Join-Path $root 'active-variant.txt')).Trim())"
           Write-Host "JOURNAL=$(Test-Path (Join-Path $root '.rdc-ab-runtime-namespace-seal.json'))"
-          if(Test-Path (Join-Path $root '.rdc-ab-runtime-namespace-seal.json')){Write-Host 'JOURNAL_START';Get-Content -Raw (Join-Path $root '.rdc-ab-runtime-namespace-seal.json')|Write-Host;Write-Host 'JOURNAL_END'}
