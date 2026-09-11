@@ -1,4 +1,4 @@
-name: RDC A/B inspect live state
+name: RDC A/B retire stale user autostart
 
 on:
   push:
@@ -9,35 +9,93 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  retire:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
-      - name: Inspect RDC processes and authorities
+      - name: Restore old user launcher under exact user identity
         shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host "HOST=$env:COMPUTERNAME IDENTITY=$(whoami)"
-          $all = Get-CimInstance Win32_Process
-          $remotes = @($all | Where-Object { $_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'dist\\index\.js.*remote' })
-          Write-Host "REMOTE_COUNT=$($remotes.Count)"
-          foreach ($p in $remotes) {
-            $o = Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-            Write-Host "REMOTE pid=$($p.ProcessId) ppid=$($p.ParentProcessId) sid=$($o.Sid) cmd=$($p.CommandLine)"
+          if ($env:COMPUTERNAME -ne 'WIN-A0OFGC4ORFI') { throw 'Unexpected runner host' }
+          if ((whoami) -ne 'nt authority\system') { throw 'Recovery coordinator is not SYSTEM' }
+
+          $taskName = 'DC2 RDC A-B Retire Stale User Harness 20260911'
+          if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+            throw 'Temporary user cleanup task already exists'
           }
-          $old = @($all | Where-Object { [string]$_.CommandLine -like '*RDC-Benchmark-20260908-c2234dd*' })
-          Write-Host "OLD_ROOT_PROCESS_COUNT=$($old.Count)"
-          foreach ($p in $old) {
-            $o = Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-            Write-Host "OLD pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) sid=$($o.Sid) cmd=$($p.CommandLine)"
+
+          $scriptPath = 'C:\Users\ondre\AppData\Local\Temp\rdc-ab-retire-stale-user.ps1'
+          $successPath = 'C:\Users\ondre\AppData\Local\Temp\rdc-ab-retire-stale-user.success.json'
+          $failurePath = 'C:\Users\ondre\AppData\Local\Temp\rdc-ab-retire-stale-user.failure.txt'
+          Remove-Item -LiteralPath $successPath,$failurePath -Force -ErrorAction SilentlyContinue
+
+          $payload = @'
+          $ErrorActionPreference = 'Stop'
+          $successPath = 'C:\Users\ondre\AppData\Local\Temp\rdc-ab-retire-stale-user.success.json'
+          $failurePath = 'C:\Users\ondre\AppData\Local\Temp\rdc-ab-retire-stale-user.failure.txt'
+          try {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            try { $sid = $identity.User.Value } finally { $identity.Dispose() }
+            if ($sid -ne 'S-1-5-21-3352991977-3764762469-2652498129-1001') { throw "Unexpected cleanup SID: $sid" }
+
+            $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260908-c2234dd'
+            $active=Join-Path $root 'active-variant.txt'
+            $launcher='C:\Users\ondre\AppData\Local\DesktopCommanderRemote\start-remote.cmd'
+            $backup=$launcher+'.rdc-ab-original'
+            $metadata=Join-Path $root 'host\launcher-install.json'
+            $vbs='C:\Users\ondre\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\DesktopCommanderRemote.vbs'
+            $disabled=$vbs+'.rdc-retired-20260911'
+            $restore='C:\DesktopCommanderTierPrototype\scripts\benchmark\rdc-ab\Restore-RdcAbLauncher.ps1'
+            $aclHelper='C:\DesktopCommanderTierPrototype\scripts\benchmark\rdc-ab\RdcAbAcl.ps1'
+
+            $oldProcesses=@(Get-CimInstance Win32_Process | Where-Object { [string]$_.CommandLine -like '*RDC-Benchmark-20260908-c2234dd*' })
+            if($oldProcesses.Count -ne 0){ throw "Old benchmark processes still running: $($oldProcesses.Count)" }
+            $acl=Get-Acl -LiteralPath $root
+            if($acl.Owner -ne 'WIN-A0OFGC4ORFI\ondre' -or -not $acl.AreAccessRulesProtected){ throw 'Old root ownership/ACL mismatch' }
+            if((Get-Content -Raw $active).Trim() -ne 'prototype'){ throw 'Old root is not prototype-selected' }
+
+            function Sha([string]$p){ (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() }
+            if((Sha $vbs) -ne '201bb07c9ff25dc5f08cf33d3a6a18fc1a5e33eaa63457da5fdce412e9d7af6d'){ throw 'Startup VBS hash mismatch' }
+            if(Test-Path -LiteralPath $disabled){ throw 'Disabled Startup VBS target already exists' }
+            if((Sha $launcher) -ne '0c945df02143fc72898ecf163333db2697cddec8dd70fc8596329b9e699cfe64'){ throw 'Delegator launcher hash mismatch' }
+            if((Sha $backup) -ne 'ace23a1bbd95b5d1b1965f203c767f59187ed58717c3deee4f7a4d2d8751ec65'){ throw 'Launcher backup hash mismatch' }
+            if((Sha $restore) -ne '9a4f2a135ac02af2f3ef6b2b28cf6cf2154a7ded39ec46c6f7bc47a5bbd67e02'){ throw 'Restore script hash mismatch' }
+            if((Sha $aclHelper) -ne '1545d5282ee8ff6370307f84288450f84987f3d5c430495e14fdc41c1fa8b30c'){ throw 'ACL helper hash mismatch' }
+
+            $meta=Get-Content -Raw $metadata | ConvertFrom-Json
+            if([int]$meta.schemaVersion -ne 1 -or [string]$meta.backupSha256 -ne 'ace23a1bbd95b5d1b1965f203c767f59187ed58717c3deee4f7a4d2d8751ec65'){ throw 'Launcher metadata mismatch' }
+
+            Move-Item -LiteralPath $vbs -Destination $disabled
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $restore -BenchmarkRoot $root -LauncherPath $launcher
+            if($LASTEXITCODE -ne 0){ throw "Restore script exit code $LASTEXITCODE" }
+            if((Sha $launcher) -ne 'ace23a1bbd95b5d1b1965f203c767f59187ed58717c3deee4f7a4d2d8751ec65'){ throw 'Restored launcher hash mismatch' }
+            if(Test-Path -LiteralPath $vbs){ throw 'Old Startup VBS remains enabled' }
+
+            [IO.File]::WriteAllText($successPath, (@{status='ok'; sid=$sid; launcherSha=(Sha $launcher); disabledStartup=$disabled} | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+          } catch {
+            [IO.File]::WriteAllText($failurePath, $_.Exception.Message, [Text.UTF8Encoding]::new($false))
+            exit 1
           }
-          $task = Get-ScheduledTask -TaskName 'Codebase44 Remote Desktop Commander SYSTEM' -ErrorAction Stop
-          $info = Get-ScheduledTaskInfo -TaskName 'Codebase44 Remote Desktop Commander SYSTEM' -ErrorAction Stop
-          Write-Host "SYSTEM_TASK state=$($task.State) lastResult=$($info.LastTaskResult) lastRun=$($info.LastRunTime.ToString('o'))"
-          $vbs='C:\Users\ondre\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\DesktopCommanderRemote.vbs'
-          Write-Host "USER_STARTUP_VBS_EXISTS=$(Test-Path -LiteralPath $vbs)"
-          $oldRoot='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260908-c2234dd'
-          if(Test-Path -LiteralPath $oldRoot){
-            Write-Host "OLD_ACTIVE=$((Get-Content -Raw (Join-Path $oldRoot 'active-variant.txt')).Trim())"
-            Write-Host "OLD_OWNER=$((Get-Acl -LiteralPath $oldRoot).Owner)"
+          '@
+          $payload = ($payload -replace '(?m)^          ','')
+          [IO.File]::WriteAllText($scriptPath,$payload,[Text.UTF8Encoding]::new($false))
+
+          $action = New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "'+$scriptPath+'"')
+          $principal = New-ScheduledTaskPrincipal -UserId 'ondre' -LogonType Interactive -RunLevel Limited
+          $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 25) -MultipleInstances IgnoreNew
+          Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+
+          try {
+            Start-ScheduledTask -TaskName $taskName
+            $deadline=[DateTime]::UtcNow.AddMinutes(24)
+            do {
+              Start-Sleep -Seconds 2
+              if(Test-Path -LiteralPath $successPath){ break }
+              if(Test-Path -LiteralPath $failurePath){ throw "User cleanup failed: $((Get-Content -Raw $failurePath))" }
+            } while([DateTime]::UtcNow -lt $deadline)
+            if(-not (Test-Path -LiteralPath $successPath)){ throw 'User cleanup did not complete before deadline' }
+            Write-Host "USER_CLEANUP_SUCCESS $((Get-Content -Raw $successPath))"
+          } finally {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
           }
