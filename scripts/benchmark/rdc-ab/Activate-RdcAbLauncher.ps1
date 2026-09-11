@@ -259,8 +259,14 @@ function Get-SystemTaskHostInventory($Contract) {
         -not (Test-Path -LiteralPath $processPath -PathType Leaf)) {
       return [pscustomobject]@{ Tasks = @(); Processes = @() }
     }
+    $tasks = @((Get-Content -Raw -LiteralPath $taskPath | ConvertFrom-Json))
+    if (Test-Path -LiteralPath (Join-Path $testControl 'system-task-suppression-active') -PathType Leaf) {
+      foreach ($task in $tasks) {
+        $task | Add-Member -NotePropertyName Enabled -NotePropertyValue $false -Force
+      }
+    }
     return [pscustomobject]@{
-      Tasks = @((Get-Content -Raw -LiteralPath $taskPath | ConvertFrom-Json))
+      Tasks = $tasks
       Processes = @((Get-Content -Raw -LiteralPath $processPath | ConvertFrom-Json))
     }
   }
@@ -273,6 +279,7 @@ function Get-SystemTaskHostInventory($Contract) {
         TaskPath = [string]$_.TaskPath
         TaskName = [string]$_.TaskName
         State = [string]$_.State
+        Enabled = [bool]$_.Settings.Enabled
         LastTaskResult = [int64]$taskInfo.LastTaskResult
         Principal = [pscustomobject]@{
           UserId = [string]$_.Principal.UserId
@@ -315,7 +322,42 @@ function Get-SystemTaskHostInventory($Contract) {
   return [pscustomobject]@{ Tasks = $tasks; Processes = $processes }
 }
 
-function Assert-ExactSystemTaskDefinition($TaskInventory, $Contract, [string[]]$AllowedStates = @('Running')) {
+function Enter-SystemTaskHandoffSuppression($Contract) {
+  $suppressed = $false
+  try {
+    if ($testControl) {
+      [IO.File]::WriteAllText((Join-Path $testControl 'system-task-suppression-active'), '')
+    } else {
+      Disable-ScheduledTask -TaskName ([string]$Contract.TaskName) -TaskPath ([string]$Contract.TaskPath) -ErrorAction Stop | Out-Null
+    }
+    $suppressed = $true
+    $inventory = Get-SystemTaskHostInventory $Contract
+    [void](Assert-ExactSystemTaskDefinition -TaskInventory $inventory.Tasks -Contract $Contract -AllowedStates @('Running','Disabled') -ExpectedEnabled $false)
+  } catch {
+    $entryError = $_.Exception.Message
+    if ($suppressed) {
+      try {
+        Exit-SystemTaskHandoffSuppression $Contract
+      } catch {
+        throw "SYSTEM task suppression entry failed: $entryError; rollback re-enable failed: $($_.Exception.Message)"
+      }
+    }
+    throw "SYSTEM task suppression entry failed: $entryError"
+  }
+}
+
+function Exit-SystemTaskHandoffSuppression($Contract) {
+  if ($testControl) {
+    if (Test-Path -LiteralPath (Join-Path $testControl 'fail-system-task-reenable') -PathType Leaf) {
+      throw 'Test-controlled SYSTEM task re-enable failure'
+    }
+    Remove-Item -LiteralPath (Join-Path $testControl 'system-task-suppression-active') -Force -ErrorAction Stop
+  } else {
+    Enable-ScheduledTask -TaskName ([string]$Contract.TaskName) -TaskPath ([string]$Contract.TaskPath) -ErrorAction Stop | Out-Null
+  }
+}
+
+function Assert-ExactSystemTaskDefinition($TaskInventory, $Contract, [string[]]$AllowedStates = @('Running'), [bool]$ExpectedEnabled = $true) {
   $tasks = @($TaskInventory | Where-Object {
     ([string]$_.TaskPath).Equals([string]$Contract.TaskPath, [StringComparison]::OrdinalIgnoreCase) -and
     ([string]$_.TaskName).Equals([string]$Contract.TaskName, [StringComparison]::OrdinalIgnoreCase)
@@ -323,6 +365,10 @@ function Assert-ExactSystemTaskDefinition($TaskInventory, $Contract, [string[]]$
   if ($tasks.Count -ne 1) { throw "Expected exactly one configured SYSTEM RDC task; found $($tasks.Count)" }
   $task = $tasks[0]
   if ([string]$task.State -notin $AllowedStates) { throw "SYSTEM RDC task state is not allowed for handoff: $([string]$task.State)" }
+  $actualEnabled = if ($null -ne $task.PSObject.Properties['Enabled']) { [bool]$task.Enabled } else { $true }
+  if ($actualEnabled -ne $ExpectedEnabled) {
+    throw "SYSTEM RDC task enabled state is not exact for handoff: expected $ExpectedEnabled got $actualEnabled"
+  }
 
   $principal = $task.Principal
   $systemUsers = @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18')
@@ -464,8 +510,9 @@ function Assert-ExactSystemTaskHostIdentity($TaskInventory, $ProcessInventory, $
   }
 }
 
-function Assert-SystemTaskHostQuiesced($TaskInventory, $ProcessInventory, $Contract) {
-  $task = Assert-ExactSystemTaskDefinition -TaskInventory $TaskInventory -Contract $Contract -AllowedStates @('Ready')
+function Assert-SystemTaskHostQuiesced($TaskInventory, $ProcessInventory, $Contract, [bool]$ExpectedEnabled = $true) {
+  $allowedStates = if ($ExpectedEnabled) { @('Ready') } else { @('Ready','Disabled') }
+  $task = Assert-ExactSystemTaskDefinition -TaskInventory $TaskInventory -Contract $Contract -AllowedStates $allowedStates -ExpectedEnabled $ExpectedEnabled
   if ($null -eq $task.LastTaskResult -or [int64]$task.LastTaskResult -ne 0) {
     throw "SYSTEM RDC task did not record a successful wrapper exit ($([string]$task.LastTaskResult))"
   }
@@ -501,6 +548,7 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
   $wrapperProcess = $null
   $remoteProcess = $null
   $localProcesses = @()
+  $taskSuppressed = $false
   try {
     $wrapperProcess = [Diagnostics.Process]::GetProcessById([int]$wrapperRecord.ProcessId)
     $remoteProcess = [Diagnostics.Process]::GetProcessById([int]$remoteRecord.ProcessId)
@@ -546,6 +594,9 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
       throw 'SYSTEM host identity changed immediately before authenticated shutdown handoff'
     }
 
+    Enter-SystemTaskHandoffSuppression $Contract
+    $taskSuppressed = $true
+
     if ($testControl) { [IO.File]::WriteAllText((Join-Path $testControl 'authenticated-shutdown-ready'), '') }
     [ordered]@{
       phase = 'awaiting-authenticated-shutdown'
@@ -587,7 +638,7 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
     do {
       try {
         $postInventory = Get-SystemTaskHostInventory $Contract
-        Assert-SystemTaskHostQuiesced -TaskInventory $postInventory.Tasks -ProcessInventory $postInventory.Processes -Contract $Contract
+        Assert-SystemTaskHostQuiesced -TaskInventory $postInventory.Tasks -ProcessInventory $postInventory.Processes -Contract $Contract -ExpectedEnabled $false
         if ($null -eq $stableSince) { $stableSince = [DateTime]::UtcNow }
         if ($testControl) {
           [IO.File]::WriteAllText((Join-Path $testControl 'system-quiescence-observed'), '')
@@ -607,7 +658,26 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
       $detail = if ($null -ne $lastQuiescenceError) { $lastQuiescenceError.Exception.Message } else { 'stable interval was not sustained' }
       throw "SYSTEM task host did not become stably quiescent after graceful shutdown: $detail"
     }
+
+    $preEnableInventory = Get-SystemTaskHostInventory $Contract
+    [void](Assert-ExactSystemTaskDefinition -TaskInventory $preEnableInventory.Tasks -Contract $Contract -AllowedStates @('Ready','Disabled') -ExpectedEnabled $false)
+    Exit-SystemTaskHandoffSuppression $Contract
+    $reenabledInventory = Get-SystemTaskHostInventory $Contract
+    try {
+      Assert-SystemTaskHostQuiesced -TaskInventory $reenabledInventory.Tasks -ProcessInventory $reenabledInventory.Processes -Contract $Contract
+    } catch {
+      throw "SYSTEM task post-reenable quiescence failed: $($_.Exception.Message)"
+    }
+    $taskSuppressed = $false
   } finally {
+    if ($taskSuppressed) {
+      try {
+        Exit-SystemTaskHandoffSuppression $Contract
+        $taskSuppressed = $false
+      } catch {
+        throw "SYSTEM task suppression rollback re-enable failed: $($_.Exception.Message)"
+      }
+    }
     foreach ($localProcess in $localProcesses) { if ($null -ne $localProcess) { $localProcess.Dispose() } }
     if ($null -ne $remoteProcess) { $remoteProcess.Dispose() }
     if ($null -ne $wrapperProcess) { $wrapperProcess.Dispose() }
@@ -746,6 +816,8 @@ try {
         throw 'Test-controlled replacement launcher failure'
       }
 
+
+
       Invoke-SystemTaskHostGracefulHandoff -HostInfo $systemHost -Contract $systemContract -ShutdownWaitSeconds $ShutdownWaitSeconds -Variant ([string]$validated.variant)
 
       # The selected runtime is authority-sensitive across the shutdown window.
@@ -768,7 +840,11 @@ try {
       # coordination contract; the harness deliberately does not disable or
       # rewrite the task to cover that external authority.
       $finalSystemInventory = Get-SystemTaskHostInventory $systemContract
-      Assert-SystemTaskHostQuiesced -TaskInventory $finalSystemInventory.Tasks -ProcessInventory $finalSystemInventory.Processes -Contract $systemContract
+      try {
+        Assert-SystemTaskHostQuiesced -TaskInventory $finalSystemInventory.Tasks -ProcessInventory $finalSystemInventory.Processes -Contract $systemContract
+      } catch {
+        throw "SYSTEM task final pre-launch quiescence failed: $($_.Exception.Message)"
+      }
       Assert-NoCompetingHostOrchestrator $legacyContract $systemContract.TaskPath $systemContract.TaskName
 
       $startedWrapper = Start-Process -FilePath $cmdPath -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
