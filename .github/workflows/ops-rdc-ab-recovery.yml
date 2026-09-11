@@ -1,4 +1,4 @@
-name: RDC A/B inspect stale journal identity
+name: RDC A/B test elevated user visibility
 
 on:
   push:
@@ -9,26 +9,44 @@ permissions:
   contents: read
 
 jobs:
-  inspect-journal:
+  test-user-high:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
     steps:
-      - name: Inspect journal PID identity from SYSTEM
+      - name: Test ondre Highest process visibility
         shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference='Stop'
-          $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260908-c2234dd'
-          $journalPath=Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
-          if(-not(Test-Path $journalPath)){throw 'Journal missing'}
-          $j=Get-Content -Raw $journalPath|ConvertFrom-Json
-          Write-Host "JOURNAL supervisorPid=$($j.SupervisorPid) supervisorStart=$($j.SupervisorStartUtc) childPid=$($j.ChildPid) childStart=$($j.ChildStartUtc) ownerSid=$($j.OwnerSid)"
-          Write-Host "JOURNAL repo=$($j.Repository) entry=$($j.Entrypoint) rights=$($j.Rights)"
-          foreach($pidValue in @([int]$j.SupervisorPid,[int]$j.ChildPid)){
-            if($pidValue -le 0){continue}
-            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-            if(-not $p){Write-Host "PID $pidValue ABSENT";continue}
-            $owner=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-            Write-Host "PID $pidValue PRESENT creation=$($p.CreationDate) name=$($p.Name) ppid=$($p.ParentProcessId) sid=$($owner.Sid) exe=$($p.ExecutablePath) cmd=$($p.CommandLine)"
+          $taskName='DC2 RDC A-B Test Elevated User Visibility 20260911'
+          if(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue){throw 'Temporary task already exists'}
+          $scriptPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-test-elevated-visibility.ps1'
+          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-test-elevated-visibility.json'
+          Remove-Item $donePath -Force -ErrorAction SilentlyContinue
+          $payload=@'
+          $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+          try{$sid=$identity.User.Value}finally{$identity.Dispose()}
+          $systemRemote=Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'DesktopCommanderTierPrototype.*dist\\index\.js.*remote' } | Select-Object -First 1
+          $result=@{
+            sid=$sid
+            isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            found=[bool]$systemRemote
+            commandVisible=([bool]([string]$systemRemote.CommandLine))
+            pid=if($systemRemote){[int]$systemRemote.ProcessId}else{0}
           }
-          $allOld=@(Get-CimInstance Win32_Process|Where-Object{[string]$_.CommandLine -like '*RDC-Benchmark-20260908-c2234dd*'})
-          Write-Host "EXACT_OLD_ROOT_VISIBLE_COUNT=$($allOld.Count)"
+          [IO.File]::WriteAllText('C:\Users\ondre\AppData\Local\Temp\rdc-ab-test-elevated-visibility.json',($result|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+          '@
+          $payload=($payload -replace '(?m)^          ','')
+          [IO.File]::WriteAllText($scriptPath,$payload,[Text.UTF8Encoding]::new($false))
+          $action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "'+$scriptPath+'"')
+          $principal=New-ScheduledTaskPrincipal -UserId 'ondre' -LogonType Interactive -RunLevel Highest
+          $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -MultipleInstances IgnoreNew
+          Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+          try{
+            Start-ScheduledTask -TaskName $taskName
+            $deadline=[DateTime]::UtcNow.AddMinutes(2)
+            do{Start-Sleep -Seconds 1}while(-not(Test-Path $donePath) -and [DateTime]::UtcNow -lt $deadline)
+            if(-not(Test-Path $donePath)){throw 'Elevated user visibility task did not finish'}
+            Write-Host "ELEVATED_USER_RESULT=$(Get-Content -Raw $donePath)"
+          }finally{
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+          }
