@@ -1,0 +1,79 @@
+name: RDC A/B recovery
+
+on:
+  push:
+    branches:
+      - ops/rdc-ab-recover-online-20260911
+
+permissions:
+  contents: read
+
+jobs:
+  recover-rdc:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Start exact SYSTEM RDC task
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:COMPUTERNAME -ne 'WIN-A0OFGC4ORFI') {
+            throw "Unexpected runner host: $env:COMPUTERNAME"
+          }
+
+          $taskName = 'Codebase44 Remote Desktop Commander SYSTEM'
+          $expectedWrapper = 'C:\Codebase44\system\rdc-system\Start-RemoteDesktopCommanderSystem.ps1'
+          $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
+
+          if ([string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18')) {
+            throw 'Unexpected Scheduled Task principal'
+          }
+          if ([string]$task.Principal.RunLevel -ne 'Highest') {
+            throw 'Unexpected Scheduled Task run level'
+          }
+          if ($task.Actions.Count -ne 1) {
+            throw 'Unexpected Scheduled Task action count'
+          }
+          $action = $task.Actions[0]
+          if ([IO.Path]::GetFullPath([string]$action.Execute) -ne [IO.Path]::GetFullPath('C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe')) {
+            throw 'Unexpected Scheduled Task executable'
+          }
+          if ([string]$action.Arguments -notmatch [regex]::Escape($expectedWrapper)) {
+            throw 'Unexpected Scheduled Task wrapper'
+          }
+
+          $existing = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'node.exe' -and $_.CommandLine -match 'DesktopCommanderTierPrototype.*dist\\index\.js.*remote'
+          })
+          if ($existing.Count -ne 0) {
+            throw "Remote process already exists before recovery: $($existing.Count)"
+          }
+
+          Start-ScheduledTask -TaskName $taskName -TaskPath '\'
+
+          $deadline = [DateTime]::UtcNow.AddSeconds(90)
+          do {
+            Start-Sleep -Seconds 2
+            $remotes = @(Get-CimInstance Win32_Process | Where-Object {
+              $_.Name -eq 'node.exe' -and $_.CommandLine -match 'DesktopCommanderTierPrototype.*dist\\index\.js.*remote'
+            })
+            if ($remotes.Count -eq 1) { break }
+          } while ([DateTime]::UtcNow -lt $deadline)
+
+          if ($remotes.Count -ne 1) {
+            throw "Expected exactly one canonical Remote after task start; found $($remotes.Count)"
+          }
+
+          $owner = Invoke-CimMethod -InputObject $remotes[0] -MethodName GetOwnerSid -ErrorAction Stop
+          if ([string]$owner.Sid -ne 'S-1-5-18') {
+            throw 'Recovered Remote is not owned by SYSTEM'
+          }
+
+          $children = @(Get-CimInstance Win32_Process | Where-Object {
+            $_.ParentProcessId -eq $remotes[0].ProcessId -and $_.Name -eq 'node.exe'
+          })
+          if ($children.Count -ne 1) {
+            throw "Expected exactly one local MCP child; found $($children.Count)"
+          }
+
+          Write-Host "RDC_RECOVERY_OK remotePid=$($remotes[0].ProcessId) localMcpPid=$($children[0].ProcessId)"
