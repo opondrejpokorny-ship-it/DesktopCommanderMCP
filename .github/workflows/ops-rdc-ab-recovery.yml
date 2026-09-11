@@ -1,4 +1,4 @@
-name: RDC A/B test elevated user visibility
+name: RDC A/B inspect activation handoff
 
 on:
   push:
@@ -9,44 +9,25 @@ permissions:
   contents: read
 
 jobs:
-  test-user-high:
+  inspect:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
     steps:
-      - name: Test ondre Highest process visibility
+      - name: Inspect activation process and logs
         shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference='Stop'
-          $taskName='DC2 RDC A-B Test Elevated User Visibility 20260911'
-          if(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue){throw 'Temporary task already exists'}
-          $scriptPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-test-elevated-visibility.ps1'
-          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-test-elevated-visibility.json'
-          Remove-Item $donePath -Force -ErrorAction SilentlyContinue
-          $payload=@'
-          $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
-          try{$sid=$identity.User.Value}finally{$identity.Dispose()}
-          $systemRemote=Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'DesktopCommanderTierPrototype.*dist\\index\.js.*remote' } | Select-Object -First 1
-          $result=@{
-            sid=$sid
-            isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            found=[bool]$systemRemote
-            commandVisible=([bool]([string]$systemRemote.CommandLine))
-            pid=if($systemRemote){[int]$systemRemote.ProcessId}else{0}
-          }
-          [IO.File]::WriteAllText('C:\Users\ondre\AppData\Local\Temp\rdc-ab-test-elevated-visibility.json',($result|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
-          '@
-          $payload=($payload -replace '(?m)^          ','')
-          [IO.File]::WriteAllText($scriptPath,$payload,[Text.UTF8Encoding]::new($false))
-          $action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "'+$scriptPath+'"')
-          $principal=New-ScheduledTaskPrincipal -UserId 'ondre' -LogonType Interactive -RunLevel Highest
-          $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -MultipleInstances IgnoreNew
-          Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
-          try{
-            Start-ScheduledTask -TaskName $taskName
-            $deadline=[DateTime]::UtcNow.AddMinutes(2)
-            do{Start-Sleep -Seconds 1}while(-not(Test-Path $donePath) -and [DateTime]::UtcNow -lt $deadline)
-            if(-not(Test-Path $donePath)){throw 'Elevated user visibility task did not finish'}
-            Write-Host "ELEVATED_USER_RESULT=$(Get-Content -Raw $donePath)"
-          }finally{
-            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-          }
+          $out='C:\Codebase44\data\codebase44\rdc-system\ab-activate.stdout.log'
+          $err='C:\Codebase44\data\codebase44\rdc-system\ab-activate.stderr.log'
+          $all=Get-CimInstance Win32_Process
+          $acts=@($all|Where-Object{[string]$_.CommandLine -match 'Activate-RdcAbLauncher\.ps1.*RDC-Benchmark-20260910-f800bcc'})
+          Write-Host "ACTIVATION_COUNT=$($acts.Count)"
+          foreach($p in $acts){Write-Host "ACT pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) cmd=$($p.CommandLine)"}
+          $remotes=@($all|Where-Object{$_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'dist\\index\.js.*remote'})
+          Write-Host "REMOTE_COUNT=$($remotes.Count)"
+          foreach($p in $remotes){$o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue;Write-Host "REMOTE pid=$($p.ProcessId) ppid=$($p.ParentProcessId) sid=$($o.Sid) cmd=$($p.CommandLine)"}
+          if(Test-Path $out){Write-Host 'STDOUT_START';Get-Content -Raw $out|Write-Host;Write-Host 'STDOUT_END'}
+          if(Test-Path $err){Write-Host 'STDERR_START';Get-Content -Raw $err|Write-Host;Write-Host 'STDERR_END'}
+          $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260910-f800bcc'
+          Write-Host "ACTIVE=$((Get-Content -Raw (Join-Path $root 'active-variant.txt')).Trim())"
+          Write-Host "JOURNAL=$(Test-Path (Join-Path $root '.rdc-ab-runtime-namespace-seal.json'))"
