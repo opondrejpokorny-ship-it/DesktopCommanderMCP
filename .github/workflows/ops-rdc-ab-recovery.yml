@@ -1,4 +1,4 @@
-name: RDC A/B inspect stale cleanup state
+name: RDC A/B diagnose user launcher restore
 
 on:
   push:
@@ -9,23 +9,53 @@ permissions:
   contents: read
 
 jobs:
-  inspect-cleanup:
+  diagnose:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 5
+    timeout-minutes: 30
     steps:
-      - name: Inspect stale user launcher cleanup
+      - name: Run exact restore under ondre and capture output
         shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference='Stop'
+          $taskName='DC2 RDC A-B Diagnose Stale Restore 20260911'
+          if(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue){ throw 'Diagnostic task already exists' }
+          $scriptPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.ps1'
+          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.done.json'
+          $logPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.log'
+          Remove-Item $donePath,$logPath -Force -ErrorAction SilentlyContinue
+          $payload=@'
+          $ErrorActionPreference='Continue'
+          $donePath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.done.json'
+          $logPath='C:\Users\ondre\AppData\Local\Temp\rdc-ab-diagnose-restore.log'
+          $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+          try{$sid=$identity.User.Value}finally{$identity.Dispose()}
+          if($sid -ne 'S-1-5-21-3352991977-3764762469-2652498129-1001'){
+            [IO.File]::WriteAllText($logPath,"Unexpected SID: $sid",[Text.UTF8Encoding]::new($false))
+            [IO.File]::WriteAllText($donePath,'{"exitCode":97}',[Text.UTF8Encoding]::new($false))
+            exit 97
+          }
+          $restore='C:\DesktopCommanderTierPrototype\scripts\benchmark\rdc-ab\Restore-RdcAbLauncher.ps1'
           $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260908-c2234dd'
           $launcher='C:\Users\ondre\AppData\Local\DesktopCommanderRemote\start-remote.cmd'
-          $backup=$launcher+'.rdc-ab-original'
-          $vbs='C:\Users\ondre\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\DesktopCommanderRemote.vbs'
-          $disabled=$vbs+'.rdc-retired-20260911'
-          $failure='C:\Users\ondre\AppData\Local\Temp\rdc-ab-retire-stale-user.failure.txt'
-          Write-Host "ACTIVE=$((Get-Content -Raw (Join-Path $root 'active-variant.txt')).Trim())"
-          Write-Host "VBS_ENABLED=$(Test-Path -LiteralPath $vbs) VBS_DISABLED=$(Test-Path -LiteralPath $disabled)"
-          Write-Host "LAUNCHER_SHA=$((Get-FileHash $launcher -Algorithm SHA256).Hash.ToLowerInvariant())"
-          Write-Host "BACKUP_SHA=$((Get-FileHash $backup -Algorithm SHA256).Hash.ToLowerInvariant())"
-          Write-Host "OLD_PROCESS_COUNT=$(@(Get-CimInstance Win32_Process | Where-Object { [string]$_.CommandLine -like '*RDC-Benchmark-20260908-c2234dd*' }).Count)"
-          if(Test-Path -LiteralPath $failure){ Write-Host "FAILURE_MARKER=$(Get-Content -Raw $failure)" }
+          $output=& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $restore -BenchmarkRoot $root -LauncherPath $launcher 2>&1
+          $code=$LASTEXITCODE
+          [IO.File]::WriteAllText($logPath,($output -join [Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText($donePath,(@{exitCode=$code;sid=$sid}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+          exit $code
+          '@
+          $payload=($payload -replace '(?m)^          ','')
+          [IO.File]::WriteAllText($scriptPath,$payload,[Text.UTF8Encoding]::new($false))
+          $action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "'+$scriptPath+'"')
+          $principal=New-ScheduledTaskPrincipal -UserId 'ondre' -LogonType Interactive -RunLevel Limited
+          $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 25) -MultipleInstances IgnoreNew
+          Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+          try{
+            Start-ScheduledTask -TaskName $taskName
+            $deadline=[DateTime]::UtcNow.AddMinutes(24)
+            do{Start-Sleep -Seconds 2}while(-not(Test-Path $donePath) -and [DateTime]::UtcNow -lt $deadline)
+            if(-not(Test-Path $donePath)){throw 'Diagnostic restore did not finish'}
+            Write-Host "RESTORE_RESULT=$(Get-Content -Raw $donePath)"
+            if(Test-Path $logPath){Write-Host 'RESTORE_OUTPUT_START';Get-Content -Raw $logPath|Write-Host;Write-Host 'RESTORE_OUTPUT_END'}
+          }finally{
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+          }
