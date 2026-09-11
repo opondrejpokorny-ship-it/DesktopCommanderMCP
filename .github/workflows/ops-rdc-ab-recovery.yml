@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Start exact SYSTEM RDC task
-        shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ". '{0}'"
+        shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:COMPUTERNAME -ne 'WIN-A0OFGC4ORFI') {
