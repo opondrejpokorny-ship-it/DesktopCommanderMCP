@@ -1,4 +1,4 @@
-name: RDC A/B recovery
+name: RDC A/B retire stale user harness
 
 on:
   push:
@@ -9,71 +9,59 @@ permissions:
   contents: read
 
 jobs:
-  recover-rdc:
+  arm-retirement:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
     steps:
-      - name: Start exact SYSTEM RDC task
+      - name: Arm stale user supervisor for graceful retirement
         shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:COMPUTERNAME -ne 'WIN-A0OFGC4ORFI') {
-            throw "Unexpected runner host: $env:COMPUTERNAME"
+          if ($env:COMPUTERNAME -ne 'WIN-A0OFGC4ORFI') { throw 'Unexpected runner host' }
+
+          $expectedSid = 'S-1-5-21-3352991977-3764762469-2652498129-1001'
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          try { $sid = $identity.User.Value } finally { $identity.Dispose() }
+          if ($sid -ne $expectedSid) { throw "Unexpected runner SID: $sid" }
+
+          $root = 'C:\Users\ondre\AppData\Local\RDC-Benchmark-20260908-c2234dd'
+          $activePath = Join-Path $root 'active-variant.txt'
+          $launcher = 'C:\Users\ondre\AppData\Local\DesktopCommanderRemote\start-remote.cmd'
+          $metadataPath = Join-Path $root 'host\launcher-install.json'
+
+          $acl = Get-Acl -LiteralPath $root
+          if ($acl.Owner -ne 'WIN-A0OFGC4ORFI\ondre' -or -not $acl.AreAccessRulesProtected) {
+            throw 'Stale benchmark root owner/ACL is not exact'
+          }
+          if ((Get-Content -Raw $activePath).Trim() -ne 'prototype') {
+            throw 'Stale benchmark is not currently prototype-selected'
           }
 
-          $taskName = 'Codebase44 Remote Desktop Commander SYSTEM'
-          $expectedWrapper = 'C:\Codebase44\system\rdc-system\Start-RemoteDesktopCommanderSystem.ps1'
-          $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
-
-          if ([string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18')) {
-            throw 'Unexpected Scheduled Task principal'
-          }
-          if ([string]$task.Principal.RunLevel -ne 'Highest') {
-            throw 'Unexpected Scheduled Task run level'
-          }
-          if ($task.Actions.Count -ne 1) {
-            throw 'Unexpected Scheduled Task action count'
-          }
-          $action = $task.Actions[0]
-          if ([IO.Path]::GetFullPath([string]$action.Execute) -ne [IO.Path]::GetFullPath('C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe')) {
-            throw 'Unexpected Scheduled Task executable'
-          }
-          if ([string]$action.Arguments -notmatch [regex]::Escape($expectedWrapper)) {
-            throw 'Unexpected Scheduled Task wrapper'
+          $metadata = Get-Content -Raw $metadataPath | ConvertFrom-Json
+          if ([int]$metadata.schemaVersion -ne 1 -or
+              -not ([string]$metadata.launcherPath).Equals($launcher, [StringComparison]::OrdinalIgnoreCase) -or
+              [string]$metadata.backupSha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Stale launcher metadata is not exact'
           }
 
-          $existing = @(Get-CimInstance Win32_Process | Where-Object {
-            $_.Name -eq 'node.exe' -and $_.CommandLine -match 'DesktopCommanderTierPrototype.*dist\\index\.js.*remote'
+          $related = @(Get-CimInstance Win32_Process | Where-Object {
+            [string]$_.CommandLine -like '*RDC-Benchmark-20260908-c2234dd*'
           })
-          if ($existing.Count -ne 0) {
-            throw "Remote process already exists before recovery: $($existing.Count)"
-          }
-
-          Start-ScheduledTask -TaskName $taskName -TaskPath '\'
-
-          $deadline = [DateTime]::UtcNow.AddSeconds(90)
-          do {
-            Start-Sleep -Seconds 2
-            $remotes = @(Get-CimInstance Win32_Process | Where-Object {
-              $_.Name -eq 'node.exe' -and $_.CommandLine -match 'DesktopCommanderTierPrototype.*dist\\index\.js.*remote'
-            })
-            if ($remotes.Count -eq 1) { break }
-          } while ([DateTime]::UtcNow -lt $deadline)
-
-          if ($remotes.Count -ne 1) {
-            throw "Expected exactly one canonical Remote after task start; found $($remotes.Count)"
-          }
-
-          $owner = Invoke-CimMethod -InputObject $remotes[0] -MethodName GetOwnerSid -ErrorAction Stop
-          if ([string]$owner.Sid -ne 'S-1-5-18') {
-            throw 'Recovered Remote is not owned by SYSTEM'
-          }
-
-          $children = @(Get-CimInstance Win32_Process | Where-Object {
-            $_.ParentProcessId -eq $remotes[0].ProcessId -and $_.Name -eq 'node.exe'
+          $supervisors = @($related | Where-Object {
+            $_.Name -eq 'powershell.exe' -and [string]$_.CommandLine -like '*Run-RdcAbSupervisor.ps1*'
           })
-          if ($children.Count -ne 1) {
-            throw "Expected exactly one local MCP child; found $($children.Count)"
+          $remotes = @($related | Where-Object {
+            $_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'dist\\index\.js.*remote'
+          })
+          if ($supervisors.Count -ne 1 -or $remotes.Count -ne 1) {
+            throw "Unexpected stale harness topology: supervisors=$($supervisors.Count) remotes=$($remotes.Count)"
           }
 
-          Write-Host "RDC_RECOVERY_OK remotePid=$($remotes[0].ProcessId) localMcpPid=$($children[0].ProcessId)"
+          $temp = "$activePath.retire-$PID"
+          [IO.File]::WriteAllText($temp, ('retire-pending' + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          Move-Item -LiteralPath $temp -Destination $activePath -Force
+          if ((Get-Content -Raw $activePath).Trim() -ne 'retire-pending') {
+            throw 'Failed to arm stale harness retirement'
+          }
+
+          Write-Host "STALE_HARNESS_RETIREMENT_ARMED supervisorPid=$($supervisors[0].ProcessId) remotePid=$($remotes[0].ProcessId)"
