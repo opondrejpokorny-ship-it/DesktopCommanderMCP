@@ -92,3 +92,38 @@ jobs:
             $hint=([string]$browser.CommandLine -like '*desktopcommander*' -or [string]$browser.CommandLine -like '*authorize*' -or [string]$browser.CommandLine -like '*verify*')
             Write-Host "BROWSER pid=$($browser.ProcessId) ppid=$($browser.ParentProcessId) name=$($browser.Name) sid=$($o.Sid) session=$($gp.SessionId) created=$($browser.CreationDate) authUrlHint=$hint"
           }
+          $consoleProbe = Join-Path $env:RUNNER_TEMP 'rdc-ab-console-probe.ps1'
+          @'
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class RdcAbConsoleProbe {
+  [StructLayout(LayoutKind.Sequential)] public struct COORD { public short X; public short Y; public COORD(short x, short y){X=x;Y=y;} }
+  [StructLayout(LayoutKind.Sequential)] public struct SMALL_RECT { public short Left; public short Top; public short Right; public short Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct INFO { public COORD Size; public COORD Cursor; public ushort Attr; public SMALL_RECT Window; public COORD Max; }
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool FreeConsole();
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AttachConsole(uint pid);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateFile(string n,uint a,uint s,IntPtr sec,uint c,uint f,IntPtr t);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out INFO i);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool ReadConsoleOutputCharacter(IntPtr h,StringBuilder b,uint n,COORD p,out uint r);
+}
+"@
+[RdcAbConsoleProbe]::FreeConsole() | Out-Null
+if(-not [RdcAbConsoleProbe]::AttachConsole(112)){ Write-Output 'CONSOLE_PROBE attached=False'; exit 0 }
+$h=[RdcAbConsoleProbe]::CreateFile('CONOUT$',0x80000000,3,[IntPtr]::Zero,3,0,[IntPtr]::Zero)
+$i=New-Object RdcAbConsoleProbe+INFO
+if(-not [RdcAbConsoleProbe]::GetConsoleScreenBufferInfo($h,[ref]$i)){ Write-Output 'CONSOLE_PROBE attached=True read=False'; exit 0 }
+$len=[int]$i.Size.X * [int]$i.Size.Y
+$sb=New-Object Text.StringBuilder $len
+$read=[uint32]0
+[void][RdcAbConsoleProbe]::ReadConsoleOutputCharacter($h,$sb,[uint32]$len,[RdcAbConsoleProbe+COORD]::new(0,0),[ref]$read)
+$text=$sb.ToString()
+$prompt=$text -match 'Please complete authentication'
+$waiting=$text -match 'Waiting for authorization'
+$code=$text -match 'Enter this code when prompted'
+$uri=$text -match 'Open this URL in your browser'
+Write-Output "CONSOLE_PROBE attached=True read=True authPrompt=$prompt waiting=$waiting codeInstruction=$code uriInstruction=$uri"
+'@ | Set-Content -LiteralPath $consoleProbe -Encoding UTF8
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $consoleProbe
+          Remove-Item -LiteralPath $consoleProbe -Force -ErrorAction SilentlyContinue
