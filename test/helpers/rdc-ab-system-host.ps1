@@ -85,23 +85,11 @@ if ($handoffCalls.Count -ne 1) {
   throw "Production activation must invoke SYSTEM graceful handoff exactly once; found $($handoffCalls.Count) call(s)"
 }
 
-$enterSuppression = Get-FunctionAst 'Enter-SystemTaskHandoffSuppression'
-$exitSuppression = Get-FunctionAst 'Exit-SystemTaskHandoffSuppression'
-$enterSuppressionText = $enterSuppression.Extent.Text
-$exitSuppressionText = $exitSuppression.Extent.Text
-if ($enterSuppressionText -notmatch '(?i)\bDisable-ScheduledTask\b') {
-  throw 'SYSTEM handoff suppression must disable the exact Scheduled Task before authenticated shutdown'
+$sourceText = Get-Content -Raw -LiteralPath $source
+if ($sourceText -match '(?i)\b(Disable|Enable)-ScheduledTask\b') {
+  throw 'SYSTEM handoff must keep the production Scheduled Task enabled and definition-unchanged'
 }
-if ($exitSuppressionText -notmatch '(?i)\bEnable-ScheduledTask\b') {
-  throw 'SYSTEM handoff suppression must re-enable the exact Scheduled Task after stable shutdown quiescence or rollback'
-}
-if ($enterSuppressionText -match '(?i)\b(Start|Stop|Register|Unregister)-ScheduledTask\b') {
-  throw 'SYSTEM handoff suppression entry must not start, stop, register, or unregister Scheduled Tasks'
-}
-if ($exitSuppressionText -match '(?i)\b(Start|Stop|Register|Unregister|Disable)-ScheduledTask\b') {
-  throw 'SYSTEM handoff suppression exit must only re-enable the existing exact Scheduled Task'
-}
-if ($handoffText -match '(?i)\b(Set|Register|Unregister|Start|Stop)-ScheduledTask\b') {
+if ($handoffText -match '(?i)\b(Set|Register|Unregister|Start|Stop|Disable|Enable)-ScheduledTask\b') {
   throw 'SYSTEM host handoff must never mutate or directly start/stop the Scheduled Task'
 }
 if ($handoffText -match '(?i)\.(Kill|CloseMainWindow)\(') {
@@ -116,16 +104,39 @@ $phaseMarker = $handoffText.IndexOf('awaiting-authenticated-shutdown')
 $remoteExit = $handoffText.IndexOf('remoteProcess.WaitForExit')
 $localMcpExit = $handoffText.IndexOf('localProcess.WaitForExit')
 $wrapperExit = $handoffText.IndexOf('wrapperProcess.WaitForExit')
-$identityCheck = $handoffText.IndexOf('Assert-ExactSystemTaskHostIdentity')
-$enterCall = $handoffText.IndexOf('Enter-SystemTaskHandoffSuppression')
-$exitCall = $handoffText.IndexOf('Exit-SystemTaskHandoffSuppression')
-if ($identityCheck -lt 0 -or $enterCall -lt 0 -or $exitCall -lt 0 -or
-    $identityCheck -gt $enterCall -or $enterCall -gt $phaseMarker -or $phaseMarker -gt $exitCall) {
-  throw 'SYSTEM task suppression ordering must be identity-check -> disable -> authenticated-shutdown boundary -> re-enable'
-}
 if ($phaseMarker -lt 0 -or $remoteExit -lt 0 -or $localMcpExit -lt 0 -or $wrapperExit -lt 0 -or
     $phaseMarker -gt $remoteExit -or $remoteExit -gt $localMcpExit -or $localMcpExit -gt $wrapperExit) {
   throw 'SYSTEM wrapper may complete only after authenticated Remote and local MCP exit'
+}
+foreach ($requiredGuardToken in @('RdcAbEntrypointGuard.ps1', 'Open-RdcAbEntrypointGuard', 'Start-RdcAbGuardedProcess')) {
+  if ($sourceText -notmatch [regex]::Escape($requiredGuardToken)) {
+    throw "SYSTEM handoff is missing crash-safe canonical entrypoint guard evidence: $requiredGuardToken"
+  }
+}
+$guardHelper = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\..\scripts\benchmark\rdc-ab\RdcAbEntrypointGuard.ps1')
+foreach ($requiredAtomicToken in @('CREATE_SUSPENDED', 'DuplicateHandle', 'ResumeThread')) {
+  if ($guardHelper -notmatch [regex]::Escape($requiredAtomicToken)) {
+    throw "Guarded launcher must transfer the entrypoint handle before any replacement code can execute: $requiredAtomicToken"
+  }
+}
+$systemBranch = @($ast.FindAll({
+  param($n) $n -is [Management.Automation.Language.IfStatementAst]
+}, $true) | ForEach-Object {
+  foreach ($clause in @($_.Clauses)) {
+    if ($clause.Item1.Extent.Text -match '^\s*\$matchingWatchers\.Count\s*-eq\s*0\s*$') { $clause.Item2 }
+  }
+}) | Select-Object -First 1
+if ($null -eq $systemBranch) { throw 'SYSTEM activation branch is missing' }
+$systemText = $systemBranch.Extent.Text
+$guardAcquire = $systemText.IndexOf('Open-RdcAbEntrypointGuard')
+$handoffCall = $systemText.IndexOf('Invoke-SystemTaskHostGracefulHandoff')
+$guardedLaunch = $systemText.IndexOf('Start-RdcAbGuardedProcess')
+if ($guardAcquire -lt 0 -or $handoffCall -lt 0 -or $guardedLaunch -lt 0 -or
+    $guardAcquire -gt $handoffCall -or $handoffCall -gt $guardedLaunch) {
+  throw 'SYSTEM entrypoint guard ordering must be acquire -> authenticated shutdown -> atomic guarded benchmark launch'
+}
+if ($systemText -match '(?i)\bStart-Process\b') {
+  throw 'SYSTEM replacement launcher must not execute before entrypoint-guard transfer is complete'
 }
 
 $root = 'C:\RDC-System-Host-Test'
