@@ -46,7 +46,11 @@ export class MCPDevice {
         // take the whole family down including the token a healthy connector holds.
         this.persistSession = options.persistSession ?? true;
         this.remoteChannel.setSessionRefreshListener((session) => {
-            if (this.persistSession) void this.queuePersistedConfig(session);
+            if (!this.persistSession) return;
+            const queued = this.queuePersistedConfig(session);
+            // Keep sessionPersistChain rejected for shutdown to observe, while
+            // preventing the fire-and-forget callback from becoming an unhandled rejection.
+            void queued.catch(() => { /* write failure already logged and remains on the chain */ });
         });
 
         // Initialize desktop integration
@@ -281,6 +285,7 @@ export class MCPDevice {
                 console.error(' - ❌ Failed to save config:', error.message);
                 console.debug('[DEBUG] Config save error details:', error);
                 await captureRemote('remote_device_config_save_error', { error });
+                throw error;
             } finally {
                 await fs.rm(tempPath, { force: true }).catch(() => undefined);
             }
@@ -471,6 +476,7 @@ export class MCPDevice {
             console.error('Shutdown error:', error.message);
             console.debug('[DEBUG] Shutdown error stack:', error.stack);
             await captureRemote('remote_device_shutdown_error', { error });
+            throw error;
         }
     }
 }
