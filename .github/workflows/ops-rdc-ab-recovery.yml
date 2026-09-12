@@ -82,3 +82,13 @@ jobs:
           if(Test-Path -LiteralPath $runnerDiag -PathType Container){
             Write-Host "RUNNER_DIAG_PRESENT=True"
           }
+          Write-Host "RUNNER_IDENTITY=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          $browserNames=@('msedge.exe','chrome.exe','firefox.exe')
+          $browsers=@(Get-CimInstance Win32_Process | Where-Object { $browserNames -contains $_.Name })
+          Write-Host "BROWSER_COUNT=$($browsers.Count)"
+          foreach($browser in $browsers){
+            $o=Invoke-CimMethod -InputObject $browser -MethodName GetOwnerSid -ErrorAction SilentlyContinue
+            $gp=Get-Process -Id $browser.ProcessId -ErrorAction SilentlyContinue
+            $hint=([string]$browser.CommandLine -like '*desktopcommander*' -or [string]$browser.CommandLine -like '*authorize*' -or [string]$browser.CommandLine -like '*verify*')
+            Write-Host "BROWSER pid=$($browser.ProcessId) ppid=$($browser.ParentProcessId) name=$($browser.Name) sid=$($o.Sid) session=$($gp.SessionId) created=$($browser.CreationDate) authUrlHint=$hint"
+          }
