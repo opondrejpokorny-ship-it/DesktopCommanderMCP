@@ -38,7 +38,40 @@ jobs:
           Add-Type -TypeDefinition $env:RDC_AB_CONSOLE_SOURCE
           [RdcAbConsoleReader]::FreeConsole() | Out-Null
           if(-not [RdcAbConsoleReader]::AttachConsole([uint32]$TargetPid)){ exit 2 }
-          $h=[RdcAbConsoleReader]::CreateFile('CONOUT$',0x80000000,3,[IntPtr]::Zero,3,0,[IntPtr]::Zero)
+          $h=[RdcAbConsoleReader]::CreateFile('CONOUT
+          $i=New-Object RdcAbConsoleReader+INFO
+          if(-not [RdcAbConsoleReader]::GetConsoleScreenBufferInfo($h,[ref]$i)){ exit 3 }
+          $len=[int]$i.Size.X * [int]$i.Size.Y
+          $sb=New-Object Text.StringBuilder $len
+          $read=[uint32]0
+          [void][RdcAbConsoleReader]::ReadConsoleOutputCharacter($h,$sb,[uint32]$len,[RdcAbConsoleReader+COORD]::new(0,0),[ref]$read)
+          $text=$sb.ToString()
+          $uriMatch=[regex]::Match($text,'https://[A-Za-z0-9._~:/?#\[\]@!$&''()*+,;=%-]*desktopcommander[A-Za-z0-9._~:/?#\[\]@!$&''()*+,;=%-]*',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          $codeMatch=[regex]::Match($text,'Enter this code when prompted:\s*([A-Z0-9-]{4,24})',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+          if(-not $uriMatch.Success -or -not $codeMatch.Success){ exit 4 }
+          $message="Desktop Commander authorization required for PART 3.`r`nOpen: $($uriMatch.Value)`r`nCode: $($codeMatch.Groups[1].Value)`r`nApprove this current device authorization to continue the benchmark."
+          & msg.exe 1 $message *> $null
+          exit 0
+          '@
+          $env:RDC_AB_CONSOLE_SOURCE=$source
+          Set-Content -LiteralPath $helper -Value $helperBody -Encoding UTF8
+          $helperOut=Join-Path $env:RUNNER_TEMP 'rdc-ab-console-probe.out'
+          $helperErr=Join-Path $env:RUNNER_TEMP 'rdc-ab-console-probe.err'
+          $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$helper,'-TargetPid','112') -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $helperOut -RedirectStandardError $helperErr
+          $safeOut=if(Test-Path $helperOut){Get-Content -Raw -LiteralPath $helperOut}else{''}
+          $safeErr=if(Test-Path $helperErr){Get-Content -Raw -LiteralPath $helperErr}else{''}
+          Remove-Item -LiteralPath $helper,$helperOut,$helperErr -Force -ErrorAction SilentlyContinue
+          Remove-Item Env:RDC_AB_CONSOLE_SOURCE -ErrorAction SilentlyContinue
+          if($p.ExitCode -ne 0 -and $safeErr){ Write-Host "CONSOLE_HELPER_ERROR=$($safeErr -replace '[\r\n]+',' ')" }
+          if($p.ExitCode -eq 0 -and $safeOut){ Write-Host "CONSOLE_HELPER_STATUS=$($safeOut -replace '[\r\n]+',' ')" }
+          switch($p.ExitCode){
+            0 { Write-Host 'AUTH_PROMPT_DELIVERED=True' }
+            2 { Write-Host 'AUTH_PROMPT_DELIVERED=False reason=no-console' }
+            3 { Write-Host 'AUTH_PROMPT_DELIVERED=False reason=console-read' }
+            4 { Write-Host 'AUTH_PROMPT_DELIVERED=False reason=prompt-not-found' }
+            default { Write-Host "AUTH_PROMPT_DELIVERED=False reason=helper-exit-$($p.ExitCode)" }
+          }
+,[uint32]2147483648,[uint32]3,[IntPtr]::Zero,[uint32]3,[uint32]0,[IntPtr]::Zero)
           $i=New-Object RdcAbConsoleReader+INFO
           if(-not [RdcAbConsoleReader]::GetConsoleScreenBufferInfo($h,[ref]$i)){ exit 3 }
           $len=[int]$i.Size.X * [int]$i.Size.Y
