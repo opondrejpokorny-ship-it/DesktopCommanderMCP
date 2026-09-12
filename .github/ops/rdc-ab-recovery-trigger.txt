@@ -1,0 +1,1 @@
+trigger read-only RDC PART 3 recovery diagnostic after authenticated shutdown
