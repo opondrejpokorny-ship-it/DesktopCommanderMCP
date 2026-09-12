@@ -165,7 +165,8 @@ try {
   );
 
   try {
-    await client.connect(transport, { timeout: 30000 });
+    // A fresh Windows install can cold-start near 30s; keep the SDK's 60s initialize timeout.
+    await client.connect(transport);
     const tools = await client.listTools();
     for (const tool of ['read_file', 'write_file', 'report_task_progress']) {
       assert.ok(tools.tools.some((item) => item.name === tool), tool + ' must exist');
