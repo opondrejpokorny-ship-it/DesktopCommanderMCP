@@ -63,6 +63,15 @@ jobs:
           $task=Get-ScheduledTask -TaskName $taskName
           $info=Get-ScheduledTaskInfo -TaskName $taskName
           Write-Host "TASK state=$($task.State) enabled=$($task.Settings.Enabled) lastRun=$($info.LastRunTime.ToString('o')) lastResult=$($info.LastTaskResult)"
+          Write-Host '=== CANONICAL GIT READ-ONLY ==='
+          $canonical='C:\\DesktopCommanderTierPrototype'
+          if(Test-Path -LiteralPath $canonical -PathType Container){
+            $head=(git -c safe.directory=$canonical -C $canonical rev-parse HEAD).Trim()
+            $branch=(git -c safe.directory=$canonical -C $canonical branch --show-current).Trim()
+            $status=@(git -c safe.directory=$canonical -C $canonical status --porcelain)
+            Write-Host "CANONICAL head=$head branch=$branch dirtyCount=$($status.Count)"
+            git -c safe.directory=$canonical -C $canonical remote -v | ForEach-Object { Write-Host "CANONICAL_REMOTE $_" }
+          }
           if(Test-Path -LiteralPath $device){
             $i=Get-Item -LiteralPath $device
             $j=Get-Content -Raw -LiteralPath $device|ConvertFrom-Json
