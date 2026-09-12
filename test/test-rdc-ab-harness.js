@@ -87,6 +87,13 @@ if (process.platform === 'win32') {
   ], { encoding: 'utf8' });
   assert.equal(systemHostFocused.status, 0, systemHostFocused.stdout + '\\n' + systemHostFocused.stderr);
   assert.match(systemHostFocused.stdout, /PASS RDC A\/B SYSTEM task-host contract/);
+
+  const entrypointGuardFocused = spawnSync('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'helpers/rdc-ab-entrypoint-guard.ps1'),
+  ], { encoding: 'utf8' });
+  assert.equal(entrypointGuardFocused.status, 0, entrypointGuardFocused.stdout + '\n' + entrypointGuardFocused.stderr);
+  assert.match(entrypointGuardFocused.stdout, /PASS RDC A\/B canonical entrypoint guard/);
 }
 
 function spawnCaptured(file, args, options = {}) {
@@ -1979,7 +1986,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       shutdownRestartActivation,
       'shutdown-restart handoff boundary',
     );
-    await fs.access(path.join(signals, 'system-task-suppression-active'));
+    assert.notEqual(JSON.parse(await fs.readFile(systemTaskInventoryPath, 'utf8'))[0].Enabled, false,
+      'SYSTEM task must remain enabled while the canonical entrypoint guard owns restart exclusion');
     await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
       ...shutdownRestartScenario.task, State: 'Running', LastTaskResult: 267009,
     }]));
@@ -1998,43 +2006,8 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'mutex') {
       'replacement launcher must not run after a SYSTEM restart during shutdown');
     console.log('PASS RDC A/B rejects a SYSTEM restart during authenticated shutdown');
 
-    const reenableFailureScenario = await startExtraSystemScenario('reenable-failure');
-    const reenableFailureLaunches = new Set(
-      (await fs.readdir(signals)).filter((name) => name.startsWith('launch-')),
-    );
-    const reenableFailureActivation = spawnCaptured('powershell.exe', activationArgs, {
-      env: systemFixtureEnv, stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    await waitForConditionOrProcessExit(
-      async () => fs.access(path.join(signals, 'authenticated-shutdown-ready')).then(() => true, () => false),
-      reenableFailureActivation,
-      're-enable-failure handoff shutdown boundary',
-    );
-    await fs.writeFile(path.join(signals, 'fail-system-task-reenable'), '');
-    await fs.writeFile(path.join(signals, 'authenticated-system-shutdown'), '');
-    await waitForDirectoryCondition(
-      signals,
-      async () => fs.access(path.join(signals, 'system-wrapper-exit')).then(() => true, () => false),
-      [reenableFailureActivation, reenableFailureScenario.wrapper],
-      're-enable-failure fixture exit',
-    );
-    await fs.writeFile(systemTaskInventoryPath, JSON.stringify([{
-      ...reenableFailureScenario.task, State: 'Ready', LastTaskResult: 0,
-    }]));
-    await fs.writeFile(systemProcessInventoryPath, JSON.stringify([]));
-    const reenableFailureResult = await reenableFailureActivation.completed;
-    assert.notEqual(reenableFailureResult.status, 0,
-      'SYSTEM task re-enable failure must be fatal');
-    assert.match(
-      `${reenableFailureResult.stdout}\n${reenableFailureResult.stderr}`,
-      /task suppression rollback re-enable failed|task re-enable failure/i,
-    );
-    await assertNoScenarioLaunch(reenableFailureLaunches,
-      'replacement launcher must not run when SYSTEM task re-enable fails');
-    await fs.access(path.join(signals, 'system-task-suppression-active'));
-    await fs.rm(path.join(signals, 'fail-system-task-reenable'), { force: true });
-    await fs.rm(path.join(signals, 'system-task-suppression-active'), { force: true });
-    console.log('PASS RDC A/B SYSTEM task re-enable failure is explicit and fatal');
+    console.log('PASS RDC A/B SYSTEM task remains enabled while guard owns restart exclusion');
+
 
     const selectionScenario = await startExtraSystemScenario('selection-drift');
     const selectionLaunches = new Set(

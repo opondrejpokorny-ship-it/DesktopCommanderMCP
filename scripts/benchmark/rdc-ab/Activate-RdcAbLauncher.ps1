@@ -44,12 +44,15 @@ $hostDir = Join-Path $root 'host'
 $installedSupervisor = Join-Path $hostDir 'Run-RdcAbSupervisor.ps1'
 $installedAclHelper = Join-Path $hostDir 'RdcAbAcl.ps1'
 $sourceAclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
+$sourceEntrypointGuard = Join-Path $PSScriptRoot 'RdcAbEntrypointGuard.ps1'
 if (-not (Test-Path -LiteralPath $sourceAclHelper -PathType Leaf)) { throw 'Trusted ACL helper is missing' }
+if (-not (Test-Path -LiteralPath $sourceEntrypointGuard -PathType Leaf)) { throw 'Trusted entrypoint guard helper is missing' }
 if (-not (Test-Path -LiteralPath $installedSupervisor -PathType Leaf)) { throw 'Installed RDC A/B supervisor is missing' }
 if (-not (Test-Path -LiteralPath $installedAclHelper -PathType Leaf)) { throw 'Installed RDC A/B ACL helper is missing' }
 if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Installed launcher is missing' }
 if (-not (Test-Path -LiteralPath "$launcher.rdc-ab-original" -PathType Leaf)) { throw 'Original launcher backup is missing' }
 . $sourceAclHelper
+. $sourceEntrypointGuard
 
 $expectedDelegator = @(
   '@echo off',
@@ -322,41 +325,6 @@ function Get-SystemTaskHostInventory($Contract) {
   return [pscustomobject]@{ Tasks = $tasks; Processes = $processes }
 }
 
-function Enter-SystemTaskHandoffSuppression($Contract) {
-  $suppressed = $false
-  try {
-    if ($testControl) {
-      [IO.File]::WriteAllText((Join-Path $testControl 'system-task-suppression-active'), '')
-    } else {
-      Disable-ScheduledTask -TaskName ([string]$Contract.TaskName) -TaskPath ([string]$Contract.TaskPath) -ErrorAction Stop | Out-Null
-    }
-    $suppressed = $true
-    $inventory = Get-SystemTaskHostInventory $Contract
-    [void](Assert-ExactSystemTaskDefinition -TaskInventory $inventory.Tasks -Contract $Contract -AllowedStates @('Running','Disabled') -ExpectedEnabled $false)
-  } catch {
-    $entryError = $_.Exception.Message
-    if ($suppressed) {
-      try {
-        Exit-SystemTaskHandoffSuppression $Contract
-      } catch {
-        throw "SYSTEM task suppression entry failed: $entryError; rollback re-enable failed: $($_.Exception.Message)"
-      }
-    }
-    throw "SYSTEM task suppression entry failed: $entryError"
-  }
-}
-
-function Exit-SystemTaskHandoffSuppression($Contract) {
-  if ($testControl) {
-    if (Test-Path -LiteralPath (Join-Path $testControl 'fail-system-task-reenable') -PathType Leaf) {
-      throw 'Test-controlled SYSTEM task re-enable failure'
-    }
-    Remove-Item -LiteralPath (Join-Path $testControl 'system-task-suppression-active') -Force -ErrorAction Stop
-  } else {
-    Enable-ScheduledTask -TaskName ([string]$Contract.TaskName) -TaskPath ([string]$Contract.TaskPath) -ErrorAction Stop | Out-Null
-  }
-}
-
 function Assert-ExactSystemTaskDefinition($TaskInventory, $Contract, [string[]]$AllowedStates = @('Running'), [bool]$ExpectedEnabled = $true) {
   $tasks = @($TaskInventory | Where-Object {
     ([string]$_.TaskPath).Equals([string]$Contract.TaskPath, [StringComparison]::OrdinalIgnoreCase) -and
@@ -548,7 +516,6 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
   $wrapperProcess = $null
   $remoteProcess = $null
   $localProcesses = @()
-  $taskSuppressed = $false
   try {
     $wrapperProcess = [Diagnostics.Process]::GetProcessById([int]$wrapperRecord.ProcessId)
     $remoteProcess = [Diagnostics.Process]::GetProcessById([int]$remoteRecord.ProcessId)
@@ -594,9 +561,6 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
       throw 'SYSTEM host identity changed immediately before authenticated shutdown handoff'
     }
 
-    Enter-SystemTaskHandoffSuppression $Contract
-    $taskSuppressed = $true
-
     if ($testControl) { [IO.File]::WriteAllText((Join-Path $testControl 'authenticated-shutdown-ready'), '') }
     [ordered]@{
       phase = 'awaiting-authenticated-shutdown'
@@ -617,20 +581,11 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
     if (-not $wrapperProcess.WaitForExit(5000)) {
       throw 'SYSTEM PowerShell wrapper did not exit cleanly after the Remote completed'
     }
-    # A Process object attached with GetProcessById can wait for an externally
-    # owned process on Windows but may not expose ExitCode. When it does, retain
-    # this early negative; the authoritative Task Scheduler result is required
-    # below at the Ready/quiescence boundary in every case.
     $attachedWrapperExitCode = $wrapperProcess.ExitCode
     if ($null -ne $attachedWrapperExitCode -and $attachedWrapperExitCode -ne 0) {
       throw "SYSTEM PowerShell wrapper exited non-zero after Remote shutdown ($($wrapperProcess.ExitCode)); replacement launch refused"
     }
 
-    # A single Ready snapshot is not enough: scheduler state and restarted
-    # processes can be published on different ticks. Require a continuous
-    # quiescence window. Wrapper result 0 rules out configured RestartOnFailure;
-    # the stability window covers delayed state/process observation without
-    # mutating the task definition.
     $deadline = [DateTime]::UtcNow.AddSeconds(5)
     $stableSince = $null
     $stableQuiescence = $false
@@ -638,7 +593,7 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
     do {
       try {
         $postInventory = Get-SystemTaskHostInventory $Contract
-        Assert-SystemTaskHostQuiesced -TaskInventory $postInventory.Tasks -ProcessInventory $postInventory.Processes -Contract $Contract -ExpectedEnabled $false
+        Assert-SystemTaskHostQuiesced -TaskInventory $postInventory.Tasks -ProcessInventory $postInventory.Processes -Contract $Contract
         if ($null -eq $stableSince) { $stableSince = [DateTime]::UtcNow }
         if ($testControl) {
           [IO.File]::WriteAllText((Join-Path $testControl 'system-quiescence-observed'), '')
@@ -658,31 +613,13 @@ function Invoke-SystemTaskHostGracefulHandoff($HostInfo, $Contract, [int]$Shutdo
       $detail = if ($null -ne $lastQuiescenceError) { $lastQuiescenceError.Exception.Message } else { 'stable interval was not sustained' }
       throw "SYSTEM task host did not become stably quiescent after graceful shutdown: $detail"
     }
-
-    $preEnableInventory = Get-SystemTaskHostInventory $Contract
-    [void](Assert-ExactSystemTaskDefinition -TaskInventory $preEnableInventory.Tasks -Contract $Contract -AllowedStates @('Ready','Disabled') -ExpectedEnabled $false)
-    Exit-SystemTaskHandoffSuppression $Contract
-    $reenabledInventory = Get-SystemTaskHostInventory $Contract
-    try {
-      Assert-SystemTaskHostQuiesced -TaskInventory $reenabledInventory.Tasks -ProcessInventory $reenabledInventory.Processes -Contract $Contract
-    } catch {
-      throw "SYSTEM task post-reenable quiescence failed: $($_.Exception.Message)"
-    }
-    $taskSuppressed = $false
   } finally {
-    if ($taskSuppressed) {
-      try {
-        Exit-SystemTaskHandoffSuppression $Contract
-        $taskSuppressed = $false
-      } catch {
-        throw "SYSTEM task suppression rollback re-enable failed: $($_.Exception.Message)"
-      }
-    }
     foreach ($localProcess in $localProcesses) { if ($null -ne $localProcess) { $localProcess.Dispose() } }
     if ($null -ne $remoteProcess) { $remoteProcess.Dispose() }
     if ($null -ne $wrapperProcess) { $wrapperProcess.Dispose() }
   }
 }
+
 function Get-ExactRemoteProcesses([int]$WatcherPid, [DateTime]$WatcherCreationUtc, $Contract) {
   return @(Get-RemoteProcessInventory | Where-Object {
     if (-not ([string]$_.Name).Equals('node.exe', [StringComparison]::OrdinalIgnoreCase)) { return $false }
@@ -803,6 +740,7 @@ try {
     $argumentLine = '/d /s /c ""' + $launcher + '""'
     $startedWrapper = $null
     $launcherReadLock = $null
+    $entrypointGuard = $null
     try {
       try {
         $launcherReadLock = [IO.File]::Open(
@@ -816,8 +754,7 @@ try {
         throw 'Test-controlled replacement launcher failure'
       }
 
-
-
+      $entrypointGuard = Open-RdcAbEntrypointGuard -Path ([string]$systemContract.Entrypoint)
       Invoke-SystemTaskHostGracefulHandoff -HostInfo $systemHost -Contract $systemContract -ShutdownWaitSeconds $ShutdownWaitSeconds -Variant ([string]$validated.variant)
 
       # The selected runtime is authority-sensitive across the shutdown window.
@@ -847,13 +784,16 @@ try {
       }
       Assert-NoCompetingHostOrchestrator $legacyContract $systemContract.TaskPath $systemContract.TaskName
 
-      $startedWrapper = Start-Process -FilePath $cmdPath -ArgumentList $argumentLine -WindowStyle Hidden -PassThru
-      if ($null -eq $startedWrapper) { throw 'Unable to start installed RDC A/B launcher after SYSTEM authenticated shutdown' }
+      $startedWrapper = Start-RdcAbGuardedProcess -FilePath $cmdPath -ArgumentLine $argumentLine -Guard $entrypointGuard
+      if ($null -eq $startedWrapper) { throw 'Unable to start guarded RDC A/B launcher after SYSTEM authenticated shutdown' }
       $startedWrapperPid = $startedWrapper.Id
+      $entrypointGuard.Dispose()
+      $entrypointGuard = $null
       if ($startedWrapper.WaitForExit(250)) {
         throw "Installed RDC A/B launcher exited immediately after SYSTEM authenticated handoff (exit $($startedWrapper.ExitCode))"
       }
     } finally {
+      if ($null -ne $entrypointGuard) { $entrypointGuard.Dispose() }
       if ($null -ne $startedWrapper) { $startedWrapper.Dispose() }
       if ($null -ne $launcherReadLock) { $launcherReadLock.Dispose() }
     }
