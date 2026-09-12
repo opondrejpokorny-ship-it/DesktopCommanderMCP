@@ -1,0 +1,70 @@
+name: RDC A/B postlaunch read-only diagnostic
+
+on:
+  push:
+    branches:
+      - ops/rdc-ab-recover-online-20260911
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect postlaunch state read-only
+        shell: powershell.exe
+        run: |
+          $ErrorActionPreference='Stop'
+          $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260912-1f9c8c4'
+          $journalPath=Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
+          $logPath=Join-Path $root 'logs\supervisor.jsonl'
+          $taskName='Codebase44 Remote Desktop Commander SYSTEM'
+          $device='C:\Windows\System32\config\systemprofile\.desktop-commander-device\device.json'
+          $all=Get-CimInstance Win32_Process
+          Write-Host '=== TARGET PIDS / DESCENDANTS ==='
+          $targets=@(5340,15756,7928)
+          foreach($id in $targets){
+            $p=$all|Where-Object ProcessId -eq $id|Select-Object -First 1
+            if($p){
+              $gp=Get-Process -Id $id -ErrorAction SilentlyContinue
+              Write-Host "TARGET pid=$id ppid=$($p.ParentProcessId) name=$($p.Name) created=$($p.CreationDate) cpu=$($gp.CPU) handles=$($gp.HandleCount) cmd=$($p.CommandLine)"
+            } else { Write-Host "TARGET pid=$id missing=True" }
+          }
+          $queue=@(15756); $seen=@{}
+          while($queue.Count -gt 0){
+            $parent=[int]$queue[0]
+            if($queue.Count -gt 1){$queue=@($queue[1..($queue.Count-1)])}else{$queue=@()}
+            foreach($p in @($all|Where-Object ParentProcessId -eq $parent)){
+              if(-not $seen.ContainsKey([int]$p.ProcessId)){
+                $seen[[int]$p.ProcessId]=$true
+                $queue += [int]$p.ProcessId
+                $gp=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+                Write-Host "DESC pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) created=$($p.CreationDate) cpu=$($gp.CPU) handles=$($gp.HandleCount) cmd=$($p.CommandLine)"
+              }
+            }
+          }
+          Write-Host '=== JOURNAL ==='
+          if(Test-Path -LiteralPath $journalPath -PathType Leaf){
+            $j=Get-Content -Raw -LiteralPath $journalPath|ConvertFrom-Json
+            Write-Host "JOURNAL supervisor=$($j.SupervisorPid) child=$($j.ChildPid) childStart=$($j.ChildStartUtc) repo=$($j.Repository) entry=$($j.Entrypoint)"
+          } else { Write-Host 'JOURNAL missing=True' }
+          Write-Host '=== SUPERVISOR LOG ==='
+          if(Test-Path -LiteralPath $logPath -PathType Leaf){Get-Content -LiteralPath $logPath -Tail 30}
+          Write-Host '=== NODE INVENTORY ==='
+          foreach($p in @($all|Where-Object Name -eq 'node.exe')){
+            $cmd=[string]$p.CommandLine
+            if($cmd -match 'DesktopCommander|RDC-Benchmark'){
+              $tcp=@(Get-NetTCPConnection -OwningProcess $p.ProcessId -ErrorAction SilentlyContinue)
+              Write-Host "NODE pid=$($p.ProcessId) ppid=$($p.ParentProcessId) created=$($p.CreationDate) tcp=$($tcp.Count) cmd=$cmd"
+            }
+          }
+          $task=Get-ScheduledTask -TaskName $taskName
+          $info=Get-ScheduledTaskInfo -TaskName $taskName
+          Write-Host "TASK state=$($task.State) enabled=$($task.Settings.Enabled) lastRun=$($info.LastRunTime.ToString('o')) lastResult=$($info.LastTaskResult)"
+          if(Test-Path -LiteralPath $device){
+            $i=Get-Item -LiteralPath $device
+            $j=Get-Content -Raw -LiteralPath $device|ConvertFrom-Json
+            Write-Host "DEVICE deviceId=$($j.deviceId) lastWriteUtc=$($i.LastWriteTimeUtc.ToString('o')) hasAccess=$([bool]$j.session.access_token) hasRefresh=$([bool]$j.session.refresh_token)"
+          }
