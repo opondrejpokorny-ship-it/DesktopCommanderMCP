@@ -82,7 +82,14 @@ jobs:
           Write-Host 'USER_SESSIONS_START'
           quser 2>$null | ForEach-Object { Write-Host $_ }
           Write-Host 'USER_SESSIONS_END'
-          $browsers=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(msedge|chrome|firefox)\.exe
+          $browsers=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(msedge|chrome|firefox)\\.exe
+          Write-Host "BROWSER_COUNT=$($browsers.Count)"
+          foreach($p in $browsers){
+            $o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
+            $gp=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+            $hasVerify=([string]$p.CommandLine -match '(?i)device|verify|authorize|mcp\.desktopcommander')
+            Write-Host "BROWSER pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) sid=$($o.Sid) session=$($gp.SessionId) created=$($p.CreationDate) authUrlHint=$hasVerify"
+          }
  })
           Write-Host "BROWSER_COUNT=$($browsers.Count)"
           foreach($p in $browsers){
