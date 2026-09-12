@@ -1,0 +1,53 @@
+name: RDC A/B wait for exact clean Remote
+
+on:
+  push:
+    branches:
+      - ops/rdc-ab-recover-online-20260911
+
+permissions:
+  contents: read
+
+jobs:
+  wait-clean:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 70
+    steps:
+      - name: Wait read-only for exact clean Remote
+        shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
+        run: |
+          $ErrorActionPreference='Stop'
+          $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260912-1f9c8c4'
+          $expectedRepo=Join-Path $root 'clean\repo'
+          $expectedEntry=Join-Path $expectedRepo 'dist\index.js'
+          $expectedSha='ea8e9a47440ccffefede7060e0ddb490540f414d'
+          $activePath=Join-Path $root 'active-variant.txt'
+          $journalPath=Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
+          for($attempt=0; $attempt -lt 240; $attempt++){
+            $now=[DateTime]::UtcNow.ToString('o')
+            $active=(Get-Content -Raw -LiteralPath $activePath).Trim()
+            if($active -ne 'clean'){ throw "Unexpected active variant while waiting for clean: $active" }
+            $all=Get-CimInstance Win32_Process
+            $remotes=@($all | Where-Object {
+              $_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'dist\\index\.js.*remote'
+            })
+            if($remotes.Count -gt 1){ throw "More than one Remote detected: $($remotes.Count)" }
+            $journal='none'
+            if(Test-Path -LiteralPath $journalPath -PathType Leaf){
+              $j=Get-Content -Raw -LiteralPath $journalPath | ConvertFrom-Json
+              $journal="child=$($j.ChildPid) repo=$($j.Repository)"
+            }
+            if($remotes.Count -eq 1){
+              $p=$remotes[0]
+              $cmd=[string]$p.CommandLine
+              Write-Host "$now active=$active remotePid=$($p.ProcessId) journal=$journal cmd=$cmd"
+              if($cmd -notlike "*$expectedEntry*"){ throw "Remote entrypoint is not exact clean runtime: $cmd" }
+              $sha=(git -C $expectedRepo rev-parse HEAD).Trim()
+              if($sha -ne $expectedSha){ throw "Clean runtime SHA mismatch: $sha" }
+              Write-Host "EXACT_CLEAN_REMOTE_FOUND pid=$($p.ProcessId) sha=$sha"
+              exit 0
+            }
+            if(($attempt % 4) -eq 0){ Write-Host "$now active=$active remoteCount=0 journal=$journal" }
+            Start-Sleep -Seconds 15
+          }
+          throw 'Timed out waiting for exact clean Remote'
