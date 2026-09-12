@@ -34,7 +34,8 @@ jobs:
           Write-Host "INTERESTING_COUNT=$($interesting.Count)"
           foreach($p in $interesting){
             $o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-            Write-Host "PROC pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) sid=$($o.Sid) created=$($p.CreationDate) cmd=$($p.CommandLine)"
+            $gp=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+            Write-Host "PROC pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) sid=$($o.Sid) created=$($p.CreationDate) cpu=$($gp.CPU) handles=$($gp.HandleCount) ws=$($gp.WorkingSet64) readOps=$($p.ReadOperationCount) readBytes=$($p.ReadTransferCount) writeOps=$($p.WriteOperationCount) writeBytes=$($p.WriteTransferCount) cmd=$($p.CommandLine)"
           }
           $remotes=@($all | Where-Object {
             $_.Name -eq 'node.exe' -and [string]$_.CommandLine -match 'dist\\index\.js.*remote'
@@ -46,25 +47,34 @@ jobs:
           }
           $task=Get-ScheduledTask -TaskName $taskName
           $info=Get-ScheduledTaskInfo -TaskName $taskName
-          Write-Host "TASK state=$($task.State) enabled=$($task.Settings.Enabled) lastRun=$($info.LastRunTime.ToString('o')) lastResult=$($info.LastTaskResult) restartCount=$($task.Settings.RestartCount) restartInterval=$($task.Settings.RestartInterval) action=$($task.Actions[0].Execute) args=$($task.Actions[0].Arguments)"
-          if(Test-Path -LiteralPath $root -PathType Container){
-            $activePath=Join-Path $root 'active-variant.txt'
-            if(Test-Path -LiteralPath $activePath -PathType Leaf){Write-Host "ACTIVE=$((Get-Content -Raw -LiteralPath $activePath).Trim())"}
-            $journalPath=Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
-            Write-Host "JOURNAL_EXISTS=$(Test-Path -LiteralPath $journalPath -PathType Leaf)"
-            if(Test-Path -LiteralPath $journalPath -PathType Leaf){
-              $j=Get-Content -Raw -LiteralPath $journalPath | ConvertFrom-Json
-              foreach($name in @('SupervisorPid','SupervisorStartUtc','ChildPid','ChildStartUtc','OwnerSid','Repository','Entrypoint','Rights')){
-                if($j.PSObject.Properties.Name -contains $name){Write-Host "JOURNAL_$name=$($j.$name)"}
-              }
+          Write-Host "TASK state=$($task.State) enabled=$($task.Settings.Enabled) lastRun=$($info.LastRunTime.ToString('o')) lastResult=$($info.LastTaskResult) restartCount=$($task.Settings.RestartCount) restartInterval=$($task.Settings.RestartInterval)"
+          $activePath=Join-Path $root 'active-variant.txt'
+          if(Test-Path -LiteralPath $activePath -PathType Leaf){Write-Host "ACTIVE=$((Get-Content -Raw -LiteralPath $activePath).Trim())"}
+          $journalPath=Join-Path $root '.rdc-ab-runtime-namespace-seal.json'
+          Write-Host "JOURNAL_EXISTS=$(Test-Path -LiteralPath $journalPath -PathType Leaf)"
+          $supervisorPid=0
+          if(Test-Path -LiteralPath $journalPath -PathType Leaf){
+            $j=Get-Content -Raw -LiteralPath $journalPath | ConvertFrom-Json
+            $supervisorPid=[int]$j.SupervisorPid
+            foreach($name in @('SupervisorPid','SupervisorStartUtc','ChildPid','ChildStartUtc','OwnerSid','Repository','Entrypoint','Rights')){
+              if($j.PSObject.Properties.Name -contains $name){Write-Host "JOURNAL_$name=$($j.$name)"}
             }
-          } else {
-            Write-Host 'ROOT_MISSING=True'
+          }
+          if($supervisorPid -gt 0){
+            $a=Get-CimInstance Win32_Process -Filter "ProcessId=$supervisorPid" -ErrorAction SilentlyContinue
+            $ap=Get-Process -Id $supervisorPid -ErrorAction SilentlyContinue
+            if($a -and $ap){
+              $aCpu=[double]$ap.CPU; $aRead=[int64]$a.ReadTransferCount; $aReadOps=[int64]$a.ReadOperationCount
+              Start-Sleep -Seconds 10
+              $b=Get-CimInstance Win32_Process -Filter "ProcessId=$supervisorPid" -ErrorAction SilentlyContinue
+              $bp=Get-Process -Id $supervisorPid -ErrorAction SilentlyContinue
+              if($b -and $bp){
+                Write-Host "SUPERVISOR_DELTA pid=$supervisorPid cpuDelta=$([math]::Round(([double]$bp.CPU-$aCpu),3)) readBytesDelta=$([int64]$b.ReadTransferCount-$aRead) readOpsDelta=$([int64]$b.ReadOperationCount-$aReadOps) handles=$($bp.HandleCount) ws=$($bp.WorkingSet64)"
+              } else { Write-Host "SUPERVISOR_DELTA pid=$supervisorPid exited=True" }
+            }
           }
           if(Test-Path -LiteralPath $device -PathType Leaf){
             $i=Get-Item -LiteralPath $device
             $j=Get-Content -Raw -LiteralPath $device | ConvertFrom-Json
             Write-Host "DEVICE_META deviceId=$($j.deviceId) lastWriteUtc=$($i.LastWriteTimeUtc.ToString('o')) length=$($i.Length) hasAccess=$([bool](-not [string]::IsNullOrWhiteSpace([string]$j.session.access_token))) hasRefresh=$([bool](-not [string]::IsNullOrWhiteSpace([string]$j.session.refresh_token)))"
-          } else {
-            Write-Host 'DEVICE_META missing=True'
           }
