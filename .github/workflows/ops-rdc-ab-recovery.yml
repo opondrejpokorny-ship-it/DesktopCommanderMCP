@@ -78,16 +78,7 @@ jobs:
             }
             Write-Host "DEVICE_META deviceId=$($j.deviceId) lastWriteUtc=$($i.LastWriteTimeUtc.ToString('o')) length=$($i.Length) hasAccess=$([bool](-not [string]::IsNullOrWhiteSpace($access))) hasRefresh=$([bool](-not [string]::IsNullOrWhiteSpace([string]$j.session.refresh_token))) accessExpUtc=$expUtc"
           }
-          Write-Host "RUNNER_IDENTITY=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-          Write-Host 'USER_SESSIONS_START'
-          (quser 2>$null) | ForEach-Object { Write-Host $_ }
-          Write-Host 'USER_SESSIONS_END'
-          $browsers=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(msedge|chrome|firefox)\\.exe
- })
-          Write-Host "BROWSER_COUNT=$($browsers.Count)"
-          foreach($browser in $browsers){
-            $o=Invoke-CimMethod -InputObject $browser -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-            $gp=Get-Process -Id $browser.ProcessId -ErrorAction SilentlyContinue
-            $hasVerify=([string]$browser.CommandLine -match '(?i)device|verify|authorize|mcp\\.desktopcommander')
-            Write-Host "BROWSER pid=$($browser.ProcessId) ppid=$($browser.ParentProcessId) name=$($browser.Name) sid=$($o.Sid) session=$($gp.SessionId) created=$($browser.CreationDate) authUrlHint=$hasVerify"
+          $runnerDiag='C:\actions-runner\_diag'
+          if(Test-Path -LiteralPath $runnerDiag -PathType Container){
+            Write-Host "RUNNER_DIAG_PRESENT=True"
           }
