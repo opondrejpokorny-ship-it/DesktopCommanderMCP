@@ -144,6 +144,8 @@ export class RemoteChannel {
     /** Auth session gone for good: stops rejoins and caps the notice at one line. */
     private sessionLost = false;
     private handlingSignedOut = false;
+    /** Auth work that can rotate credentials and must finish before shutdown flushes persistence. */
+    private inFlightAuthWork = new Set<Promise<void>>();
 
 
     // Store subscription parameters for channel recreation
@@ -278,7 +280,7 @@ export class RemoteChannel {
                     this.lastKnownSession = refreshedSession;
                     this.sessionRefreshListener?.(refreshedSession);
                 } else if (event === 'SIGNED_OUT') {
-                    void this.handleSignedOut();
+                    this.trackAuthWork(this.handleSignedOut());
                 }
             });
         }
@@ -293,6 +295,11 @@ export class RemoteChannel {
      * as retryable — a 429 or 500 kills the session while the refresh token is fine.
      * We don't re-authenticate: DeviceAuthenticator opens a browser and waits.
      */
+    private trackAuthWork(work: Promise<void>): void {
+        this.inFlightAuthWork.add(work);
+        void work.finally(() => this.inFlightAuthWork.delete(work)).catch(() => { /* work logs internally */ });
+    }
+
     private async handleSignedOut(): Promise<void> {
         if (this.handlingSignedOut || this.sessionLost || this.shuttingDown) return;
         this.handlingSignedOut = true;
@@ -317,15 +324,19 @@ export class RemoteChannel {
                         restoreError = refreshError ?? null;
                         if (!restoreError) {
                             const renewed = data?.session;
-                            if (renewed?.access_token) {
-                                this.lastKnownSession = {
+                            if (!renewed?.access_token || !renewed.refresh_token) {
+                                restoreError = new Error('Refresh session returned incomplete credentials');
+                            } else {
+                                const refreshedSession: AuthSession = {
                                     access_token: renewed.access_token,
-                                    refresh_token: renewed.refresh_token ?? cached.refresh_token,
+                                    refresh_token: renewed.refresh_token,
                                 };
+                                this.lastKnownSession = refreshedSession;
+                                this.sessionRefreshListener?.(refreshedSession);
+                                console.log('   - ✅ Remote session restored after a transient sign-out');
+                                await captureRemote('remote_channel_signed_out_recovered', {});
+                                return;
                             }
-                            console.log('   - ✅ Remote session restored after a transient sign-out');
-                            await captureRemote('remote_channel_signed_out_recovered', {});
-                            return;
                         }
                     }
                 } catch (thrown: any) {
@@ -336,7 +347,6 @@ export class RemoteChannel {
                 await captureRemote('remote_channel_session_restore_failed', {
                     errorName: restoreError?.name ?? null,
                     errorStatus: restoreError?.status ?? null,
-                    errorMessage: restoreError?.message ?? null,
                 });
                 console.debug(`[DEBUG] Session restore failed: ${restoreError?.message}`);
             }
@@ -1189,7 +1199,7 @@ export class RemoteChannel {
     private startTokenRefresh(): void {
         if (this.tokenRefreshInterval) return; // already running
         this.tokenRefreshInterval = setInterval(() => {
-            this.refreshTokenNow().catch(() => { /* logged inside */ });
+            this.trackAuthWork(this.refreshTokenNow());
         }, TOKEN_REFRESH_INTERVAL_MS);
     }
 
@@ -1361,6 +1371,17 @@ export class RemoteChannel {
         // SIGINT during recreateChannel()'s backoff, where the later join's
         // SUBSCRIBED would queue 'online' after the durable write.
         this.shuttingDown = true;
+        this.stopTokenRefresh();
+
+        // A SIGNED_OUT restore or manual refresh that started before shutdown can
+        // rotate the one-time refresh token after device.ts begins its persistence
+        // flush. Drain those producers first so every resulting persistence callback
+        // is already in sessionPersistChain before shutdown awaits that chain.
+        const authWork = [...this.inFlightAuthWork];
+        if (authWork.length > 0) {
+            await Promise.allSettled(authWork);
+        }
+
         // Budget against device.ts's 5s force-exit, worst case:
         //   250 drain + 2x300 leave + 500 session + 3000 spawnSync = 4350ms.
         // In practice only the untrack bound binds — removeChannel/unsubscribe
