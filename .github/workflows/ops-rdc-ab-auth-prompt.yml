@@ -55,9 +55,15 @@ jobs:
           '@
           $env:RDC_AB_CONSOLE_SOURCE=$source
           Set-Content -LiteralPath $helper -Value $helperBody -Encoding UTF8
-          $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$helper,'-TargetPid','112') -Wait -PassThru -WindowStyle Hidden
-          Remove-Item -LiteralPath $helper -Force -ErrorAction SilentlyContinue
+          $helperOut=Join-Path $env:RUNNER_TEMP 'rdc-ab-console-probe.out'
+          $helperErr=Join-Path $env:RUNNER_TEMP 'rdc-ab-console-probe.err'
+          $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$helper,'-TargetPid','112') -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $helperOut -RedirectStandardError $helperErr
+          $safeOut=if(Test-Path $helperOut){Get-Content -Raw -LiteralPath $helperOut}else{''}
+          $safeErr=if(Test-Path $helperErr){Get-Content -Raw -LiteralPath $helperErr}else{''}
+          Remove-Item -LiteralPath $helper,$helperOut,$helperErr -Force -ErrorAction SilentlyContinue
           Remove-Item Env:RDC_AB_CONSOLE_SOURCE -ErrorAction SilentlyContinue
+          if($p.ExitCode -ne 0 -and $safeErr){ Write-Host "CONSOLE_HELPER_ERROR=$($safeErr -replace '[\r\n]+',' ')" }
+          if($p.ExitCode -eq 0 -and $safeOut){ Write-Host "CONSOLE_HELPER_STATUS=$($safeOut -replace '[\r\n]+',' ')" }
           switch($p.ExitCode){
             0 { Write-Host 'AUTH_PROMPT_DELIVERED=True' }
             2 { Write-Host 'AUTH_PROMPT_DELIVERED=False reason=no-console' }
