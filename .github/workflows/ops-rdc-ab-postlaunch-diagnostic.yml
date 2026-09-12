@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Inspect postlaunch state read-only
-        shell: powershell
+        shell: powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression (Get-Content -Raw '{0}')"
         run: |
           $ErrorActionPreference='Stop'
           $root='C:\Users\ondre\AppData\Local\RDC-Benchmark-20260912-1f9c8c4'
