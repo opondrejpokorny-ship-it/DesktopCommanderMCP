@@ -80,21 +80,14 @@ jobs:
           }
           Write-Host "RUNNER_IDENTITY=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
           Write-Host 'USER_SESSIONS_START'
-          quser 2>$null | ForEach-Object { Write-Host $_ }
+          (quser 2>$null) | ForEach-Object { Write-Host $_ }
           Write-Host 'USER_SESSIONS_END'
           $browsers=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(msedge|chrome|firefox)\\.exe
-          Write-Host "BROWSER_COUNT=$($browsers.Count)"
-          foreach($p in $browsers){
-            $o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-            $gp=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
-            $hasVerify=([string]$p.CommandLine -match '(?i)device|verify|authorize|mcp\.desktopcommander')
-            Write-Host "BROWSER pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) sid=$($o.Sid) session=$($gp.SessionId) created=$($p.CreationDate) authUrlHint=$hasVerify"
-          }
  })
           Write-Host "BROWSER_COUNT=$($browsers.Count)"
-          foreach($p in $browsers){
-            $o=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue
-            $gp=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
-            $hasVerify=([string]$p.CommandLine -match '(?i)device|verify|authorize|mcp\.desktopcommander')
-            Write-Host "BROWSER pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) sid=$($o.Sid) session=$($gp.SessionId) created=$($p.CreationDate) authUrlHint=$hasVerify"
+          foreach($browser in $browsers){
+            $o=Invoke-CimMethod -InputObject $browser -MethodName GetOwnerSid -ErrorAction SilentlyContinue
+            $gp=Get-Process -Id $browser.ProcessId -ErrorAction SilentlyContinue
+            $hasVerify=([string]$browser.CommandLine -match '(?i)device|verify|authorize|mcp\\.desktopcommander')
+            Write-Host "BROWSER pid=$($browser.ProcessId) ppid=$($browser.ParentProcessId) name=$($browser.Name) sid=$($o.Sid) session=$($gp.SessionId) created=$($browser.CreationDate) authUrlHint=$hasVerify"
           }
