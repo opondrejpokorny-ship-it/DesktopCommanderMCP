@@ -63,7 +63,20 @@ jobs:
           if(Test-Path -LiteralPath $device -PathType Leaf){
             $i=Get-Item -LiteralPath $device
             $j=Get-Content -Raw -LiteralPath $device | ConvertFrom-Json
-            Write-Host "DEVICE_META deviceId=$($j.deviceId) lastWriteUtc=$($i.LastWriteTimeUtc.ToString('o')) length=$($i.Length) hasAccess=$([bool](-not [string]::IsNullOrWhiteSpace([string]$j.session.access_token))) hasRefresh=$([bool](-not [string]::IsNullOrWhiteSpace([string]$j.session.refresh_token)))"
+            $access=[string]$j.session.access_token
+            $expUtc=''
+            if(-not [string]::IsNullOrWhiteSpace($access)){
+              try {
+                $parts=$access.Split('.')
+                if($parts.Length -ge 2){
+                  $p=$parts[1].Replace('-','+').Replace('_','/')
+                  switch($p.Length % 4){2{$p+='=='}3{$p+='='}}
+                  $payload=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p))|ConvertFrom-Json
+                  if($payload.exp){$expUtc=[DateTimeOffset]::FromUnixTimeSeconds([int64]$payload.exp).UtcDateTime.ToString('o')}
+                }
+              } catch { $expUtc='decode-error' }
+            }
+            Write-Host "DEVICE_META deviceId=$($j.deviceId) lastWriteUtc=$($i.LastWriteTimeUtc.ToString('o')) length=$($i.Length) hasAccess=$([bool](-not [string]::IsNullOrWhiteSpace($access))) hasRefresh=$([bool](-not [string]::IsNullOrWhiteSpace([string]$j.session.refresh_token))) accessExpUtc=$expUtc"
           }
           $runnerDiag='C:\actions-runner\_diag'
           if(Test-Path -LiteralPath $runnerDiag -PathType Container){
