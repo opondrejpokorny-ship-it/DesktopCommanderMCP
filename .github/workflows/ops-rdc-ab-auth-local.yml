@@ -1,0 +1,20 @@
+name: RDC A/B local auth prompt helper
+
+on:
+  push:
+    branches:
+      - ops/rdc-ab-recover-online-20260911
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deliver:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deliver prompt locally without logging auth code
+        shell: powershell.exe
+        run: .github/scripts/rdc-ab-deliver-auth-prompt.ps1
