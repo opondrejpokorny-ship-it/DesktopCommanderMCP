@@ -73,7 +73,7 @@ if ($matchingWatchers.Count -eq 0) {
 }
 
 # Load only the pure identity helpers under test; no top-level activation code runs.
-foreach ($name in @('ConvertTo-ProcessCreationUtc', 'Test-ExactProcessRecordIdentity', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity', 'Assert-SystemTaskHostQuiesced')) {
+foreach ($name in @('Get-OriginalLauncherRemoteContract', 'ConvertTo-ProcessCreationUtc', 'Test-ExactProcessRecordIdentity', 'Get-TrustedWindowsPowerShellPath', 'Assert-ExactSystemTaskDefinition', 'Assert-ExactSystemTaskHostIdentity', 'Assert-SystemTaskHostQuiesced')) {
   . ([scriptblock]::Create((Get-FunctionAst $name).Extent.Text))
 }
 
@@ -220,5 +220,38 @@ foreach ($case in $driftCases) {
   try { [void](Assert-ExactSystemTaskHostIdentity -TaskInventory $case.Tasks -ProcessInventory $case.Processes -Contract $contract) }
   catch { $rejected = $true }
   if (-not $rejected) { throw "SYSTEM task-host identity drift was accepted: $($case.Name)" }
+}
+
+$legacyRoot = Join-Path ([IO.Path]::GetTempPath()) ('rdc-ab-legacy-launcher-' + [guid]::NewGuid().ToString('N'))
+try {
+  $launcher = Join-Path $legacyRoot 'start-remote.cmd'
+  $entrypoint = Join-Path $legacyRoot 'canonical\dist\index.js'
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entrypoint) | Out-Null
+  Set-Content -LiteralPath $entrypoint -Value '// fixture' -NoNewline
+  $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+  $canonicalRoot = Split-Path -Parent (Split-Path -Parent $entrypoint)
+  $legacyText = "@echo off`r`nsetlocal`r`nset ROOT=$canonicalRoot`r`nset NODE=$nodePath`r`nset ENTRY=%ROOT%\dist\index.js`r`n%NODE% %ENTRY% remote`r`n"
+  Set-Content -LiteralPath "$launcher.rdc-ab-original" -Value $legacyText -NoNewline
+  $legacyContract = Get-OriginalLauncherRemoteContract
+  if (-not $legacyContract.Node.Equals($nodePath, [StringComparison]::OrdinalIgnoreCase) -or
+      -not $legacyContract.Entrypoint.Equals($entrypoint, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Observed legacy launcher form did not resolve to the exact expected contract'
+  }
+  Set-Content -LiteralPath "$launcher.rdc-ab-original" -Value ($legacyText.Replace('%NODE% %ENTRY% remote', '%NODE% %ENTRY% remote & whoami')) -NoNewline
+  $injectionRejected = $false
+  try { [void](Get-OriginalLauncherRemoteContract) } catch { $injectionRejected = $true }
+  if (-not $injectionRejected) { throw 'Legacy launcher parser accepted trailing cmd injection' }
+
+  Set-Content -LiteralPath "$launcher.rdc-ab-original" -Value ($legacyText + "set `"ROOT=$canonicalRoot`"`r`n") -NoNewline
+  $mixedRejected = $false
+  try { [void](Get-OriginalLauncherRemoteContract) } catch { $mixedRejected = $true }
+  if (-not $mixedRejected) { throw 'Legacy launcher parser accepted a mixed duplicate contract' }
+
+  Set-Content -LiteralPath "$launcher.rdc-ab-original" -Value ($legacyText.Replace("set ROOT=$canonicalRoot", "set ROOT=$canonicalRoot&whoami")) -NoNewline
+  $unsafePathRejected = $false
+  try { [void](Get-OriginalLauncherRemoteContract) } catch { $unsafePathRejected = $true }
+  if (-not $unsafePathRejected) { throw 'Legacy launcher parser accepted an unsafe path expansion' }
+} finally {
+  Remove-Item -LiteralPath $legacyRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output 'PASS RDC A/B SYSTEM task-host contract'
