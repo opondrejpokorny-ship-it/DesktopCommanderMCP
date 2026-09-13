@@ -175,18 +175,36 @@ function Assert-NoCompetingHostOrchestrator($Contract, [string]$AllowedTaskPath 
 function Get-OriginalLauncherRemoteContract {
   $backup = "$launcher.rdc-ab-original"
   $text = [IO.File]::ReadAllText($backup)
-  $rootMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"ROOT=(?<value>[^"\r\n]+)"[ \t]*\r?$')
-  $nodeMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"NODE=(?<value>[^"\r\n]+)"[ \t]*\r?$')
-  $entryMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"ENTRY=%ROOT%\\dist\\index\.js"[ \t]*\r?$')
-  $launchMatches = [regex]::Matches(
+  $quotedRootMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"ROOT=(?<value>[^"\r\n]+)"[ \t]*\r?$')
+  $quotedNodeMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"NODE=(?<value>[^"\r\n]+)"[ \t]*\r?$')
+  $quotedEntryMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+"ENTRY=%ROOT%\\dist\\index\.js"[ \t]*\r?$')
+  $quotedLaunchMatches = [regex]::Matches(
     $text,
     '(?im)^[ \t]*"%NODE%"[ \t]+"%ENTRY%"[ \t]+remote(?:[ \t]+>>[ \t]+"[^"\r\n]+"[ \t]+2>&1)?[ \t]*\r?$'
   )
-  if ($rootMatches.Count -ne 1 -or $nodeMatches.Count -ne 1 -or
-      $entryMatches.Count -ne 1 -or $launchMatches.Count -ne 1) {
+  $legacyRootMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+ROOT=(?<value>[^"\r\n]*[^" \t\r\n])[ \t]*\r?$')
+  $legacyNodeMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+NODE=(?<value>[^"\r\n]*[^" \t\r\n])[ \t]*\r?$')
+  $legacyEntryMatches = [regex]::Matches($text, '(?im)^[ \t]*set[ \t]+ENTRY=%ROOT%\\dist\\index\.js[ \t]*\r?$')
+  $legacyLaunchMatches = [regex]::Matches(
+    $text,
+    '(?im)^[ \t]*%NODE%[ \t]+%ENTRY%[ \t]+remote[ \t]*\r?$'
+  )
+
+  $quotedComplete = $quotedRootMatches.Count -eq 1 -and $quotedNodeMatches.Count -eq 1 -and
+    $quotedEntryMatches.Count -eq 1 -and $quotedLaunchMatches.Count -eq 1
+  $legacyComplete = $legacyRootMatches.Count -eq 1 -and $legacyNodeMatches.Count -eq 1 -and
+    $legacyEntryMatches.Count -eq 1 -and $legacyLaunchMatches.Count -eq 1
+  $definitionsExact =
+    ($quotedRootMatches.Count + $legacyRootMatches.Count) -eq 1 -and
+    ($quotedNodeMatches.Count + $legacyNodeMatches.Count) -eq 1 -and
+    ($quotedEntryMatches.Count + $legacyEntryMatches.Count) -eq 1 -and
+    ($quotedLaunchMatches.Count + $legacyLaunchMatches.Count) -eq 1
+  if (-not $definitionsExact -or $quotedComplete -eq $legacyComplete) {
     throw 'Original launcher remote contract is not exact'
   }
 
+  $rootMatches = if ($quotedComplete) { $quotedRootMatches } else { $legacyRootMatches }
+  $nodeMatches = if ($quotedComplete) { $quotedNodeMatches } else { $legacyNodeMatches }
   $rootValue = $rootMatches[0].Groups['value'].Value
   $nodeValue = $nodeMatches[0].Groups['value'].Value
   $unsafe = [char[]]@('&','|','<','>','^','%','!')
