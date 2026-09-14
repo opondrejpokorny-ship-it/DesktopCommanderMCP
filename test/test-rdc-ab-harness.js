@@ -1417,7 +1417,15 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
   const holdingResult = await holdingSupervisor.completed;
   assert.equal(holdingResult.status, 0, `${holdingResult.stdout}\n${holdingResult.stderr}`);
 
-  const restoreRun = spawnSync('powershell.exe', restoreArgs, { encoding: 'utf8' });
+  const restoreTestOptions = {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      RDC_AB_ENABLE_TEST_CONTROL: '1',
+      RDC_AB_TEST_CONTROL_DIRECTORY: restoreControl,
+    },
+  };
+  const restoreRun = spawnSync('powershell.exe', restoreArgs, restoreTestOptions);
   assert.equal(restoreRun.status, 0, `${restoreRun.stdout}\n${restoreRun.stderr}`);
   assert.equal(await fs.readFile(launcher, 'utf8'), originalLauncher);
 
@@ -1427,7 +1435,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
   const reinstallForOwnership = spawnSync('powershell.exe', installArgs, { encoding: 'utf8' });
   assert.equal(reinstallForOwnership.status, 0, `${reinstallForOwnership.stdout}\n${reinstallForOwnership.stderr}`);
   await fs.writeFile(launcher, foreignLauncher);
-  const foreignRestore = spawnSync('powershell.exe', restoreArgs, { encoding: 'utf8' });
+  const foreignRestore = spawnSync('powershell.exe', restoreArgs, restoreTestOptions);
   assert.notEqual(foreignRestore.status, 0);
   assert.match(`${foreignRestore.stdout}\n${foreignRestore.stderr}`, /launcher.+(owned|delegator|install)/i);
   assert.equal(await fs.readFile(launcher, 'utf8'), foreignLauncher);
