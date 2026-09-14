@@ -7,6 +7,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:validationTracePath = $null
+function Write-TestValidationTrace([string]$Phase) {
+  if (-not $script:validationTracePath) { return }
+  Add-Content -LiteralPath $script:validationTracePath -Value $Phase -Encoding ASCII
+}
 $aclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
 if (-not (Test-Path -LiteralPath $aclHelper -PathType Leaf)) { throw 'RDC A/B ACL helper is missing' }
 . $aclHelper
@@ -135,33 +140,38 @@ function Assert-StatePathWithinRoot([string]$Candidate, [string]$Label, [switch]
   }
   return $full
 }
-function Get-RuntimeDigest([string]$Repository) {
+function Get-RuntimeFileInventory([string]$Repository, [string]$Label) {
   $rootAttributes = [IO.File]::GetAttributes($Repository)
   if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
       ($rootAttributes -band [IO.FileAttributes]::Directory) -eq 0) {
-    throw 'Runtime digest repository must be a real directory'
+    throw "$Label repository must be a real directory"
   }
   $files = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
-  function Add-RuntimeDigestFiles([string]$Directory, [string]$RelativePath) {
+  function Add-RuntimeInventoryFiles([string]$Directory, [string]$RelativePath) {
     foreach ($child in [IO.Directory]::GetFileSystemEntries($Directory)) {
       $name = [IO.Path]::GetFileName($child)
       if ($RelativePath.Length -eq 0 -and $name -ceq '.git') { continue }
       $attributes = [IO.File]::GetAttributes($child)
       if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'Runtime digest rejects a symlink, junction, or reparse point'
+        throw "$Label rejects a symlink, junction, or reparse point"
       }
       $childRelative = if ($RelativePath.Length -eq 0) { $name } else { $RelativePath + '/' + $name }
       $item = Get-Item -LiteralPath $child -Force
       if ($item -is [IO.DirectoryInfo]) {
-        Add-RuntimeDigestFiles $child $childRelative
+        Add-RuntimeInventoryFiles $child $childRelative
       } elseif ($item -is [IO.FileInfo]) {
         $files.Add($childRelative, $child)
       } else {
-        throw 'Runtime digest rejects a non-file, non-directory entry'
+        throw "$Label rejects a non-file, non-directory entry"
       }
     }
   }
-  Add-RuntimeDigestFiles $Repository ''
+  Add-RuntimeInventoryFiles $Repository ''
+  return ,$files
+}
+function Get-RuntimeDigest([string]$Repository) {
+  Write-TestValidationTrace 'runtime-digest:live'
+  $files = Get-RuntimeFileInventory $Repository 'Runtime digest'
   $relativePaths = New-Object string[] $files.Count
   $files.Keys.CopyTo($relativePaths, 0)
   [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
@@ -186,32 +196,8 @@ function Get-RuntimeDigest([string]$Repository) {
   }
 }
 function Open-SealedRuntime([string]$Repository) {
-  $rootAttributes = [IO.File]::GetAttributes($Repository)
-  if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-      ($rootAttributes -band [IO.FileAttributes]::Directory) -eq 0) {
-    throw 'Runtime seal repository must be a real directory'
-  }
-  $files = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
-  function Add-SealedRuntimeFiles([string]$Directory, [string]$RelativePath) {
-    foreach ($child in [IO.Directory]::GetFileSystemEntries($Directory)) {
-      $name = [IO.Path]::GetFileName($child)
-      if ($RelativePath.Length -eq 0 -and $name -ceq '.git') { continue }
-      $attributes = [IO.File]::GetAttributes($child)
-      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'Runtime seal rejects a symlink, junction, or reparse point'
-      }
-      $childRelative = if ($RelativePath.Length -eq 0) { $name } else { $RelativePath + '/' + $name }
-      $item = Get-Item -LiteralPath $child -Force
-      if ($item -is [IO.DirectoryInfo]) {
-        Add-SealedRuntimeFiles $child $childRelative
-      } elseif ($item -is [IO.FileInfo]) {
-        $files.Add($childRelative, $child)
-      } else {
-        throw 'Runtime seal rejects a non-file, non-directory entry'
-      }
-    }
-  }
-  Add-SealedRuntimeFiles $Repository ''
+  Write-TestValidationTrace 'sealed-runtime:open'
+  $files = Get-RuntimeFileInventory $Repository 'Runtime seal'
   $relativePaths = New-Object string[] $files.Count
   $files.Keys.CopyTo($relativePaths, 0)
   [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
@@ -227,7 +213,14 @@ function Open-SealedRuntime([string]$Repository) {
       }
       $handle = [IO.File]::Open($filePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
       $handles.Add($handle)
-      $sealedFiles.Add($relativePath, [pscustomobject]@{ Path=$filePath; Handle=$handle })
+      $fileHasher = [Security.Cryptography.SHA256]::Create()
+      try {
+        $fileDigest = ([BitConverter]::ToString($fileHasher.ComputeHash($handle))).Replace('-', '').ToLowerInvariant()
+      } finally {
+        $fileHasher.Dispose()
+        $handle.Position = 0
+      }
+      $sealedFiles.Add($relativePath, [pscustomobject]@{ Path=$filePath; Handle=$handle; Digest=$fileDigest })
     }
     return [pscustomobject]@{ Repository=$Repository; Files=$sealedFiles; Handles=$handles }
   } catch {
@@ -241,17 +234,15 @@ function Close-SealedRuntime($SealedRuntime) {
   }
 }
 function Get-SealedRuntimeDigest($SealedRuntime) {
+  Write-TestValidationTrace 'runtime-digest:sealed'
   $relativePaths = New-Object string[] $SealedRuntime.Files.Count
   $SealedRuntime.Files.Keys.CopyTo($relativePaths, 0)
   [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
   $hasher = [Security.Cryptography.SHA256]::Create()
   try {
     foreach ($relativePath in $relativePaths) {
-      $stream = $SealedRuntime.Files[$relativePath].Handle
-      $stream.Position = 0
-      $fileHasher = [Security.Cryptography.SHA256]::Create()
-      try { $fileDigest = ([BitConverter]::ToString($fileHasher.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
-      finally { $fileHasher.Dispose(); $stream.Position = 0 }
+      $fileDigest = [string]$SealedRuntime.Files[$relativePath].Digest
+      if ($fileDigest -cnotmatch '^[0-9a-f]{64}$') { throw 'Runtime seal contains an invalid file digest' }
       $record = $relativePath + [char]0 + $fileDigest + [char]10
       $bytes = [Text.Encoding]::UTF8.GetBytes($record)
       [void]$hasher.TransformBlock($bytes, 0, $bytes.Length, $bytes, 0)
@@ -263,13 +254,24 @@ function Get-SealedRuntimeDigest($SealedRuntime) {
 function Get-SealedRuntimeFileDigest($SealedRuntime, [string]$Path) {
   foreach ($sealedFile in $SealedRuntime.Files.Values) {
     if ($sealedFile.Path.Equals($Path, [StringComparison]::OrdinalIgnoreCase)) {
-      $sealedFile.Handle.Position = 0
-      $hasher = [Security.Cryptography.SHA256]::Create()
-      try { return ([BitConverter]::ToString($hasher.ComputeHash($sealedFile.Handle))).Replace('-', '').ToLowerInvariant() }
-      finally { $hasher.Dispose(); $sealedFile.Handle.Position = 0 }
+      $digest = [string]$sealedFile.Digest
+      if ($digest -cnotmatch '^[0-9a-f]{64}$') { throw 'Runtime seal contains an invalid file digest' }
+      return $digest
     }
   }
   throw 'Runtime seal is missing the build entrypoint'
+}
+function Assert-SealedRuntimeInventory($SealedRuntime) {
+  $liveFiles = Get-RuntimeFileInventory $SealedRuntime.Repository 'Runtime tree after sealing'
+  if ($liveFiles.Count -ne $SealedRuntime.Files.Count) { throw 'Runtime tree changed after sealing' }
+  foreach ($relativePath in $SealedRuntime.Files.Keys) {
+    if (-not $liveFiles.ContainsKey($relativePath)) { throw 'Runtime tree changed after sealing' }
+    $livePath = [IO.Path]::GetFullPath([string]$liveFiles[$relativePath])
+    $sealedPath = [IO.Path]::GetFullPath([string]$SealedRuntime.Files[$relativePath].Path)
+    if (-not $livePath.Equals($sealedPath, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Runtime tree changed after sealing'
+    }
+  }
 }
 function Assert-TrackedWorktreeClean([string]$Repository, [string]$Variant) {
   & git.exe -C $Repository diff --no-ext-diff --quiet HEAD --
@@ -278,7 +280,7 @@ function Assert-TrackedWorktreeClean([string]$Repository, [string]$Variant) {
   if ($status -eq 1) { throw "$Variant tracked worktree differs from HEAD" }
   throw "Unable to compare $Variant tracked worktree with HEAD"
 }
-function Get-ValidatedSelection($SealedRuntime = $null) {
+function Get-SelectionMetadata($SealedRuntime = $null) {
   [void](Assert-RdcAbProtectedRootAcl $root)
   Assert-RdcAbInheritedChildAcl $root $manifestPath 'Benchmark manifest'
   Assert-RdcAbInheritedChildAcl $root $activePath 'Active variant pointer'
@@ -287,11 +289,8 @@ function Get-ValidatedSelection($SealedRuntime = $null) {
   $entry = $manifest.variants.$variant
   if ($null -eq $entry) { throw "Manifest is missing variant: $variant" }
   $repo = Assert-WithinRoot ([string]$entry.repoPath) "$variant repoPath"
-  if ($null -ne $SealedRuntime) {
-    Assert-RdcAbRuntimeNamespaceSeal $root $repo $SealedRuntime.NamespaceSeal.OwnerSid
-  } else {
+  if ($null -eq $SealedRuntime) {
     Assert-RdcAbInheritedChildAcl $root $repo "$variant runtime root"
-    Assert-RdcAbRuntimeTreeAcl $root $repo "$variant runtime tree"
   }
   $actualSha = (& git.exe -C $repo rev-parse HEAD 2>$null).Trim()
   if ($LASTEXITCODE -ne 0) { throw "Unable to read $variant Git HEAD" }
@@ -314,25 +313,29 @@ function Get-ValidatedSelection($SealedRuntime = $null) {
     throw "$variant runtimeDigest is required and must be lowercase SHA-256 hex"
   }
   Assert-TrackedWorktreeClean $repo $variant
+  return [pscustomobject]@{ Variant=$variant; Entry=$entry; Repo=$repo; Sha=$actualSha; Entrypoint=$entrypoint }
+}
+function Get-ValidatedSelection($SealedRuntime = $null) {
+  Write-TestValidationTrace $(if ($null -ne $SealedRuntime) { 'validated-selection:sealed' } else { 'validated-selection:unsealed' })
+  $selection = Get-SelectionMetadata $SealedRuntime
+  $repo = $selection.Repo
   if ($null -ne $SealedRuntime) {
+    Write-TestValidationTrace 'namespace-seal:assert-final'
+    Assert-RdcAbRuntimeNamespaceSeal $root $repo $SealedRuntime.NamespaceSeal.OwnerSid
     if (-not $SealedRuntime.Repository.Equals($repo, [StringComparison]::OrdinalIgnoreCase)) {
       throw 'Runtime seal repository mismatch'
     }
-    # Re-enumerate using the digest's rules after every file is locked; this
-    # detects additions/removals while the sealed-stream digest binds the
-    # selected bytes that will remain locked through node's lifetime.
-    $liveRuntimeDigest = Get-RuntimeDigest $repo
+    Assert-SealedRuntimeInventory $SealedRuntime
     $actualRuntimeDigest = Get-SealedRuntimeDigest $SealedRuntime
-    if (-not $liveRuntimeDigest.Equals($actualRuntimeDigest, [StringComparison]::Ordinal)) {
-      throw 'Runtime tree changed after sealing'
-    }
   } else {
+    Assert-RdcAbRuntimeTreeAcl $root $repo "$($selection.Variant) runtime tree"
     $actualRuntimeDigest = Get-RuntimeDigest $repo
   }
+  $expectedRuntimeDigest = [string]$selection.Entry.runtimeDigest
   if (-not $actualRuntimeDigest.Equals($expectedRuntimeDigest, [StringComparison]::Ordinal)) {
-    throw "$variant runtime digest mismatch"
+    throw "$($selection.Variant) runtime digest mismatch"
   }
-  return [pscustomobject]@{ Variant=$variant; Entry=$entry; Repo=$repo; Sha=$actualSha; Entrypoint=$entrypoint }
+  return $selection
 }
 function Get-PrototypeStateEnvironment($Selection, [switch]$EnsureDirectories) {
   if ($Selection.Variant -ne 'prototype') { return @{} }
@@ -559,6 +562,10 @@ if ($testControl) {
   if (-not (Test-Path -LiteralPath $testControl -PathType Container)) {
     throw 'Supervisor test control directory is missing'
   }
+  if (Test-Path -LiteralPath (Join-Path $testControl 'trace-validation') -PathType Leaf) {
+    $script:validationTracePath = Join-Path $testControl 'validation-trace.log'
+    Remove-Item -LiteralPath $script:validationTracePath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 $windowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -664,7 +671,7 @@ function Wait-RetryInterval {
 }
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 while ($true) {
-  $selection = Get-ValidatedSelection
+  $selection = Get-SelectionMetadata
   $prototypeEnv = Get-PrototypeStateEnvironment $selection -EnsureDirectories
   $existing = @(Get-KnownRemoteProcesses)
   if ($existing.Count -gt 0) {
@@ -695,7 +702,7 @@ while ($true) {
     if ($existing.Count -gt 0) {
       $launchBlocked = $true
     } else {
-      $selection = Get-ValidatedSelection
+      $selection = Get-SelectionMetadata
       $prototypeEnv = Get-PrototypeStateEnvironment $selection -EnsureDirectories
       # Journal before installing the ACE: if this process dies at any later
       # point, recovery can identify a direct node child by parent/PID/start.
@@ -713,8 +720,8 @@ while ($true) {
         ChildStartUtc = ''
       }
       Set-RdcAbNamespaceSealJournal $namespaceSealJournalRecord
+      Write-TestValidationTrace 'namespace-seal:install'
       $namespaceSeal = Install-RdcAbRuntimeNamespaceSeal $root $selection.Repo
-      Assert-RdcAbRuntimeNamespaceSeal $root $selection.Repo $namespaceSeal.OwnerSid
       $sealedRuntime = Open-SealedRuntime $selection.Repo
       $sealedRuntime | Add-Member -NotePropertyName NamespaceSeal -NotePropertyValue $namespaceSeal
       # This is the final validation: it runs only after all runtime files are
