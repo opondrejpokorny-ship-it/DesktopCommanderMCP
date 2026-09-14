@@ -1046,6 +1046,7 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
   const overwriteMarker = 'overwrite-marker';
   const replacementMarker = 'replacement-marker';
   await fs.mkdir(sealControl);
+  await fs.writeFile(path.join(sealControl, 'trace-validation'), '');
   const sealEntrypointSource = `require('node:fs').writeFileSync(process.env.RDC_AB_TEST_MARKER, ${JSON.stringify(originalMarker)});\n`;
   const sealRuntime = await makeRuntimeRepo(sealRepo, sealEntrypointSource);
   await fs.writeFile(path.join(sealRoot, 'manifest.json'), JSON.stringify({
@@ -1101,6 +1102,22 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
     }
     assert.equal(sealSupervisor.child.exitCode, null,
       'supervisor exited before the post-validation sealed-selection barrier');
+
+    const validationTrace = (await fs.readFile(path.join(sealControl, 'validation-trace.log'), 'utf8'))
+      .trim().split(/\r?\n/).filter(Boolean);
+    const countValidationPhase = (phase) => validationTrace.filter((value) => value === phase).length;
+    assert.equal(countValidationPhase('validated-selection:unsealed'), 0,
+      'launch path must not perform an unsealed full runtime validation: ' + validationTrace.join(', '));
+    assert.equal(countValidationPhase('runtime-digest:live'), 0,
+      'launch path must not hash live runtime bytes before/after sealing: ' + validationTrace.join(', '));
+    assert.equal(countValidationPhase('namespace-seal:install'), 1);
+    assert.equal(countValidationPhase('namespace-seal:assert-preopen'), 0,
+      'namespace seal must be asserted once in the final sealed proof, not twice: ' + validationTrace.join(', '));
+    assert.equal(countValidationPhase('namespace-seal:assert-final'), 1);
+    assert.equal(countValidationPhase('sealed-runtime:open'), 1);
+    assert.equal(countValidationPhase('validated-selection:sealed'), 1);
+    assert.equal(countValidationPhase('runtime-digest:sealed'), 1);
+    console.log('PASS RDC A/B launch validation pass budget');
 
     // Run the attacker outside this harness process. The two attempts must be
     // made after final validation, not merely after the earlier test hook.
