@@ -1034,6 +1034,86 @@ if (process.platform === 'win32' && process.env.RDC_AB_TEST_CASE !== 'handoff-on
   assert.match(`${validation.stdout}\n${validation.stderr}`, /active|variant/i);
   console.log('PASS RDC A/B supervisor validation contract');
 
+  // Removing unsealed byte hashing must not create a gap between launch intent
+  // and the final sealed proof. Inject an untracked runtime file after the
+  // launch-intent barrier; the sealed digest must reject it before node starts.
+  const preSealRoot = path.join(hostSandbox, 'pre-seal-runtime-mutation-benchmark');
+  const preSealRepo = path.join(preSealRoot, 'clean', 'repo');
+  const preSealControl = path.join(hostSandbox, 'pre-seal-runtime-mutation-control');
+  const preSealMarker = path.join(preSealControl, 'unexpected-child-marker');
+  await fs.mkdir(preSealControl);
+  const preSealEntrypointSource = "require('node:fs').writeFileSync(process.env.RDC_AB_TEST_MARKER, 'unexpected-launch');\n";
+  const preSealRuntime = await makeRuntimeRepo(preSealRepo, preSealEntrypointSource);
+  const preSealVariant = {
+    repoPath: preSealRepo,
+    expectedSha: preSealRuntime.sha,
+    buildDigest: sha256(preSealEntrypointSource),
+    runtimeDigest: preSealRuntime.runtimeDigest,
+  };
+  await fs.writeFile(path.join(preSealRoot, 'manifest.json'), JSON.stringify({
+    schemaVersion: 1, benchmarkRoot: preSealRoot,
+    variants: { clean: preSealVariant, prototype: preSealVariant },
+  }));
+  await fs.writeFile(path.join(preSealRoot, 'active-variant.txt'), 'clean\n');
+  protectBenchmarkRootForTest(preSealRoot);
+  await fs.writeFile(path.join(preSealControl, 'hold-post-validation-seal'), '');
+  await fs.writeFile(path.join(preSealControl, 'trace-validation'), '');
+  const preSealSupervisor = spawnCaptured('powershell.exe', [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', supervisor,
+    '-BenchmarkRoot', preSealRoot, '-TestControlDirectory', preSealControl,
+  ], {
+    env: {
+      ...process.env,
+      RDC_AB_ENABLE_TEST_CONTROL: '1',
+      RDC_AB_TEST_MARKER: preSealMarker,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await waitForDirectoryCondition(
+      preSealControl,
+      async () => (await fs.readdir(preSealControl)).some((name) => name.startsWith('ready-'))
+        || preSealSupervisor.child.exitCode !== null,
+      [preSealSupervisor],
+      'pre-seal runtime mutation launch-intent barrier',
+    );
+    assert.equal(preSealSupervisor.child.exitCode, null,
+      'supervisor exited before the pre-seal mutation barrier');
+    await fs.writeFile(path.join(preSealRepo, 'injected-before-seal.js'), 'untracked injected runtime\n');
+    await fs.writeFile(path.join(preSealControl, 'release'), '');
+    await waitForDirectoryCondition(
+      preSealControl,
+      async () => preSealSupervisor.child.exitCode !== null
+        || fs.access(path.join(preSealControl, 'post-validation-seal-ready')).then(() => true, () => false),
+      [preSealSupervisor],
+      'final sealed validation to reject pre-seal runtime injection',
+    );
+    if (preSealSupervisor.child.exitCode === null) {
+      await fs.writeFile(path.join(preSealControl, 'post-validation-seal-release'), '');
+      const unexpected = await preSealSupervisor.completed;
+      assert.fail('pre-seal injected runtime unexpectedly reached post-validation launch barrier\n'
+        + unexpected.stdout + '\n' + unexpected.stderr);
+    }
+    const preSealFailure = await preSealSupervisor.completed;
+    assert.notEqual(preSealFailure.status, 0);
+    assert.match(preSealFailure.stdout + '\n' + preSealFailure.stderr, /runtime digest mismatch/i);
+    await assert.rejects(() => fs.access(preSealMarker), /ENOENT|no such file/i);
+    const preSealTrace = (await fs.readFile(path.join(preSealControl, 'validation-trace.log'), 'utf8'))
+      .trim().split(/\r?\n/).filter(Boolean);
+    assert.ok(preSealTrace.includes('sealed-runtime:open'), preSealTrace.join(', '));
+    assert.ok(preSealTrace.includes('validated-selection:sealed'), preSealTrace.join(', '));
+    assert.ok(preSealTrace.includes('runtime-digest:sealed'), preSealTrace.join(', '));
+    assert.ok(!preSealTrace.includes('runtime-digest:live'), preSealTrace.join(', '));
+  } finally {
+    await fs.writeFile(path.join(preSealControl, 'release'), '').catch(() => {});
+    await fs.writeFile(path.join(preSealControl, 'post-validation-seal-release'), '').catch(() => {});
+    if (preSealSupervisor.child.exitCode === null) preSealSupervisor.child.kill();
+    await preSealSupervisor.completed.catch(() => {});
+    await fs.rm(preSealRoot, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(preSealControl, { recursive: true, force: true }).catch(() => {});
+  }
+  console.log('PASS RDC A/B final sealed digest rejects pre-seal untracked runtime injection');
+
   // This deliberately names a new seam: it must be reached after the last
   // runtime validation and immediately before node receives dist/index.js.
   // The current supervisor has no sealed selection at that point, so this is
