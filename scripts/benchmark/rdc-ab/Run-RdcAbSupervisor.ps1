@@ -7,6 +7,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$script:validationTracePath = $null
+function Write-TestValidationTrace([string]$Phase) {
+  if (-not $script:validationTracePath) { return }
+  Add-Content -LiteralPath $script:validationTracePath -Value $Phase -Encoding ASCII
+}
 $aclHelper = Join-Path $PSScriptRoot 'RdcAbAcl.ps1'
 if (-not (Test-Path -LiteralPath $aclHelper -PathType Leaf)) { throw 'RDC A/B ACL helper is missing' }
 . $aclHelper
@@ -136,6 +141,7 @@ function Assert-StatePathWithinRoot([string]$Candidate, [string]$Label, [switch]
   return $full
 }
 function Get-RuntimeDigest([string]$Repository) {
+  Write-TestValidationTrace 'runtime-digest:live'
   $rootAttributes = [IO.File]::GetAttributes($Repository)
   if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
       ($rootAttributes -band [IO.FileAttributes]::Directory) -eq 0) {
@@ -186,6 +192,7 @@ function Get-RuntimeDigest([string]$Repository) {
   }
 }
 function Open-SealedRuntime([string]$Repository) {
+  Write-TestValidationTrace 'sealed-runtime:open'
   $rootAttributes = [IO.File]::GetAttributes($Repository)
   if (($rootAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
       ($rootAttributes -band [IO.FileAttributes]::Directory) -eq 0) {
@@ -241,6 +248,7 @@ function Close-SealedRuntime($SealedRuntime) {
   }
 }
 function Get-SealedRuntimeDigest($SealedRuntime) {
+  Write-TestValidationTrace 'runtime-digest:sealed'
   $relativePaths = New-Object string[] $SealedRuntime.Files.Count
   $SealedRuntime.Files.Keys.CopyTo($relativePaths, 0)
   [Array]::Sort($relativePaths, [StringComparer]::Ordinal)
@@ -279,6 +287,7 @@ function Assert-TrackedWorktreeClean([string]$Repository, [string]$Variant) {
   throw "Unable to compare $Variant tracked worktree with HEAD"
 }
 function Get-ValidatedSelection($SealedRuntime = $null) {
+  Write-TestValidationTrace $(if ($null -ne $SealedRuntime) { 'validated-selection:sealed' } else { 'validated-selection:unsealed' })
   [void](Assert-RdcAbProtectedRootAcl $root)
   Assert-RdcAbInheritedChildAcl $root $manifestPath 'Benchmark manifest'
   Assert-RdcAbInheritedChildAcl $root $activePath 'Active variant pointer'
@@ -288,6 +297,7 @@ function Get-ValidatedSelection($SealedRuntime = $null) {
   if ($null -eq $entry) { throw "Manifest is missing variant: $variant" }
   $repo = Assert-WithinRoot ([string]$entry.repoPath) "$variant repoPath"
   if ($null -ne $SealedRuntime) {
+    Write-TestValidationTrace 'namespace-seal:assert-final'
     Assert-RdcAbRuntimeNamespaceSeal $root $repo $SealedRuntime.NamespaceSeal.OwnerSid
   } else {
     Assert-RdcAbInheritedChildAcl $root $repo "$variant runtime root"
@@ -559,6 +569,10 @@ if ($testControl) {
   if (-not (Test-Path -LiteralPath $testControl -PathType Container)) {
     throw 'Supervisor test control directory is missing'
   }
+  if (Test-Path -LiteralPath (Join-Path $testControl 'trace-validation') -PathType Leaf) {
+    $script:validationTracePath = Join-Path $testControl 'validation-trace.log'
+    Remove-Item -LiteralPath $script:validationTracePath -Force -ErrorAction SilentlyContinue
+  }
 }
 
 $windowsIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -713,7 +727,9 @@ while ($true) {
         ChildStartUtc = ''
       }
       Set-RdcAbNamespaceSealJournal $namespaceSealJournalRecord
+      Write-TestValidationTrace 'namespace-seal:install'
       $namespaceSeal = Install-RdcAbRuntimeNamespaceSeal $root $selection.Repo
+      Write-TestValidationTrace 'namespace-seal:assert-preopen'
       Assert-RdcAbRuntimeNamespaceSeal $root $selection.Repo $namespaceSeal.OwnerSid
       $sealedRuntime = Open-SealedRuntime $selection.Repo
       $sealedRuntime | Add-Member -NotePropertyName NamespaceSeal -NotePropertyValue $namespaceSeal
