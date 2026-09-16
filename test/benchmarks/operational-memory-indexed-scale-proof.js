@@ -14,6 +14,7 @@ import {
   resolveWorkflowMemoryPath,
   startProjectWorkflow,
 } from '../../dist/workflow/project-workflow.js';
+import { getOperationalMemoryAuthoritySnapshot } from '../../dist/workflow/operational-memory-segments.js';
 import { resolveWorkflowMemoryIndexPath } from '../../dist/workflow/workflow-storage.js';
 
 const DEFAULT_DATASETS = [10_000, 100_000, 1_000_000];
@@ -177,7 +178,11 @@ async function runDataset(eventCount) {
     assert.equal(incrementalCounts.recordCount, eventCount + 1);
     const statusAfterIncremental = await getProjectWorkflowStatus({ projectRoot });
     const semanticAfterIncremental = semanticStatus(statusAfterIncremental);
-    await assertNoForbiddenMarkers(memoryPath, indexPath);
+    const incrementalAuthority = await getOperationalMemoryAuthoritySnapshot(memoryPath);
+    await assertNoForbiddenMarkers(
+      ...incrementalAuthority.segments.map((segment) => segment.path),
+      indexPath,
+    );
 
     await fs.rm(indexPath, { force: true });
     const rebuildAfterDeleteStarted = performance.now();
@@ -188,13 +193,29 @@ async function runDataset(eventCount) {
     assert.equal(rebuiltCounts.recordCount, eventCount + 1);
     const rebuildEquivalent = JSON.stringify(semanticStatus(rebuiltStatus)) === JSON.stringify(semanticAfterIncremental);
     assert.equal(rebuildEquivalent, true);
-    const privacyMarkersAbsent = await assertNoForbiddenMarkers(memoryPath, indexPath);
+    const rebuiltAuthority = await getOperationalMemoryAuthoritySnapshot(memoryPath);
+    const privacyMarkersAbsent = await assertNoForbiddenMarkers(
+      ...rebuiltAuthority.segments.map((segment) => segment.path),
+      indexPath,
+    );
+    if (eventCount >= 1_000_000) {
+      assert.ok(rebuiltAuthority.segments.length >= 2,
+        '1M proof must exercise archived + active journal authority');
+      assert.ok(rebuiltAuthority.archivedBytes > 0,
+        '1M proof must preserve the rotated historical journal as archive authority');
+      assert.ok(rebuiltAuthority.activeSize < rebuiltAuthority.totalSize,
+        '1M proof must leave a bounded hot active journal after rotation');
+    }
 
-    const [journalStat, indexStat] = await Promise.all([fs.stat(memoryPath), fs.stat(indexPath)]);
+    const indexStat = await fs.stat(indexPath);
     return {
       type: 'dataset',
       eventCount,
-      journalBytes: journalStat.size,
+      journalBytes: rebuiltAuthority.totalSize,
+      journalSegmentCount: rebuiltAuthority.segments.length,
+      archivedJournalBytes: rebuiltAuthority.archivedBytes,
+      activeJournalBytes: rebuiltAuthority.activeSize,
+      largestJournalSegmentBytes: Math.max(0, ...rebuiltAuthority.segments.map((segment) => segment.size)),
       indexBytes: indexStat.size,
       indexedEventCount: rebuiltCounts.indexedEventCount,
       initialRebuildMs: Number(initialRebuildMs.toFixed(3)),

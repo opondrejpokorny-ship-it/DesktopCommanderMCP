@@ -204,9 +204,12 @@ async function listGlobalSources(): Promise<GlobalSourceSnapshot[]> {
   try { names = await fs.readdir(stateRoot); } catch { return []; }
   const sources: GlobalSourceSnapshot[] = [];
   for (const name of names) {
-    if (!name.endsWith('.memory.jsonl')) continue;
+    const activeMatch = /^([0-9a-f]{24})\.memory\.jsonl$/i.exec(name);
+    const archiveMatch = /^([0-9a-f]{24})\.memory\.[0-9]{6}\.jsonl$/i.exec(name);
+    const digestName = activeMatch?.[1] ?? archiveMatch?.[1];
+    if (!digestName) continue;
     const memoryPath = path.join(stateRoot, name);
-    const indexPath = memoryPath.slice(0, -'.memory.jsonl'.length) + '.memory.sqlite';
+    const indexPath = path.join(stateRoot, digestName + '.memory.sqlite');
     const correlation = await readOperationalMemoryIndexCorrelation(indexPath);
     if (!correlation?.projectId) continue;
     const key = projectKey(correlation);

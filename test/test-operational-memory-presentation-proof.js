@@ -27,6 +27,15 @@ for (const dataset of datasets) {
   assert.equal(dataset.privacyMarkersAbsent, true);
   assert.ok(dataset.indexBytes > 0);
   assert.ok(dataset.journalBytes > 0);
+  assert.ok(dataset.journalSegmentCount >= 1);
+  assert.ok(dataset.activeJournalBytes >= 0);
+  assert.ok(dataset.archivedJournalBytes >= 0);
+  assert.ok(dataset.largestJournalSegmentBytes > 0);
+  assert.equal(
+    dataset.journalBytes,
+    dataset.activeJournalBytes + dataset.archivedJournalBytes,
+    'reported journal bytes must cover the full segmented authority',
+  );
   assert.ok(dataset.returnedLessons <= 8);
   assert.ok(dataset.modelFacingEvents <= 1000);
   assert.ok(Number.isFinite(dataset.initialRebuildMs));

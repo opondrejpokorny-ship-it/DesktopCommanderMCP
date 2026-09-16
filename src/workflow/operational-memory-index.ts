@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getOperationalMemoryAuthoritySnapshot } from './operational-memory-segments.js';
 
 const INDEX_SCHEMA_VERSION = 5;
 const READ_CHUNK_BYTES = 256 * 1024;
@@ -285,9 +286,16 @@ function extendAuthorityChain(current: string, line: string): string {
 }
 
 async function computeAuthorityChain(memoryPath: string, endOffset: number): Promise<string> {
+  const snapshot = await getOperationalMemoryAuthoritySnapshot(memoryPath);
   let chain = EMPTY_AUTHORITY_CHAIN;
-  for await (const record of readJournalRecords(memoryPath, 0, endOffset)) {
-    chain = extendAuthorityChain(chain, record.line);
+  let baseOffset = 0;
+  for (const segment of snapshot.segments) {
+    if (baseOffset >= endOffset) break;
+    const localEnd = Math.min(segment.size, endOffset - baseOffset);
+    for await (const record of readJournalRecords(segment.path, 0, localEnd)) {
+      chain = extendAuthorityChain(chain, record.line);
+    }
+    baseOffset += segment.size;
   }
   return chain;
 }
@@ -393,32 +401,34 @@ function writeIndexState(
   );
 }
 
-async function journalStat(memoryPath: string): Promise<{ size: number; mtimeMs: number; ctimeMs: number }> {
-  const stat = await fs.stat(memoryPath).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  });
-  return stat ? { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs } : { size: 0, mtimeMs: 0, ctimeMs: 0 };
+interface IngestResult {
+  recordCount: number;
+  indexedThroughOffset: number;
+  authorityChainHash: string;
 }
+
 async function ingestRange(
   db: SqliteDatabase,
   memoryPath: string,
   startOffset: number,
   endOffset: number,
+  globalOffsetBase: number,
   initialRecordCount: number,
   initialAuthorityChainHash: string,
   parseLine: OperationalMemoryLineParser,
-  authorityMtimeMs: number,
-  authorityCtimeMs: number,
-  scope: OperationalMemoryScopeCorrelation | undefined,
-): Promise<number> {
+): Promise<IngestResult> {
   let recordCount = initialRecordCount;
-  let indexedThroughOffset = startOffset;
+  let indexedThroughOffset = globalOffsetBase + startOffset;
   let authorityChainHash = initialAuthorityChainHash;
   db.exec('BEGIN IMMEDIATE');
   try {
     for await (const record of readJournalRecords(memoryPath, startOffset, endOffset)) {
-      indexedThroughOffset = record.endOffset;
+      const indexedRecord = {
+        ...record,
+        startOffset: globalOffsetBase + record.startOffset,
+        endOffset: globalOffsetBase + record.endOffset,
+      };
+      indexedThroughOffset = indexedRecord.endOffset;
       recordCount += 1;
       authorityChainHash = extendAuthorityChain(authorityChainHash, record.line);
       let event: IndexableOperationalMemoryEvent | null = null;
@@ -431,17 +441,13 @@ async function ingestRange(
         const firstForWorkflow = !db.prepare(
           'SELECT 1 AS present FROM groups WHERE workflow_id = ? AND fingerprint = ?',
         ).get(event.workflowId, event.fingerprint);
-        insertEvent(db, event, recordCount, record);
+        insertEvent(db, event, recordCount, indexedRecord);
         updateGroup(db, event, recordCount);
         updateProjectGroup(db, event, recordCount, firstForWorkflow);
       }
     }
-    writeIndexState(
-      db, indexedThroughOffset, endOffset, authorityMtimeMs, authorityCtimeMs, recordCount,
-      scope, authorityChainHash,
-    );
     db.exec('COMMIT');
-    return recordCount;
+    return { recordCount, indexedThroughOffset, authorityChainHash };
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* best effort */ }
     throw error;
@@ -478,15 +484,25 @@ async function rebuildIndex(
   let buildComplete = false;
   try {
     initializeSchema(db);
-    const stat = await journalStat(memoryPath);
-    if (stat.size > 0) {
-      await ingestRange(
-        db, memoryPath, 0, stat.size, 0, EMPTY_AUTHORITY_CHAIN,
-        parseLine, stat.mtimeMs, stat.ctimeMs, scope,
+    const snapshot = await getOperationalMemoryAuthoritySnapshot(memoryPath);
+    let recordCount = 0;
+    let indexedThroughOffset = 0;
+    let authorityChainHash = EMPTY_AUTHORITY_CHAIN;
+    let globalOffsetBase = 0;
+    for (const segment of snapshot.segments) {
+      const ingested = await ingestRange(
+        db, segment.path, 0, segment.size, globalOffsetBase,
+        recordCount, authorityChainHash, parseLine,
       );
-    } else {
-      writeIndexState(db, 0, 0, 0, 0, 0, scope, EMPTY_AUTHORITY_CHAIN);
+      recordCount = ingested.recordCount;
+      indexedThroughOffset = ingested.indexedThroughOffset;
+      authorityChainHash = ingested.authorityChainHash;
+      globalOffsetBase += segment.size;
     }
+    writeIndexState(
+      db, indexedThroughOffset, snapshot.totalSize, snapshot.mtimeMs, snapshot.ctimeMs,
+      recordCount, scope, authorityChainHash,
+    );
     createEventOrderIndex(db);
     validateSchema(db);
     buildComplete = true;
@@ -537,12 +553,12 @@ async function synchronizeExistingIndex(
     if (!state) return false;
     if (scope?.projectId && state.projectId !== scope.projectId) return false;
     if (scope?.repositoryId && state.repositoryId !== scope.repositoryId) return false;
-    const stat = await journalStat(memoryPath);
-    if (stat.size < state.indexedThroughOffset) return false;
+    const snapshot = await getOperationalMemoryAuthoritySnapshot(memoryPath);
+    if (snapshot.totalSize < state.indexedThroughOffset) return false;
     const metadataUnchanged =
-      stat.size === state.authoritySizeBytes &&
-      stat.mtimeMs === state.authorityMtimeMs &&
-      stat.ctimeMs === state.authorityCtimeMs;
+      snapshot.totalSize === state.authoritySizeBytes &&
+      snapshot.mtimeMs === state.authorityMtimeMs &&
+      snapshot.ctimeMs === state.authorityCtimeMs;
     if (metadataUnchanged) return true;
     const trustedAppendOnlyGrowth = !!authorityBeforeAppend &&
       state.authoritySizeBytes === authorityBeforeAppend.size &&
@@ -552,25 +568,37 @@ async function synchronizeExistingIndex(
       const currentChain = await computeAuthorityChain(memoryPath, state.indexedThroughOffset);
       if (currentChain !== state.authorityChainHash) return false;
     }
-    if (stat.size === state.indexedThroughOffset) {
+    if (snapshot.totalSize === state.indexedThroughOffset) {
       writeIndexState(
-        db, state.indexedThroughOffset, stat.size, stat.mtimeMs, stat.ctimeMs, state.recordCount,
-        scope, state.authorityChainHash,
+        db, state.indexedThroughOffset, snapshot.totalSize, snapshot.mtimeMs, snapshot.ctimeMs,
+        state.recordCount, scope, state.authorityChainHash,
       );
       return true;
     }
 
-    await ingestRange(
-      db,
-      memoryPath,
-      state.indexedThroughOffset,
-      stat.size,
-      state.recordCount,
-      state.authorityChainHash,
-      parseLine,
-      stat.mtimeMs,
-      stat.ctimeMs,
-      scope,
+    let recordCount = state.recordCount;
+    let indexedThroughOffset = state.indexedThroughOffset;
+    let authorityChainHash = state.authorityChainHash;
+    let globalOffsetBase = 0;
+    for (const segment of snapshot.segments) {
+      const segmentEnd = globalOffsetBase + segment.size;
+      if (segmentEnd <= state.indexedThroughOffset) {
+        globalOffsetBase = segmentEnd;
+        continue;
+      }
+      const localStart = Math.max(0, state.indexedThroughOffset - globalOffsetBase);
+      const ingested = await ingestRange(
+        db, segment.path, localStart, segment.size, globalOffsetBase,
+        recordCount, authorityChainHash, parseLine,
+      );
+      recordCount = ingested.recordCount;
+      indexedThroughOffset = ingested.indexedThroughOffset;
+      authorityChainHash = ingested.authorityChainHash;
+      globalOffsetBase = segmentEnd;
+    }
+    writeIndexState(
+      db, indexedThroughOffset, snapshot.totalSize, snapshot.mtimeMs, snapshot.ctimeMs,
+      recordCount, scope, authorityChainHash,
     );
     return true;
   } catch {

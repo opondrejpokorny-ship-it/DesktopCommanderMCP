@@ -28,6 +28,11 @@ import {
   readOperationalMemoryGlobalGroups,
   updateOperationalMemoryGlobalIndexAfterAppend,
 } from './operational-memory-global-index.js';
+import {
+  getOperationalMemoryAuthoritySnapshot,
+  readOperationalMemoryJournalTail,
+  rotateOperationalMemoryJournalIfNeeded,
+} from './operational-memory-segments.js';
 
 export type OperationalMemoryKind = 'error' | 'limit' | 'lesson';
 export type OperationalReasonCode =
@@ -479,13 +484,23 @@ async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): 
   const prior = memoryWriteChains.get(memoryPath) ?? Promise.resolve();
   const operation = prior.then(() => withMemoryLock(memoryPath, async () => {
     await fs.mkdir(path.dirname(memoryPath), { recursive: true });
+    const before = await getOperationalMemoryAuthoritySnapshot(memoryPath);
+    const authorityBeforeAppend = {
+      size: before.totalSize,
+      mtimeMs: before.mtimeMs,
+      ctimeMs: before.ctimeMs,
+    };
+    const activeBefore = before.segments.find((segment) => segment.active);
+    const activeBeforeAppend = activeBefore
+      ? { size: activeBefore.size, mtimeMs: activeBefore.mtimeMs, ctimeMs: activeBefore.ctimeMs }
+      : { size: 0, mtimeMs: 0, ctimeMs: 0 };
+    const rotated = await rotateOperationalMemoryJournalIfNeeded(memoryPath);
+
     let needsSeparator = false;
-    let authorityBeforeAppend = { size: 0, mtimeMs: 0, ctimeMs: 0 };
     try {
       const handle = await fs.open(memoryPath, 'r');
       try {
         const stat = await handle.stat();
-        authorityBeforeAppend = { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
         if (stat.size > 0) {
           const lastByte = Buffer.alloc(1);
           await handle.read(lastByte, 0, 1, stat.size - 1);
@@ -506,12 +521,14 @@ async function appendEvent(projectRoot: string, event: OperationalMemoryEvent): 
       scope,
       authorityBeforeAppend,
     ).catch(() => false);
-    await updateOperationalMemoryGlobalIndexAfterAppend(
-      memoryPath,
-      event,
-      scope,
-      authorityBeforeAppend,
-    ).catch(() => false);
+    if (!rotated) {
+      await updateOperationalMemoryGlobalIndexAfterAppend(
+        memoryPath,
+        event,
+        scope,
+        activeBeforeAppend,
+      ).catch(() => false);
+    }
   }));
   memoryWriteChains.set(memoryPath, operation.catch(() => undefined));
   await operation;
@@ -613,19 +630,8 @@ async function readRecentEventsFromJournal(
   workflowId: string,
 ): Promise<OperationalMemoryEvent[]> {
   const memoryPath = resolveWorkflowMemoryPath(projectRoot);
-  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
-    handle = await fs.open(memoryPath, 'r');
-    const stat = await handle.stat();
-    const start = Math.max(0, stat.size - MAX_MEMORY_TAIL_BYTES);
-    const size = stat.size - start;
-    const buffer = Buffer.alloc(size);
-    await handle.read(buffer, 0, size, start);
-    let text = buffer.toString('utf8');
-    if (start > 0) {
-      const firstNewline = text.indexOf('\n');
-      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
-    }
+    const text = await readOperationalMemoryJournalTail(memoryPath, MAX_MEMORY_TAIL_BYTES);
     return text
       .split(/\r?\n/)
       .filter(Boolean)
@@ -636,11 +642,8 @@ async function readRecentEventsFromJournal(
       .filter((event): event is OperationalMemoryEvent =>
         !!event && event.workflowId === workflowId
       );
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+  } catch {
     return [];
-  } finally {
-    await handle?.close().catch(() => undefined);
   }
 }
 
