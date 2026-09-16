@@ -18,6 +18,7 @@ catch { console.log('SKIP M6 scale: node:sqlite unavailable'); process.exit(0); 
 import * as workflow from '../dist/workflow/project-workflow.js';
 import * as storage from '../dist/workflow/workflow-storage.js';
 import * as globalIndex from '../dist/workflow/operational-memory-global-index.js';
+import { getOperationalMemoryAuthoritySnapshot } from '../dist/workflow/operational-memory-segments.js';
 import {
   getOperationalMemoryFilterOptions,
   getOperationalMemoryOverview,
@@ -270,12 +271,16 @@ try {
   } finally {
     primaryDb.close();
   }
-  const primaryJournalStat = await fs.stat(memoryPath);
+  const primaryAuthority = await getOperationalMemoryAuthoritySnapshot(memoryPath);
   assert.equal(primaryEvents, EVENT_COUNT, 'primary scale project must contain exactly 100,000 valid indexed events');
-  assert.equal(Number(indexState.authority_size_bytes), primaryJournalStat.size,
-    'primary index must be synchronized to the full journal before M6 timing');
-  assert.equal(Number(indexState.authority_mtime_ms), primaryJournalStat.mtimeMs,
-    'primary index authority mtime must match before M6 timing');
+  assert.ok(primaryAuthority.segments.length >= 2,
+    '100k M6 fixture should exercise archive + active segment authority after M4 rotation');
+  assert.equal(Number(indexState.authority_size_bytes), primaryAuthority.totalSize,
+    'primary index must be synchronized to the full segmented authority before M6 timing');
+  assert.equal(Number(indexState.authority_mtime_ms), primaryAuthority.mtimeMs,
+    'primary index authority mtime fingerprint must match all segments before M6 timing');
+  assert.equal(Number(indexState.authority_ctime_ms), primaryAuthority.ctimeMs,
+    'primary index authority ctime fingerprint must match all segments before M6 timing');
   assertEventOrderPlan(primaryIndexPath, lessonSeed.fingerprint);
 
   git(primary, 'worktree', 'add', '--detach', linked, 'HEAD');

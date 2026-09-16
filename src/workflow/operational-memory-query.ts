@@ -9,6 +9,7 @@ import {
   type OperationalLessonCode,
 } from './operational-memory-contract.js';
 import { hasOperationalMemoryGlobalProjectLessonReadOnly, readOperationalMemoryGlobalGroupsReadOnly } from './operational-memory-global-index.js';
+import { getOperationalMemoryAuthoritySnapshot } from './operational-memory-segments.js';
 import { resolveWorkflowStateRoot } from './workflow-storage.js';
 
 const INDEX_SCHEMA_VERSION = 5;
@@ -72,10 +73,16 @@ function databaseConstructor(): DatabaseConstructor | null {
   return cachedDatabaseConstructor;
 }
 
+interface MemoryAuthorityStat {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
 interface MemoryFileSet {
   journalPath: string;
   indexPath: string;
-  journalStat: Stats | null;
+  authorityStat: MemoryAuthorityStat | null;
   indexStat: Stats | null;
 }
 
@@ -114,15 +121,21 @@ async function discoverMemoryFiles(): Promise<MemoryFileSet[]> {
       basenames.add(name.slice(0, -JOURNAL_SUFFIX.length));
     } else if (name.endsWith(INDEX_SUFFIX)) {
       basenames.add(name.slice(0, -INDEX_SUFFIX.length));
+    } else {
+      const archive = /^(.+)\.memory\.[0-9]{6}\.jsonl$/.exec(name);
+      if (archive) basenames.add(archive[1]);
     }
   }
   const result: MemoryFileSet[] = [];
   for (const basename of [...basenames].sort()) {
     const journalPath = path.join(root, basename + JOURNAL_SUFFIX);
     const indexPath = path.join(root, basename + INDEX_SUFFIX);
+    const authority = await getOperationalMemoryAuthoritySnapshot(journalPath);
     result.push({
       journalPath, indexPath,
-      journalStat: await fileStat(journalPath),
+      authorityStat: authority.segments.length > 0
+        ? { size: authority.totalSize, mtimeMs: authority.mtimeMs, ctimeMs: authority.ctimeMs }
+        : null,
       indexStat: await fileStat(indexPath),
     });
   }
@@ -221,11 +234,11 @@ function readHealthyAggregate(
 
 function metadataMatches(
   state: ReadIndexState,
-  journalStat: NonNullable<MemoryFileSet['journalStat']>,
+  authorityStat: NonNullable<MemoryFileSet['authorityStat']>,
 ): boolean {
-  return state.authoritySizeBytes === journalStat.size &&
-    state.authorityMtimeMs === journalStat.mtimeMs &&
-    state.authorityCtimeMs === journalStat.ctimeMs;
+  return state.authoritySizeBytes === authorityStat.size &&
+    state.authorityMtimeMs === authorityStat.mtimeMs &&
+    state.authorityCtimeMs === authorityStat.ctimeMs;
 }
 export async function getOperationalMemoryOverview(): Promise<MemoryOverviewResponse> {
   const files = await discoverMemoryFiles();
@@ -239,7 +252,7 @@ export async function getOperationalMemoryOverview(): Promise<MemoryOverviewResp
   let lastActivityAt: string | undefined;
 
   for (const file of files) {
-    journalBytes += file.journalStat?.size ?? 0;
+    journalBytes += file.authorityStat?.size ?? 0;
     indexBytes += file.indexStat?.size ?? 0;
   }
 
@@ -253,20 +266,20 @@ export async function getOperationalMemoryOverview(): Promise<MemoryOverviewResp
   }
 
   for (const file of files) {
-    if (file.journalStat && !file.indexStat) {
+    if (file.authorityStat && !file.indexStat) {
       health.missing += 1;
       continue;
     }
-    if (!file.journalStat && file.indexStat) {
+    if (!file.authorityStat && file.indexStat) {
       health.orphaned += 1;
       continue;
     }
-    if (!file.journalStat || !file.indexStat) continue;
+    if (!file.authorityStat || !file.indexStat) continue;
     let db: SqliteDatabase | null = null;
     try {
       db = new DatabaseSync(file.indexPath, { readOnly: true });
       const state = readValidatedIndexState(db);
-      if (!metadataMatches(state, file.journalStat)) {
+      if (!metadataMatches(state, file.authorityStat)) {
         health.stale += 1;
         continue;
       }
@@ -435,14 +448,14 @@ async function inspectHealthyIndexes(): Promise<HealthyIndexInspection> {
   if (!DatabaseSync) return { healthy: [], health: { overall: 'unavailable', ...counts } };
   const healthy: HealthyIndexDescriptor[] = [];
   for (const file of files) {
-    if (file.journalStat && !file.indexStat) { counts.missing += 1; continue; }
-    if (!file.journalStat && file.indexStat) { counts.orphaned += 1; continue; }
-    if (!file.journalStat || !file.indexStat) continue;
+    if (file.authorityStat && !file.indexStat) { counts.missing += 1; continue; }
+    if (!file.authorityStat && file.indexStat) { counts.orphaned += 1; continue; }
+    if (!file.authorityStat || !file.indexStat) continue;
     let db: SqliteDatabase | null = null;
     try {
       db = new DatabaseSync(file.indexPath, { readOnly: true });
       const state = readValidatedIndexState(db);
-      if (!metadataMatches(state, file.journalStat)) { counts.stale += 1; continue; }
+      if (!metadataMatches(state, file.authorityStat)) { counts.stale += 1; continue; }
       readHealthyAggregate(db, state);
       counts.healthy += 1;
       healthy.push({ indexPath: file.indexPath, state });
