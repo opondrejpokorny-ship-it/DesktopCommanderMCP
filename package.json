@@ -64,7 +64,9 @@
     "logs:export": "npm run build && node scripts/export-fuzzy-logs.js",
     "count-tokens": "npm run build && node scripts/count-tokens.js",
     "count-tokens:json": "npm run build && node scripts/count-tokens.js --json",
-    "build:free-package": "node scripts/build-free-package.cjs"
+    "build:free-package": "node scripts/build-free-package.cjs",
+    "build:windows-free-runtime": "node scripts/installer/build-windows-free-runtime.cjs",
+    "build:windows-free-installer": "node scripts/installer/build-windows-free-installer.cjs"
   },
   "publishConfig": {
     "access": "public"
