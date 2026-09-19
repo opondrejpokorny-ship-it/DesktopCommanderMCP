@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { claimRuntimeInstance } from './runtime-instance.mjs';
 
 const runtimeRoot = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.join(
@@ -37,9 +38,9 @@ console.error = (...values) => writeLog('error', values);
 console.warn = (...values) => writeLog('warn', values);
 console.debug = (...values) => writeLog('debug', values);
 
-await fsp.writeFile(pidPath, String(process.pid) + '\n', 'utf8');
+const instanceOwnership = await claimRuntimeInstance(pidPath);
 process.on('exit', () => {
-  try { fs.rmSync(pidPath, { force: true }); } catch {}
+  try { instanceOwnership.releaseSync(); } catch {}
 });
 
 const controlCenterModule = pathToFileURL(
@@ -92,7 +93,7 @@ if (process.argv.includes('--smoke')) {
   } finally {
     await integration.shutdown().catch(() => undefined);
     await controlCenter.close().catch(() => undefined);
-    await fsp.rm(pidPath, { force: true }).catch(() => undefined);
+    await instanceOwnership.release().catch(() => undefined);
   }
   process.exit(0);
 }
@@ -102,7 +103,8 @@ try {
   await runRemote();
 } catch (error) {
   console.error('Remote runtime failed:', error);
+  process.exitCode = 1;
+} finally {
   await controlCenter.close().catch(() => undefined);
-  await fsp.rm(pidPath, { force: true }).catch(() => undefined);
-  process.exit(1);
+  await instanceOwnership.release().catch(() => undefined);
 }

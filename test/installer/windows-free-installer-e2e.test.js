@@ -124,8 +124,41 @@ try {
   assert.equal(await sha256(path.join(installRoot, 'launcher.mjs')), launcherEntry.sha256);
   await fs.access(path.join(startupRoot, 'DesktopCommanderFree.vbs'));
 
+  const rollbackMarker = path.join(installRoot, 'repair-rollback-marker.txt');
+  await fs.writeFile(rollbackMarker, 'KEEP_OLD_INSTALL\n', 'ascii');
+  const blockedStartup = path.join(caseRoot, 'blocked-startup');
+  await fs.writeFile(blockedStartup, 'NOT_A_DIRECTORY\n', 'ascii');
+  const failedRepair = spawnSync(setupPath, [], {
+    env: { ...process.env, ...installerEnv, DC_STARTUP_DIR: blockedStartup },
+    encoding: 'utf8',
+    timeout: 180_000,
+    windowsHide: true,
+  });
+  assert.notEqual(failedRepair.status, 0, 'post-swap repair failure must fail closed');
+  assert.equal(await fs.readFile(rollbackMarker, 'ascii'), 'KEEP_OLD_INSTALL\n');
+  const residue = (await fs.readdir(caseRoot)).filter((name) =>
+    name.startsWith('app.backup-') || name.startsWith('app.installing-'));
+  assert.deepEqual(residue, [], 'failed repair must not leave backup/staging residue');
+
   const unrelatedStartup = path.join(startupRoot, 'unrelated.txt');
   await fs.writeFile(unrelatedStartup, 'KEEP\n', 'ascii');
+
+  const victimRoot = path.join(caseRoot, 'victim');
+  await fs.mkdir(victimRoot, { recursive: true });
+  await fs.writeFile(path.join(victimRoot, 'sentinel.txt'), 'DO_NOT_DELETE\n', 'ascii');
+  await fs.writeFile(path.join(victimRoot, 'runtime-manifest.json'), JSON.stringify({
+    kind: 'desktop-commander-windows-free-runtime-v1',
+  }) + '\n');
+  const arbitraryUninstall = spawnSync(powershell, [
+    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', path.join(installRoot, 'uninstall.ps1'),
+    '-InstallRoot', victimRoot,
+    '-StartupDir', startupRoot,
+    '-Synchronous',
+  ], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+  assert.notEqual(arbitraryUninstall.status, 0, 'uninstaller must refuse an unrelated install root');
+  assert.equal(await fs.readFile(path.join(victimRoot, 'sentinel.txt'), 'ascii'), 'DO_NOT_DELETE\n');
+
   run(powershell, [
     '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
     '-File', path.join(installRoot, 'uninstall.ps1'),

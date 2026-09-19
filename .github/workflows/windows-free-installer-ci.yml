@@ -8,6 +8,8 @@ on:
       - 'test/installer/**'
       - 'test/test-windows-free-installer-contract.js'
       - 'test/test-windows-free-installer-archive-security.js'
+      - 'test/test-windows-free-installer-download-redirect.js'
+      - 'test/test-windows-free-runtime-instance.js'
       - 'package.json'
       - 'package-lock.json'
       - 'scripts/build-free-package.cjs'
@@ -23,6 +25,8 @@ on:
       - 'test/installer/**'
       - 'test/test-windows-free-installer-contract.js'
       - 'test/test-windows-free-installer-archive-security.js'
+      - 'test/test-windows-free-installer-download-redirect.js'
+      - 'test/test-windows-free-runtime-instance.js'
       - 'package.json'
       - 'package-lock.json'
       - 'scripts/build-free-package.cjs'
@@ -37,6 +41,7 @@ permissions:
 
 jobs:
   windows-installer:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, DesktopCommanderMCP]
     timeout-minutes: 30
     steps:
@@ -59,9 +64,17 @@ jobs:
         shell: powershell
         run: node test/test-windows-free-installer-contract.js
 
-      - name: Verify archive traversal fails closed
+      - name: Verify archive traversal and link entries fail closed
         shell: powershell
         run: node test/test-windows-free-installer-archive-security.js
+
+      - name: Verify downloader redirect handling
+        shell: powershell
+        run: node test/test-windows-free-installer-download-redirect.js
+
+      - name: Verify runtime single-instance ownership
+        shell: powershell
+        run: node test/test-windows-free-runtime-instance.js
 
       - name: Build and verify real Windows installer E2E
         shell: powershell

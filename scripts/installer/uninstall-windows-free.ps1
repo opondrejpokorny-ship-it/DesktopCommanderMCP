@@ -50,7 +50,16 @@ function Stop-OwnedRuntime([string]$Root) {
     Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
 }
 
-$InstallRoot = Assert-SafeInstallRoot $InstallRoot
+$requestedInstallRoot = Assert-SafeInstallRoot $InstallRoot
+$scriptInstallRoot = Assert-SafeInstallRoot $PSScriptRoot
+if (-not $requestedInstallRoot.Equals($scriptInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing uninstall root that does not match this installed runtime: $requestedInstallRoot"
+}
+$rootItem = Get-Item -LiteralPath $scriptInstallRoot -Force
+if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing uninstall from reparse-point root: $scriptInstallRoot"
+}
+$InstallRoot = $scriptInstallRoot
 $manifestPath = Join-Path $InstallRoot 'runtime-manifest.json'
 if (-not (Test-Path -LiteralPath $manifestPath)) {
     throw "Refusing uninstall because Desktop Commander runtime manifest is missing: $manifestPath"

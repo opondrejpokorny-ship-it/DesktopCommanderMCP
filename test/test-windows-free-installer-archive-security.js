@@ -76,7 +76,50 @@ try {
 
   await assert.rejects(fs.access(escapePath));
   await assert.rejects(fs.access(installRoot));
-  console.log('✅ Windows Free installer rejects traversal archives before extraction');
+
+  const linkEscape = path.join(tempRoot, 'link-escape');
+  await fs.mkdir(linkEscape, { recursive: true });
+  const createLinkZip = [
+    'Add-Type -AssemblyName System.IO.Compression',
+    'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+    '$stream=[IO.File]::Open($env:DC_TEST_ZIP,[IO.FileMode]::Create)',
+    '$archive=New-Object IO.Compression.ZipArchive($stream,[IO.Compression.ZipArchiveMode]::Create,$false)',
+    '$link=$archive.CreateEntry("linkdir")',
+    '$link.ExternalAttributes=-1577123840',
+    '$writer=New-Object IO.StreamWriter($link.Open())',
+    '$writer.Write("../link-escape")',
+    '$writer.Dispose()',
+    '$payload=$archive.CreateEntry("linkdir/pwn.txt")',
+    '$writer2=New-Object IO.StreamWriter($payload.Open())',
+    '$writer2.Write("MUST_NOT_ESCAPE")',
+    '$writer2.Dispose(); $archive.Dispose(); $stream.Dispose()',
+  ].join('; ');
+  const linkZipResult = spawnSync(powershell, ['-NoLogo', '-NoProfile', '-Command', createLinkZip], {
+    env: { ...process.env, DC_TEST_ZIP: runtimeZip },
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(linkZipResult.status, 0, linkZipResult.stderr || linkZipResult.stdout);
+  await fs.writeFile(
+    path.join(payloadRoot, 'payload-manifest.json'),
+    JSON.stringify({
+      kind: 'desktop-commander-windows-free-installer-payload-v1',
+      runtimeZipSha256: await sha256(runtimeZip),
+    }, null, 2) + '\n',
+  );
+  const linkInstall = spawnSync(powershell, [
+    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', path.join(payloadRoot, 'install.ps1'),
+    '-InstallRoot', installRoot,
+    '-StartupDir', startupRoot,
+    '-NoLaunch', '-NoStartup', '-Quiet',
+  ], { encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+  assert.notEqual(linkInstall.status, 0, 'link archive must fail closed');
+  assert.match(linkInstall.stderr + linkInstall.stdout, /link|reparse/i);
+  await assert.rejects(fs.access(path.join(linkEscape, 'pwn.txt')));
+  await assert.rejects(fs.access(installRoot));
+
+  console.log('✅ Windows Free installer rejects traversal and link archives before extraction');
 } finally {
   await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
 }

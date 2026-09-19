@@ -3,10 +3,10 @@ const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const https = require('node:https');
 const { execFileSync } = require('node:child_process');
 const esbuild = require('esbuild');
 const { resolveNpmInvocation } = require('../npm-invocation.cjs');
+const { downloadFile } = require('./download-file.cjs');
 
 const root = path.resolve(__dirname, '..', '..');
 const artifactRoot = path.join(root, '.artifacts', 'windows-free-runtime');
@@ -59,34 +59,7 @@ async function copyFile(source, destination) {
   await fs.copyFile(source, destination);
 }
 
-async function download(url, destination, redirects = 5) {
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  const temp = destination + '.download-' + process.pid;
-  await fs.rm(temp, { force: true });
-  await new Promise((resolve, reject) => {
-    const request = https.get(url, { headers: { 'User-Agent': 'DesktopCommanderInstallerBuilder/1' } }, (response) => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location && redirects > 0) {
-        response.resume();
-        fs.rm(temp, { force: true }).finally(() => {
-          download(new URL(response.headers.location, url).toString(), destination, redirects - 1)
-            .then(resolve, reject);
-        });
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume();
-        reject(new Error('Node runtime download failed with HTTP ' + response.statusCode));
-        return;
-      }
-      const output = fsSync.createWriteStream(temp, { flags: 'wx' });
-      response.pipe(output);
-      output.on('finish', () => output.close(resolve));
-      output.on('error', reject);
-    });
-    request.on('error', reject);
-  });
-  await fs.rename(temp, destination);
-}
+
 
 async function walkFiles(directory, prefix = '') {
   const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -114,7 +87,7 @@ async function prepareOfficialNode() {
     if (!validCached) {
       await fs.rm(nodeZip, { force: true });
       process.stdout.write('Downloading pinned Node runtime ' + NODE_VERSION + '...\n');
-      await download(NODE_URL, nodeZip);
+      await downloadFile(NODE_URL, nodeZip);
     }
   }
   const archiveHash = await sha256(nodeZip);
@@ -284,6 +257,10 @@ async function main() {
     path.join(runtimeRoot, 'launcher.mjs'),
   );
   await copyFile(
+    path.join(root, 'scripts', 'installer', 'runtime-instance.mjs'),
+    path.join(runtimeRoot, 'runtime-instance.mjs'),
+  );
+  await copyFile(
     path.join(root, 'scripts', 'installer', 'uninstall-windows-free.ps1'),
     path.join(runtimeRoot, 'uninstall.ps1'),
   );
@@ -305,6 +282,7 @@ async function main() {
   const criticalPaths = [
     'node.exe',
     'launcher.mjs',
+    'runtime-instance.mjs',
     'uninstall.ps1',
     'LICENSE-DesktopCommander-MIT.txt',
     'NODE-LICENSE.txt',

@@ -62,21 +62,44 @@ function Expand-VerifiedRuntimeArchive([string]$Archive, [string]$Destination) {
         throw 'Windows tar.exe is required to install Desktop Commander Free.'
     }
 
-    $entries = & $tarPath -tf $Archive 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Unable to inspect Desktop Commander runtime archive.'
-    }
-    foreach ($entry in $entries) {
-        $value = ([string]$entry).Trim()
-        if ([string]::IsNullOrWhiteSpace($value)) { continue }
-        $normalized = $value.Replace('\', '/')
-        if ($normalized.StartsWith('/') -or $normalized -match '^[A-Za-z]:') {
-            throw "Runtime archive contains rooted path: $value"
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $stream = [IO.File]::OpenRead($Archive)
+    try {
+        $zip = New-Object IO.Compression.ZipArchive(
+            $stream,
+            [IO.Compression.ZipArchiveMode]::Read,
+            $false
+        )
+        try {
+            foreach ($entry in $zip.Entries) {
+                $value = ([string]$entry.FullName).Trim()
+                if ([string]::IsNullOrWhiteSpace($value)) { continue }
+                $normalized = $value.Replace('\', '/')
+                if ($normalized.StartsWith('/') -or $normalized -match '^[A-Za-z]:') {
+                    throw "Runtime archive contains rooted path: $value"
+                }
+                $segments = $normalized.Split('/') | Where-Object { $_ -ne '' -and $_ -ne '.' }
+                if ($segments -contains '..') {
+                    throw "Runtime archive contains traversal path: $value"
+                }
+
+                $rawAttributes = [BitConverter]::ToUInt32(
+                    [BitConverter]::GetBytes([int]$entry.ExternalAttributes),
+                    0
+                )
+                $unixMode = ($rawAttributes -shr 16) -band 0xFFFF
+                $unixType = $unixMode -band 0xF000
+                $dosAttributes = $rawAttributes -band 0xFFFF
+                if ($unixType -eq 0xA000 -or ($dosAttributes -band 0x400) -ne 0) {
+                    throw "Runtime archive contains link or reparse entry: $value"
+                }
+            }
+        } finally {
+            $zip.Dispose()
         }
-        $segments = $normalized.Split('/') | Where-Object { $_ -ne '' -and $_ -ne '.' }
-        if ($segments -contains '..') {
-            throw "Runtime archive contains traversal path: $value"
-        }
+    } finally {
+        $stream.Dispose()
     }
 
     & $tarPath -xf $Archive -C $Destination
@@ -139,7 +162,9 @@ $parentRoot = Split-Path -Parent $InstallRoot
 New-Item -ItemType Directory -Force -Path $parentRoot | Out-Null
 $staging = $InstallRoot + '.installing-' + $PID + '-' + [Guid]::NewGuid().ToString('N')
 $backup = $InstallRoot + '.backup-' + $PID + '-' + [Guid]::NewGuid().ToString('N')
+$retiredBackup = $backup + '.retired'
 $hadExisting = Test-Path -LiteralPath $InstallRoot
+$transactionCommitted = $false
 
 try {
     Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
@@ -175,10 +200,6 @@ try {
     }
     Move-Item -LiteralPath $staging -Destination $InstallRoot
 
-    if ($hadExisting -and (Test-Path -LiteralPath $backup)) {
-        Remove-Item -LiteralPath $backup -Recurse -Force
-    }
-
     $startVbs = Join-Path $InstallRoot 'start-hidden.vbs'
     Write-StartVbs $InstallRoot $startVbs
 
@@ -211,16 +232,50 @@ start "" "http://127.0.0.1:17831/"
         }
     }
 
+    if ($hadExisting -and (Test-Path -LiteralPath $backup)) {
+        Move-Item -LiteralPath $backup -Destination $retiredBackup
+    }
+    $transactionCommitted = $true
+
+    if (Test-Path -LiteralPath $retiredBackup) {
+        try {
+            Remove-Item -LiteralPath $retiredBackup -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Warning ("Desktop Commander Free repair completed, but old backup cleanup was deferred: {0}" -f
+                $_.Exception.Message)
+        }
+    }
+
     $mode = if ($hadExisting) { 'repaired' } else { 'installed' }
     Write-Output ("Desktop Commander Free {0}: {1}" -f $mode, $InstallRoot)
 } catch {
-    if (Test-Path -LiteralPath $staging) {
-        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+    $originalError = $_
+    if ($transactionCommitted) {
+        throw $originalError
     }
-    if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $InstallRoot)) {
-        Move-Item -LiteralPath $backup -Destination $InstallRoot -ErrorAction SilentlyContinue
+    $rollbackError = $null
+    try {
+        if (Test-Path -LiteralPath $staging) {
+            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($hadExisting -and (Test-Path -LiteralPath $backup)) {
+            if (Test-Path -LiteralPath $InstallRoot) {
+                Stop-OwnedRuntime $InstallRoot
+                Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+            }
+            Move-Item -LiteralPath $backup -Destination $InstallRoot
+        } elseif (-not $hadExisting -and (Test-Path -LiteralPath $InstallRoot)) {
+            Stop-OwnedRuntime $InstallRoot
+            Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+        }
+    } catch {
+        $rollbackError = $_
     }
-    throw
+    if ($rollbackError) {
+        throw ("Desktop Commander install failed and rollback failed. Install error: {0}; rollback error: {1}" -f
+            $originalError.Exception.Message, $rollbackError.Exception.Message)
+    }
+    throw $originalError
 } finally {
     if (Test-Path -LiteralPath $staging) {
         Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
