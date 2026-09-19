@@ -79,7 +79,7 @@ for (const input of runtimeManifest.controlCenterBundleInputs) {
   );
 }
 
-const caseRoot = path.join(root, '.artifacts', 'windows-free-installer-e2e');
+const caseRoot = path.join(os.tmpdir(), `desktop-commander-free-installer-e2e-${process.pid}`);
 const installRoot = path.join(caseRoot, 'app');
 const startupRoot = path.join(caseRoot, 'startup');
 const profileRoot = path.join(caseRoot, 'profile');
